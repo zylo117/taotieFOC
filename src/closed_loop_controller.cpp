@@ -7,7 +7,23 @@
 #define MAX_PID_OUTPUT        2000.0f
 #define MAX_I_TERM            100.0f
 
-static float clampf(float value, float min_value, float max_value)
+#if USE_HARD_FLOAT_ACCELERATION
+static inline float fast_abs(float value)
+{
+  return __builtin_fabsf(value);
+}
+
+static inline float fast_clamp(float value, float min_value, float max_value)
+{
+  return __builtin_fminf(__builtin_fmaxf(value, min_value), max_value);
+}
+#else
+static inline float fast_abs(float value)
+{
+  return (value < 0.0f) ? -value : value;
+}
+
+static inline float fast_clamp(float value, float min_value, float max_value)
 {
   if (value < min_value)
   {
@@ -19,6 +35,7 @@ static float clampf(float value, float min_value, float max_value)
   }
   return value;
 }
+#endif
 
 PidController::PidController()
   : kp(1.0f), ki(0.04f), kd(0.02f), integral(0.0f), last_error(0.0f),
@@ -85,7 +102,10 @@ ClosedLoopController::ClosedLoopController()
     target_step_(0), actual_step_(0), last_actual_step_(0), command_step_(0),
     follow_error_(0.0f), measured_velocity_rps_(0.0f), target_velocity_rps_(0.0f),
     step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), last_process_time_us_(0U),
-    last_step_state_(0U), last_dir_state_(0U), last_en_state_(0U)
+    last_step_state_(0U), last_dir_state_(0U), last_en_state_(0U),
+    loop_stats_enabled_(false), last_position_tick_us_(0U), last_velocity_tick_us_(0U),
+    last_current_tick_us_(0U), position_loop_hz_(0U), velocity_loop_hz_(0U), current_loop_hz_(0U),
+    position_samples_(0U), velocity_samples_(0U), current_samples_(0U)
 {
   position_pid_.setGains(base_position_kp_, base_position_ki_, base_position_kd_);
   velocity_pid_.setGains(base_velocity_kp_, base_velocity_ki_, base_velocity_kd_);
@@ -156,8 +176,51 @@ void ClosedLoopController::syncStepDirection()
   }
 }
 
+void ClosedLoopController::updateLoopFrequencyStats(uint32_t time_us)
+{
+  if (!loop_stats_enabled_)
+  {
+    return;
+  }
+
+  if (time_us > last_position_tick_us_)
+  {
+    const uint32_t delta_pos_us = time_us - last_position_tick_us_;
+    if (delta_pos_us > 0U)
+    {
+      position_loop_hz_ = (1000000U / delta_pos_us);
+      position_samples_++;
+    }
+    last_position_tick_us_ = time_us;
+  }
+
+  if (time_us > last_velocity_tick_us_)
+  {
+    const uint32_t delta_vel_us = time_us - last_velocity_tick_us_;
+    if (delta_vel_us > 0U)
+    {
+      velocity_loop_hz_ = (1000000U / delta_vel_us);
+      velocity_samples_++;
+    }
+    last_velocity_tick_us_ = time_us;
+  }
+
+  if (time_us > last_current_tick_us_)
+  {
+    const uint32_t delta_cur_us = time_us - last_current_tick_us_;
+    if (delta_cur_us > 0U)
+    {
+      current_loop_hz_ = (1000000U / delta_cur_us);
+      current_samples_++;
+    }
+    last_current_tick_us_ = time_us;
+  }
+}
+
 void ClosedLoopController::process(uint32_t time_us)
 {
+  updateLoopFrequencyStats(time_us);
+
   if (driver_ == nullptr || encoder_ == nullptr)
   {
     return;
@@ -201,7 +264,7 @@ void ClosedLoopController::process(uint32_t time_us)
   float velocity_correction = velocity_pid_.update(velocity_error, 0.001f);
 
   float correction_gain = velocity_correction / MAX_PID_OUTPUT;
-  correction_gain = fminf(1.0f, fmaxf(-1.0f, correction_gain));
+  correction_gain = fast_clamp(correction_gain, -1.0f, 1.0f);
 
   if (step_period_us_ > 10U)
   {
@@ -213,13 +276,13 @@ void ClosedLoopController::process(uint32_t time_us)
     step_period_us_ = compensated_step_period;
   }
 
-  if (fabsf(position_error) < 0.25f)
+  if (fast_abs(position_error) < 0.25f)
   {
     position_pid_.resetIntegral();
     velocity_pid_.resetIntegral();
   }
 
-  if (fabsf(position_error) < 0.1f)
+  if (fast_abs(position_error) < 0.1f)
   {
     position_pid_.resetDeriv();
     velocity_pid_.resetDeriv();
@@ -270,9 +333,9 @@ void ClosedLoopController::updateAdaptivePid(float speed_rps, float acceleration
     return;
   }
 
-  const float speed_scale = clampf(fabsf(speed_rps) / (adaptive_config_.max_speed_rps + 1.0e-6f), 0.0f, 1.0f);
-  const float accel_scale = clampf(fabsf(acceleration_rps2) / (adaptive_config_.acceleration_rps2 + 1.0e-6f), 0.0f, 1.0f);
-  const float error_scale = clampf(fabsf(follow_error) / (adaptive_config_.target_follow_error + 1.0e-6f), 0.0f, 1.0f);
+  const float speed_scale = fast_clamp(fast_abs(speed_rps) / (adaptive_config_.max_speed_rps + 1.0e-6f), 0.0f, 1.0f);
+  const float accel_scale = fast_clamp(fast_abs(acceleration_rps2) / (adaptive_config_.acceleration_rps2 + 1.0e-6f), 0.0f, 1.0f);
+  const float error_scale = fast_clamp(fast_abs(follow_error) / (adaptive_config_.target_follow_error + 1.0e-6f), 0.0f, 1.0f);
   const float gain_scale = 1.0f + speed_scale * 0.45f + accel_scale * 0.35f + error_scale * 0.20f;
 
   position_pid_.kp = base_position_kp_ * gain_scale;
@@ -298,6 +361,45 @@ void ClosedLoopController::calibrateEncoder(const EncoderCalibrationConfig &conf
   {
     encoder_zero_ = static_cast<uint16_t>(encoder_zero_ + static_cast<uint16_t>(result.offset_correction));
   }
+}
+
+void ClosedLoopController::enableLoopStats(bool enable)
+{
+  loop_stats_enabled_ = enable;
+  if (enable)
+  {
+    last_position_tick_us_ = 0U;
+    last_velocity_tick_us_ = 0U;
+    last_current_tick_us_ = 0U;
+  }
+}
+
+void ClosedLoopController::getLoopFrequencyStats(LoopFrequencyStats *stats) const
+{
+  if (stats == nullptr)
+  {
+    return;
+  }
+
+  stats->position_loop_hz = position_loop_hz_;
+  stats->velocity_loop_hz = velocity_loop_hz_;
+  stats->current_loop_hz = current_loop_hz_;
+  stats->position_samples = position_samples_;
+  stats->velocity_samples = velocity_samples_;
+  stats->current_samples = current_samples_;
+}
+
+void ClosedLoopController::resetLoopFrequencyStats()
+{
+  position_loop_hz_ = 0U;
+  velocity_loop_hz_ = 0U;
+  current_loop_hz_ = 0U;
+  position_samples_ = 0U;
+  velocity_samples_ = 0U;
+  current_samples_ = 0U;
+  last_position_tick_us_ = 0U;
+  last_velocity_tick_us_ = 0U;
+  last_current_tick_us_ = 0U;
 }
 
 int32_t ClosedLoopController::getPositionSteps() const

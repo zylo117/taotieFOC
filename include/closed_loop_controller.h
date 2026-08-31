@@ -6,6 +6,10 @@
 #include "angle_encoder.h"
 #include "stepper_driver.h"
 
+#ifndef USE_HARD_FLOAT_ACCELERATION
+#define USE_HARD_FLOAT_ACCELERATION 1
+#endif
+
 struct PidAutoTuneConfig
 {
   float min_speed_rps;
@@ -33,6 +37,16 @@ public:
   float max_output;
 };
 
+struct LoopFrequencyStats
+{
+  uint32_t position_loop_hz;
+  uint32_t velocity_loop_hz;
+  uint32_t current_loop_hz;
+  uint32_t position_samples;
+  uint32_t velocity_samples;
+  uint32_t current_samples;
+};
+
 class ClosedLoopController
 {
 public:
@@ -48,10 +62,14 @@ public:
   void setAdaptivePidConfig(const PidAutoTuneConfig &config);
   void updateAdaptivePid(float speed_rps, float acceleration_rps2, float follow_error);
   void calibrateEncoder(const EncoderCalibrationConfig &config);
+  void enableLoopStats(bool enable);
+  void getLoopFrequencyStats(LoopFrequencyStats *stats) const;
+  void resetLoopFrequencyStats();
   int32_t getPositionSteps() const;
   float getFollowError() const;
 
 private:
+  void updateLoopFrequencyStats(uint32_t time_us);
   StepperDriver *driver_;
   AngleEncoder *encoder_;
   PidController position_pid_;
@@ -79,6 +97,17 @@ private:
   volatile uint8_t last_step_state_;
   volatile uint8_t last_dir_state_;
   volatile uint8_t last_en_state_;
+
+  bool loop_stats_enabled_;
+  uint32_t last_position_tick_us_;
+  uint32_t last_velocity_tick_us_;
+  uint32_t last_current_tick_us_;
+  uint32_t position_loop_hz_;
+  uint32_t velocity_loop_hz_;
+  uint32_t current_loop_hz_;
+  uint32_t position_samples_;
+  uint32_t velocity_samples_;
+  uint32_t current_samples_;
 };
 
 #endif
