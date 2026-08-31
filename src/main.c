@@ -27,6 +27,7 @@
 #include "at32f403a_407_clock.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "taotie_closed_loop.h"
 
 /** @addtogroup UTILITIES_examples
   * @{
@@ -60,6 +61,9 @@ int main(void)
 
   /* init usart1 */
   uart_print_init(115200);
+
+  /* initialize closed-loop stepper compensation */
+  taotie_closed_loop_init();
 
   /* enter critical */
   taskENTER_CRITICAL();
@@ -103,8 +107,12 @@ int main(void)
 /* led2 task function */
 void led2_task_function(void *pvParameters)
 {
+  (void)pvParameters;
+
   while(1)
   {
+    taotie_closed_loop_sync_step_dir();
+    taotie_closed_loop_process((uint32_t)xTaskGetTickCount() * 1000UL);
     at32_led_toggle(LED2);
     vTaskDelay(1000);
   }
