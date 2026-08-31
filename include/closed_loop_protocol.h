@@ -5,6 +5,10 @@
 
 #include "stepper_driver.h"
 
+// 这是闭环控制器对外的“协议桥接配置”，用于统一描述
+// TMC 风格参数访问所需的最小工作状态。
+// 通过这个结构体，控制器和底层驱动之间不直接绑定具体芯片寄存器，
+// 而是通过统一协议语义进行参数映射与转换。
 struct ClosedLoopDriverProtocolConfig
 {
   uint16_t microsteps;
@@ -20,6 +24,9 @@ struct ClosedLoopDriverProtocolConfig
   uint32_t uart_baudrate;
 };
 
+// TMC2209 的官方寄存器表。
+// 这里保留的是与 Klipper / TMC 实际寄存器地址相一致的核心位置，
+// 用于在协议层把外部访问请求映射到闭环控制器的参数和底层驱动配置。
 enum Tmc2209OfficialRegister
 {
   TMC2209_REG_GCONF = 0x00U,
@@ -43,6 +50,8 @@ enum Tmc2209OfficialRegister
   TMC2209_REG_ENCM_CTRL = 0x72U
 };
 
+// 自定义扩展寄存器区：0x100 起，专门承载闭环控制器特有参数。
+// 这样不会污染 TMC 官方寄存器空间，且后续扩展更安全。
 enum Tmc2209CustomExtensionRegister
 {
   TMC2209_EXT_PARAM_MICROSTEPS = 0x100U,
@@ -55,20 +64,42 @@ enum Tmc2209CustomExtensionRegister
   TMC2209_EXT_PARAM_CLOSED_LOOP_ENABLE = 0x107U
 };
 
+// ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
+// 它负责把上层“读取参数 / 写入参数”的请求，翻译成真正的底层驱动命令。
+// 这使得控制器只关心闭环逻辑，而不直接依赖具体驱动芯片实现。
 class ClosedLoopDriverProtocol
 {
 public:
   virtual ~ClosedLoopDriverProtocol() = default;
+
+  // 初始化协议栈，并绑定底层驱动器。
   virtual bool init() = 0;
+
+  // 配置协议所需的运行参数。
   virtual bool configure(const ClosedLoopDriverProtocolConfig &config) = 0;
+
+  // 返回当前协议配置。
   virtual const ClosedLoopDriverProtocolConfig &config() const = 0;
+
+  // 写入一个协议寄存器，例如 TMC 官方寄存器或扩展参数。
   virtual bool writeRegister(uint8_t reg, uint32_t value) = 0;
+
+  // 读取一个协议寄存器的当前值。
   virtual bool readRegister(uint8_t reg, uint32_t *value) = 0;
+
+  // 设置闭环扩展参数（例如微步数、当前、静音模式等）。
   virtual bool setCustomParameter(uint16_t id, uint32_t value) = 0;
+
+  // 获取闭环扩展参数。
   virtual bool getCustomParameter(uint16_t id, uint32_t *value) const = 0;
+
+  // 把实际驱动器对象挂接到协议适配器中。
   virtual void attachDriver(StepperDriver *driver) = 0;
 };
 
+// Tmc2209ProtocolAdapter 是协议适配器的具体实现。
+// 它模拟了“外部主机按 TMC2209 协议访问驱动器”的行为，
+// 但实际只是把这些访问重定向到闭环控制逻辑和统一驱动后端。
 class Tmc2209ProtocolAdapter : public ClosedLoopDriverProtocol
 {
 public:
@@ -82,6 +113,7 @@ public:
   bool getCustomParameter(uint16_t id, uint32_t *value) const override;
   void attachDriver(StepperDriver *driver) override;
 
+  // 将当前协议配置同步到底层驱动器。
   void syncToDriver();
 
 private:

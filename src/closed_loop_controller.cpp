@@ -79,6 +79,13 @@ void PidController::setGains(float kp_value, float ki_value, float kd_value)
   kd = kd_value;
 }
 
+// PID 的核心计算公式：
+// output = Kp * error + Ki * integral(error) + Kd * d(error)/dt
+// 其中：
+// - P 项让系统对误差有直接修正能力
+// - I 项用于消除稳态误差
+// - D 项用于抑制超调和提高阻尼
+// 但在电机闭环中，积分项和微分项不能无限大，否则会导致振荡，因此要做限幅。
 float PidController::update(float error, float dt)
 {
   float derivative = 0.0f;
@@ -86,9 +93,12 @@ float PidController::update(float error, float dt)
 
   if (dt > 0.0f)
   {
+    // 误差变化率用于反映系统“趋势”，可帮助提前修正冲击和速度变化。
     derivative = (error - last_error) / dt;
   }
 
+  // 科学意义：积分项是误差的累积，能消除长期偏差。
+  // 但如果不限制，它很容易带来持续过冲，所以必须做区间裁剪。
   integral += error * dt;
   if (integral > max_integral)
   {
@@ -99,6 +109,7 @@ float PidController::update(float error, float dt)
     integral = -max_integral;
   }
 
+  // 总输出等于三个项加权和：位置和速度环都使用这一套结构。
   output = kp * error + ki * integral + kd * derivative;
   if (output > max_output)
   {
@@ -109,6 +120,7 @@ float PidController::update(float error, float dt)
     output = -max_output;
   }
 
+  // 更新微分历史值，保证下一周期以最新误差为基准。
   last_error = error;
   return output;
 }
@@ -280,6 +292,17 @@ void ClosedLoopController::updateLoopFrequencyStats(uint32_t time_us)
   }
 }
 
+// process() 是闭环控制器最核心的函数，负责完成一整个控制周期：
+// 1. 读取编码器实际位置
+// 2. 计算位置误差
+// 3. 用位置 PID 生成速度参考
+// 4. 通过速度 PID 调整输出修正
+// 5. 最终通过步进输出和驱动器状态更新实现闭环控制
+//
+// 设计上采用双环结构：
+// - 外层位置环：控制“目标位置 vs 当前位置”的误差
+// - 内层速度环：控制“速度参考 vs 当前速度”的误差
+// 这样可以把大范围位置控制和短周期速度控制分开，提高稳定性和响应性。
 void ClosedLoopController::process(uint32_t time_us)
 {
   updateLoopFrequencyStats(time_us);
@@ -289,6 +312,9 @@ void ClosedLoopController::process(uint32_t time_us)
     return;
   }
 
+  // 读取编码器原始角度，并换算成相对零点的步数。
+  // 这里的逻辑是把编码器量化到一个可比较的相对位置值，
+  // 后续 position_error 能直接反映目标和当前位置的偏差。
   uint16_t encoder_raw = encoder_->readRawAngle();
   int32_t actual_step = 0;
 
@@ -309,6 +335,9 @@ void ClosedLoopController::process(uint32_t time_us)
     last_process_time_us_ = time_us;
   }
 
+  // 根据两个采样时刻之间的位置变化，计算实际速度。
+  // 这里的 /200.0f 是粗略折算到电机机械转速单位，体现在闭环控制中
+  // 是“步数变化量 -> 速度参考”的桥接。
   if (last_process_time_us_ != 0U && time_us > last_process_time_us_)
   {
     uint32_t dt_us = time_us - last_process_time_us_;
@@ -319,13 +348,21 @@ void ClosedLoopController::process(uint32_t time_us)
     }
   }
 
+  // 位置误差 = 目标位置 - 当前位置。
   float position_error = static_cast<float>(target_step_ - actual_step_);
+
+  // 位置环输出的 correction 是“速度参考”而不是直接驱动量。
+  // 这个设计将位置控制和速度控制拆开，避免大范围位置误差直接作用到驱动器。
   float position_correction = position_pid_.update(position_error, 0.001f);
 
+  // 速度参考 -> 速度误差 -> 速度 PID -> 更细粒度的控制输出。
   float velocity_reference = position_correction;
   float velocity_error = velocity_reference - measured_velocity_rps_;
   float velocity_correction = velocity_pid_.update(velocity_error, 0.001f);
 
+  // 速度修正量会参与步进周期的补偿：
+  // 如果速度误差较大，就缩短步进周期，增加动作频率；
+  // 如果误差较小，则维持或放宽步进节奏。 
   float correction_gain = velocity_correction / MAX_PID_OUTPUT;
   correction_gain = fast_clamp(correction_gain, -1.0f, 1.0f);
 
@@ -339,12 +376,14 @@ void ClosedLoopController::process(uint32_t time_us)
     step_period_us_ = compensated_step_period;
   }
 
+  // 当接近目标时，清零积分项，避免大误差导致积分发散。
   if (fast_abs(position_error) < 0.25f)
   {
     position_pid_.resetIntegral();
     velocity_pid_.resetIntegral();
   }
 
+  // 更接近零时，清理微分历史，减少抖动和噪声放大。
   if (fast_abs(position_error) < 0.1f)
   {
     position_pid_.resetDeriv();
