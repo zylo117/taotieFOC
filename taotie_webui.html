@@ -220,6 +220,51 @@
       font-size: 0.83rem;
     }
 
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .status-item {
+      display: grid;
+      gap: 6px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid var(--line);
+    }
+
+    .status-item .label {
+      color: var(--muted);
+      font-size: 0.72rem;
+    }
+
+    .status-item .value {
+      font-size: 1rem;
+      font-weight: 700;
+    }
+
+    .led {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--primary-2);
+      box-shadow: 0 0 12px rgba(34, 197, 94, 0.8);
+      vertical-align: middle;
+    }
+
+    .led.warn {
+      background: var(--warning);
+      box-shadow: 0 0 12px rgba(245, 158, 11, 0.8);
+    }
+
+    .led.danger {
+      background: var(--danger);
+      box-shadow: 0 0 12px rgba(239, 68, 68, 0.8);
+    }
+
     .dial-panel {
       display: grid;
       place-items: center;
@@ -381,6 +426,7 @@
         <button id="readAllBtn">读取全部</button>
         <button id="writeAllBtn">应用配置</button>
         <button id="tuneBtn" class="warn">自动整定</button>
+        <span id="faultBadge" class="badge ok"><span class="led"></span> 无故障</span>
         <span id="connBadge" class="badge">未连接</span>
       </div>
     </header>
@@ -472,6 +518,33 @@
             <label>协议帮助</label>
             <div class="tiny">
               这里按 TMC 兼容寄存器模型工作：官方寄存器保留真实地址，闭环扩展参数使用 0x100 以上区间，读写与 Klipper 兼容工作流相同。
+            </div>
+          </div>
+
+          <div class="status-grid">
+            <div class="status-item">
+              <div class="label">A 相电流</div>
+              <div class="value" id="phaseACurrentValue">0.00 A</div>
+            </div>
+            <div class="status-item">
+              <div class="label">B 相电流</div>
+              <div class="value" id="phaseBCurrentValue">0.00 A</div>
+            </div>
+            <div class="status-item">
+              <div class="label">位置环频率</div>
+              <div class="value" id="posLoopRateValue">0 Hz</div>
+            </div>
+            <div class="status-item">
+              <div class="label">速度环频率</div>
+              <div class="value" id="velLoopRateValue">0 Hz</div>
+            </div>
+            <div class="status-item">
+              <div class="label">电流环频率</div>
+              <div class="value" id="curLoopRateValue">0 Hz</div>
+            </div>
+            <div class="status-item">
+              <div class="label">错误信息</div>
+              <div class="value" id="faultSummaryValue">正常</div>
             </div>
           </div>
 
@@ -642,6 +715,7 @@
     const logArea = document.getElementById('logArea');
     const connBadge = document.getElementById('connBadge');
     const protoBadge = document.getElementById('protoBadge');
+    const faultBadge = document.getElementById('faultBadge');
 
     const state = {
       connected: false,
@@ -654,7 +728,16 @@
       speed: 0,
       accel: 0,
       currentA: 0,
-      dragging: false
+      dragging: false,
+      encoderFault: false,
+      magneticFault: false,
+      outputStopped: false,
+      faultSummary: '正常',
+      phaseACurrentA: 0,
+      phaseBCurrentA: 0,
+      posLoopHz: 0,
+      velLoopHz: 0,
+      curLoopHz: 0
     };
 
     const OFFICIAL_REGS = {
@@ -702,6 +785,28 @@
       connBadge.textContent = status;
       connBadge.className = 'badge ' + (isOk ? 'ok' : 'warn');
       connBadge.style.setProperty('border-color', isOk ? 'rgba(34,197,94,0.3)' : 'rgba(245,158,11,0.3)');
+    }
+
+    function updateFaultStatus() {
+      const hasFault = state.encoderFault || state.magneticFault || state.outputStopped;
+      const summary = state.encoderFault ? '编码器读取失败' : state.magneticFault ? '磁场报警' : state.outputStopped ? '已停止输出' : '正常';
+      state.faultSummary = summary;
+
+      faultBadge.innerHTML = `<span class="led ${hasFault ? (state.encoderFault || state.magneticFault ? 'warn' : 'danger') : ''}"></span> ${summary}`;
+      faultBadge.className = 'badge ' + (hasFault ? (state.encoderFault || state.magneticFault ? 'warn' : 'danger') : 'ok');
+      document.getElementById('faultSummaryValue').textContent = summary;
+      if (hasFault) {
+        log('[WARN] 故障状态：' + summary);
+      }
+    }
+
+    function updateTelemetryDisplay() {
+      document.getElementById('phaseACurrentValue').textContent = `${state.phaseACurrentA.toFixed(2)} A`;
+      document.getElementById('phaseBCurrentValue').textContent = `${state.phaseBCurrentA.toFixed(2)} A`;
+      document.getElementById('posLoopRateValue').textContent = `${state.posLoopHz} Hz`;
+      document.getElementById('velLoopRateValue').textContent = `${state.velLoopHz} Hz`;
+      document.getElementById('curLoopRateValue').textContent = `${state.curLoopHz} Hz`;
+      document.getElementById('faultSummaryValue').textContent = state.faultSummary;
     }
 
     function clamp(value, min, max) {
@@ -935,6 +1040,8 @@
         enabled: Number(document.getElementById('closedLoopEnable').value || 1)
       };
 
+      state.phaseACurrentA = Number(document.getElementById('phaseACurrentValue').textContent.replace(/[^0-9.]/g, '')) || 0;
+      state.phaseBCurrentA = Number(document.getElementById('phaseBCurrentValue').textContent.replace(/[^0-9.]/g, '')) || 0;
       log('[INFO] 应用闭环配置：' + JSON.stringify(config));
     }
 
@@ -1003,6 +1110,8 @@
     bindDialDrag();
     bindControls();
     updateDialVisual();
+    updateFaultStatus();
+    updateTelemetryDisplay();
   </script>
 </body>
 </html>
