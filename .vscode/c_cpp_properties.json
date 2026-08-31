@@ -1,0 +1,57 @@
+//
+// !!! WARNING !!! AUTO-GENERATED FILE!
+// PLEASE DO NOT MODIFY IT AND USE "platformio.ini":
+// https://docs.platformio.org/page/projectconf/section_env_build.html#build-flags
+//
+{
+    "configurations": [
+        {
+            "name": "PlatformIO",
+            "includePath": [
+                "D:/Documents/PlatformIO/Projects/taotieFOC/src",
+                "D:/Documents/PlatformIO/Projects/taotieFOC/include",
+                "C:/Users/Jessi/.platformio/packages/AT32F403A_407_Firmware_Library/libraries/cmsis/cm4/core_support",
+                "C:/Users/Jessi/.platformio/packages/AT32F403A_407_Firmware_Library/libraries/cmsis/cm4/device_support",
+                "C:/Users/Jessi/.platformio/packages/AT32F403A_407_Firmware_Library/libraries/drivers/inc",
+                "C:/Users/Jessi/.platformio/packages/AT32F403A_407_Firmware_Library/libraries/drivers/src",
+                "C:/Users/Jessi/.platformio/packages/AT32F403A_407_Firmware_Library/middlewares/freertos/source/include",
+                "C:/Users/Jessi/.platformio/packages/AT32F403A_407_Firmware_Library/middlewares/freertos/source/portable/GCC/ARM_CM4F",
+                "C:/Users/Jessi/.platformio/packages/AT32F403A_407_Firmware_Library/middlewares/usbd_drivers/inc",
+                ""
+            ],
+            "browse": {
+                "limitSymbolsToIncludedHeaders": true,
+                "path": [
+                    "D:/Documents/PlatformIO/Projects/taotieFOC/src",
+                    "D:/Documents/PlatformIO/Projects/taotieFOC/include",
+                    "C:/Users/Jessi/.platformio/packages/AT32F403A_407_Firmware_Library/libraries/cmsis/cm4/core_support",
+                    "C:/Users/Jessi/.platformio/packages/AT32F403A_407_Firmware_Library/libraries/cmsis/cm4/device_support",
+                    "C:/Users/Jessi/.platformio/packages/AT32F403A_407_Firmware_Library/libraries/drivers/inc",
+                    "C:/Users/Jessi/.platformio/packages/AT32F403A_407_Firmware_Library/libraries/drivers/src",
+                    "C:/Users/Jessi/.platformio/packages/AT32F403A_407_Firmware_Library/middlewares/freertos/source/include",
+                    "C:/Users/Jessi/.platformio/packages/AT32F403A_407_Firmware_Library/middlewares/freertos/source/portable/GCC/ARM_CM4F",
+                    "C:/Users/Jessi/.platformio/packages/AT32F403A_407_Firmware_Library/middlewares/usbd_drivers/inc",
+                    ""
+                ]
+            },
+            "defines": [
+                "PLATFORMIO=60119",
+                "F_CPU=240000000L",
+                "AT32F403ACCT7",
+                "USE_STDPERIPH_DRIVER",
+                "DEBUG",
+                "__PLATFORMIO_BUILD_DEBUG__",
+                ""
+            ],
+            "compilerPath": "C:/Users/Jessi/.platformio/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-gcc.exe",
+            "compilerArgs": [
+                "-mfpu=fpv4-sp-d16",
+                "-mfloat-abi=hard",
+                "-mthumb",
+                "-mcpu=cortex-m4",
+                ""
+            ]
+        }
+    ],
+    "version": 4
+}
