@@ -7,6 +7,35 @@
 #define MAX_PID_OUTPUT        2000.0f
 #define MAX_I_TERM            100.0f
 
+namespace
+{
+uint16_t clampMicrosteps(uint16_t value)
+{
+  if (value < 2U)
+  {
+    return 2U;
+  }
+  if (value > 256U)
+  {
+    return 256U;
+  }
+  return value;
+}
+
+float clampCurrentA(float value)
+{
+  if (value < 0.0f)
+  {
+    return 0.0f;
+  }
+  if (value > 3.0f)
+  {
+    return 3.0f;
+  }
+  return value;
+}
+}
+
 #if USE_HARD_FLOAT_ACCELERATION
 static inline float fast_abs(float value)
 {
@@ -95,7 +124,7 @@ void PidController::resetDeriv()
 }
 
 ClosedLoopController::ClosedLoopController()
-  : driver_(nullptr), encoder_(nullptr),
+  : driver_(nullptr), encoder_(nullptr), protocol_(nullptr),
     base_position_kp_(1.0f), base_position_ki_(0.04f), base_position_kd_(0.02f),
     base_velocity_kp_(0.7f), base_velocity_ki_(0.06f), base_velocity_kd_(0.01f),
     adaptive_pid_enabled_(false), adaptive_config_{0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
@@ -118,6 +147,12 @@ void ClosedLoopController::init(StepperDriver *driver, AngleEncoder *encoder)
   position_pid_.setGains(base_position_kp_, base_position_ki_, base_position_kd_);
   velocity_pid_.setGains(base_velocity_kp_, base_velocity_ki_, base_velocity_kd_);
 
+  if (protocol_ != nullptr && driver_ != nullptr)
+  {
+    protocol_->attachDriver(driver_);
+    protocol_->init();
+  }
+
   if (encoder_ != nullptr)
   {
     encoder_->init();
@@ -133,6 +168,34 @@ void ClosedLoopController::init(StepperDriver *driver, AngleEncoder *encoder)
   }
 
   last_process_time_us_ = 0U;
+}
+
+void ClosedLoopController::setProtocol(ClosedLoopDriverProtocol *protocol)
+{
+  protocol_ = protocol;
+  if (protocol_ != nullptr && driver_ != nullptr)
+  {
+    protocol_->attachDriver(driver_);
+    protocol_->init();
+  }
+}
+
+bool ClosedLoopController::writeParameter(uint8_t reg, uint32_t value)
+{
+  if (protocol_ == nullptr)
+  {
+    return false;
+  }
+  return protocol_->writeRegister(reg, value);
+}
+
+bool ClosedLoopController::readParameter(uint8_t reg, uint32_t *value)
+{
+  if (protocol_ == nullptr)
+  {
+    return false;
+  }
+  return protocol_->readRegister(reg, value);
 }
 
 void ClosedLoopController::syncStepDirection()

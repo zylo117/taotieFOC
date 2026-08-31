@@ -19,6 +19,7 @@ TaskHandle_t led3_handler;
 
 static ClosedLoopController g_controller;
 static Tmc2209Driver g_driver;
+static Tmc2209ProtocolAdapter g_protocol;
 static Kth7823Encoder g_encoder;
 
 void led2_task_function(void *pvParameters);
@@ -33,8 +34,10 @@ int main(void)
   at32_led_init(LED3);
   uart_print_init(115200);
 
-  g_driver.init();
+  g_protocol.attachDriver(&g_driver);
+  g_protocol.configure({32U, 256U, 0.8f, 0.2f, true, true, 0.110f, true, TMC2209_UART_GPIO, TMC2209_UART_PIN, 115200U});
   g_encoder.init();
+  g_controller.setProtocol(&g_protocol);
   g_controller.init(&g_driver, &g_encoder);
 
   taskENTER_CRITICAL();

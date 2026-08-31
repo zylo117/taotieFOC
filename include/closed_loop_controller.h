@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "angle_encoder.h"
+#include "closed_loop_protocol.h"
 #include "stepper_driver.h"
 
 #ifndef USE_HARD_FLOAT_ACCELERATION
@@ -53,6 +54,9 @@ public:
   ClosedLoopController();
 
   void init(StepperDriver *driver, AngleEncoder *encoder);
+  void setProtocol(ClosedLoopDriverProtocol *protocol);
+  bool writeParameter(uint8_t reg, uint32_t value);
+  bool readParameter(uint8_t reg, uint32_t *value);
   void syncStepDirection();
   void process(uint32_t time_us);
   void setTargetStep(int32_t target_step);
@@ -72,6 +76,7 @@ private:
   void updateLoopFrequencyStats(uint32_t time_us);
   StepperDriver *driver_;
   AngleEncoder *encoder_;
+  ClosedLoopDriverProtocol *protocol_;
   PidController position_pid_;
   PidController velocity_pid_;
 

@@ -25,10 +25,10 @@ void stepper_init_step_gpio(void)
   gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
   gpio_init_struct.gpio_pins = STEP_OUT_PIN | DIR_OUT_PIN | EN_OUT_PIN;
   gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
-  gpio_init(GPIOA, &gpio_init_struct);
-  stepper_write_gpio(GPIOA, EN_OUT_PIN, true);
-  stepper_write_gpio(GPIOA, DIR_OUT_PIN, false);
-  stepper_write_gpio(GPIOA, STEP_OUT_PIN, false);
+  gpio_init(STEP_OUTPUT_PORT, &gpio_init_struct);
+  stepper_write_gpio(EN_OUTPUT_PORT, EN_OUT_PIN, true);
+  stepper_write_gpio(DIR_OUTPUT_PORT, DIR_OUT_PIN, false);
+  stepper_write_gpio(STEP_OUTPUT_PORT, STEP_OUT_PIN, false);
 }
 
 void stepper_init_uart_gpio(gpio_type *port, uint16_t pin)
