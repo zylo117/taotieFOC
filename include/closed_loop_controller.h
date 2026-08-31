@@ -73,10 +73,32 @@ struct LoopFrequencyStats
 class ClosedLoopController
 {
 public:
+  enum FaultFlags : uint32_t
+  {
+    FAULT_ENCODER_READ_FAILED = 1UL << 0,
+    FAULT_MAGNETIC_FIELD_ALARM = 1UL << 1,
+    FAULT_OUTPUT_STOPPED = 1UL << 2
+  };
+
   ClosedLoopController();
 
   // 绑定驱动器与编码器，并初始化 PID 与零点偏移。
   void init(StepperDriver *driver, AngleEncoder *encoder);
+
+  // 配置故障响应策略：读编码器失败或磁场报警时是否立即停止输出。
+  void setFaultPolicy(bool stop_on_encoder_fault, bool stop_on_magnetic_fault);
+
+  // 报告编码器读取失败状态，并在设置为失效时执行停输出动作。
+  void reportEncoderFault(bool active);
+
+  // 报告磁场过高/过低状态，并在设置为失效时执行停输出动作。
+  void reportMagneticFieldAlarm(bool active);
+
+  // 设置 A/B 相电流监控值，供上位机实时显示。
+  void setPhaseCurrentTelemetry(float phase_a_a, float phase_b_a);
+
+  // 将控制器当前故障状态和采样频率同步到协议扩展寄存器表。
+  void syncProtocolTelemetry();
 
   // 绑定协议适配器，允许外部通过 TMC 风格寄存器访问闭环参数。
   void setProtocol(ClosedLoopDriverProtocol *protocol);
@@ -159,6 +181,13 @@ private:
   volatile uint8_t last_step_state_;
   volatile uint8_t last_dir_state_;
   volatile uint8_t last_en_state_;
+  bool stop_on_encoder_fault_;
+  bool stop_on_magnetic_fault_;
+  bool encoder_fault_active_;
+  bool magnetic_fault_active_;
+  bool output_stopped_;
+  float phase_a_current_a_;
+  float phase_b_current_a_;
 
   bool loop_stats_enabled_;
   uint32_t last_position_tick_us_;

@@ -31,7 +31,7 @@ float clamp_current_a(float value)
 
 Tmc2209ProtocolAdapter::Tmc2209ProtocolAdapter()
   : config_{32U, 256U, 0.8f, 0.2f, true, true, 0.110f, true, TMC2209_UART_GPIO, TMC2209_UART_PIN, 115200U},
-    custom_parameters_{0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U}, driver_(nullptr)
+    custom_parameters_{0U}, driver_(nullptr)
 {
 }
 
@@ -76,6 +76,16 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_SILENT_MODE:
     case TMC2209_EXT_PARAM_SENSE_RESISTOR:
     case TMC2209_EXT_PARAM_CLOSED_LOOP_ENABLE:
+    case TMC2209_EXT_PARAM_FAULT_STATUS:
+    case TMC2209_EXT_PARAM_ENCODER_FAULT:
+    case TMC2209_EXT_PARAM_MAGNETIC_FAULT:
+    case TMC2209_EXT_PARAM_OUTPUT_STOP:
+    case TMC2209_EXT_PARAM_AB_CURRENT_A:
+    case TMC2209_EXT_PARAM_AB_CURRENT_B:
+    case TMC2209_EXT_PARAM_POS_LOOP_HZ:
+    case TMC2209_EXT_PARAM_VEL_LOOP_HZ:
+    case TMC2209_EXT_PARAM_CUR_LOOP_HZ:
+    case TMC2209_EXT_PARAM_LAST_FAULT:
       return true;
     default:
       return false;
@@ -234,6 +244,11 @@ const ClosedLoopDriverProtocolConfig &Tmc2209ProtocolAdapter::config() const
 
 bool Tmc2209ProtocolAdapter::writeRegister(uint8_t reg, uint32_t value)
 {
+  if (isCustomExtensionRegister(static_cast<uint16_t>(reg)))
+  {
+    return setCustomParameter(static_cast<uint16_t>(reg), value);
+  }
+
   if (!isOfficialTmcRegister(reg))
   {
     return false;
@@ -246,6 +261,12 @@ bool Tmc2209ProtocolAdapter::writeRegister(uint8_t reg, uint32_t value)
 
 bool Tmc2209ProtocolAdapter::readRegister(uint8_t reg, uint32_t *value)
 {
+  if (isCustomExtensionRegister(static_cast<uint16_t>(reg)))
+  {
+    const uint16_t id = static_cast<uint16_t>(reg);
+    return getCustomParameter(id, value);
+  }
+
   if (!isOfficialTmcRegister(reg))
   {
     return false;
@@ -271,7 +292,7 @@ bool Tmc2209ProtocolAdapter::setCustomParameter(uint16_t id, uint32_t value)
     return false;
   }
   const uint16_t index = static_cast<uint16_t>(id - 0x100U);
-  if (index >= 8U)
+  if (index >= 32U)
   {
     return false;
   }
@@ -286,7 +307,7 @@ bool Tmc2209ProtocolAdapter::getCustomParameter(uint16_t id, uint32_t *value) co
     return false;
   }
   const uint16_t index = static_cast<uint16_t>(id - 0x100U);
-  if (index >= 8U)
+  if (index >= 32U)
   {
     return false;
   }

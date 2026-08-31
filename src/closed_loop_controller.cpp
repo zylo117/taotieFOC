@@ -144,9 +144,12 @@ ClosedLoopController::ClosedLoopController()
     follow_error_(0.0f), measured_velocity_rps_(0.0f), target_velocity_rps_(0.0f),
     step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), last_process_time_us_(0U),
     last_step_state_(0U), last_dir_state_(0U), last_en_state_(0U),
-    loop_stats_enabled_(false), last_position_tick_us_(0U), last_velocity_tick_us_(0U),
-    last_current_tick_us_(0U), position_loop_hz_(0U), velocity_loop_hz_(0U), current_loop_hz_(0U),
-    position_samples_(0U), velocity_samples_(0U), current_samples_(0U)
+    stop_on_encoder_fault_(true), stop_on_magnetic_fault_(true), encoder_fault_active_(false),
+    magnetic_fault_active_(false), output_stopped_(false), phase_a_current_a_(0.0f),
+    phase_b_current_a_(0.0f), loop_stats_enabled_(false), last_position_tick_us_(0U),
+    last_velocity_tick_us_(0U), last_current_tick_us_(0U), position_loop_hz_(0U),
+    velocity_loop_hz_(0U), current_loop_hz_(0U), position_samples_(0U), velocity_samples_(0U),
+    current_samples_(0U)
 {
   position_pid_.setGains(base_position_kp_, base_position_ki_, base_position_kd_);
   velocity_pid_.setGains(base_velocity_kp_, base_velocity_ki_, base_velocity_kd_);
@@ -190,6 +193,81 @@ void ClosedLoopController::setProtocol(ClosedLoopDriverProtocol *protocol)
     protocol_->attachDriver(driver_);
     protocol_->init();
   }
+}
+
+void ClosedLoopController::setFaultPolicy(bool stop_on_encoder_fault, bool stop_on_magnetic_fault)
+{
+  stop_on_encoder_fault_ = stop_on_encoder_fault;
+  stop_on_magnetic_fault_ = stop_on_magnetic_fault;
+}
+
+void ClosedLoopController::reportEncoderFault(bool active)
+{
+  encoder_fault_active_ = active;
+  if (active && stop_on_encoder_fault_ && driver_ != nullptr)
+  {
+    driver_->setEnable(false);
+    output_stopped_ = true;
+  }
+  else if (!active && !magnetic_fault_active_ && driver_ != nullptr)
+  {
+    driver_->setEnable(true);
+    output_stopped_ = false;
+  }
+}
+
+void ClosedLoopController::reportMagneticFieldAlarm(bool active)
+{
+  magnetic_fault_active_ = active;
+  if (active && stop_on_magnetic_fault_ && driver_ != nullptr)
+  {
+    driver_->setEnable(false);
+    output_stopped_ = true;
+  }
+  else if (!active && !encoder_fault_active_ && driver_ != nullptr)
+  {
+    driver_->setEnable(true);
+    output_stopped_ = false;
+  }
+}
+
+void ClosedLoopController::setPhaseCurrentTelemetry(float phase_a_a, float phase_b_a)
+{
+  phase_a_current_a_ = phase_a_a;
+  phase_b_current_a_ = phase_b_a;
+}
+
+void ClosedLoopController::syncProtocolTelemetry()
+{
+  if (protocol_ == nullptr)
+  {
+    return;
+  }
+
+  uint32_t fault_flags = 0U;
+  if (encoder_fault_active_)
+  {
+    fault_flags |= FAULT_ENCODER_READ_FAILED;
+  }
+  if (magnetic_fault_active_)
+  {
+    fault_flags |= FAULT_MAGNETIC_FIELD_ALARM;
+  }
+  if (output_stopped_)
+  {
+    fault_flags |= FAULT_OUTPUT_STOPPED;
+  }
+
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_FAULT_STATUS, fault_flags);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_FAULT, encoder_fault_active_ ? 1U : 0U);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_FAULT, magnetic_fault_active_ ? 1U : 0U);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_OUTPUT_STOP, output_stopped_ ? 1U : 0U);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_A, static_cast<uint32_t>(phase_a_current_a_ * 1000.0f));
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_B, static_cast<uint32_t>(phase_b_current_a_ * 1000.0f));
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_POS_LOOP_HZ, position_loop_hz_);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_VEL_LOOP_HZ, velocity_loop_hz_);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_CUR_LOOP_HZ, current_loop_hz_);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_LAST_FAULT, fault_flags);
 }
 
 bool ClosedLoopController::writeParameter(uint8_t reg, uint32_t value)
@@ -306,6 +384,7 @@ void ClosedLoopController::updateLoopFrequencyStats(uint32_t time_us)
 void ClosedLoopController::process(uint32_t time_us)
 {
   updateLoopFrequencyStats(time_us);
+  syncProtocolTelemetry();
 
   if (driver_ == nullptr || encoder_ == nullptr)
   {
