@@ -14,7 +14,7 @@
 #include "tmc2209_driver.h"
 #include "kth7823_encoder.h"
 
-TaskHandle_t led2_handler;
+TaskHandle_t led5_handler;
 TaskHandle_t led3_handler;
 
 static ClosedLoopController g_controller;
@@ -22,7 +22,7 @@ static Tmc2209Driver g_driver;
 static Tmc2209ProtocolAdapter g_protocol;
 static Kth7823Encoder g_encoder;
 
-void led2_task_function(void *pvParameters);
+void led5_task_function(void *pvParameters);
 void led3_task_function(void *pvParameters);
 
 int main(void)
@@ -30,8 +30,7 @@ int main(void)
   nvic_priority_group_config(NVIC_PRIORITY_GROUP_4);
   system_clock_config();
 
-  at32_led_init(LED2);
-  at32_led_init(LED3);
+  at32_led_init(LED5);
   uart_print_init(115200);
 
   g_protocol.attachDriver(&g_driver);
@@ -44,18 +43,18 @@ int main(void)
 
   taskENTER_CRITICAL();
 
-  if (xTaskCreate((TaskFunction_t)led2_task_function,
-                  (const char *)"LED2_task",
+  if (xTaskCreate((TaskFunction_t)led5_task_function,
+                  (const char *)"LED5_task",
                   (uint16_t)512,
                   (void *)NULL,
                   (UBaseType_t)2,
-                  (TaskHandle_t *)&led2_handler) != pdPASS)
+                  (TaskHandle_t *)&led5_handler) != pdPASS)
   {
-    printf("LED2 task could not be created as there was insufficient heap memory remaining.\r\n");
+    printf("LED5 task could not be created as there was insufficient heap memory remaining.\r\n");
   }
   else
   {
-    printf("LED2 task was created successfully.\r\n");
+    printf("LED5 task was created successfully.\r\n");
   }
 
   if (xTaskCreate((TaskFunction_t)led3_task_function,
@@ -76,7 +75,7 @@ int main(void)
   vTaskStartScheduler();
 }
 
-void led2_task_function(void *pvParameters)
+void led5_task_function(void *pvParameters)
 {
   (void)pvParameters;
 
@@ -84,7 +83,7 @@ void led2_task_function(void *pvParameters)
   {
     g_controller.syncStepDirection();
     g_controller.process((uint32_t)xTaskGetTickCount() * 1000UL);
-    at32_led_toggle(LED2);
+    at32_led_toggle(LED5);
     vTaskDelay(1000);
   }
 }

@@ -65,10 +65,11 @@ typedef enum
 {
   LED2                                   = 0,
   LED3                                   = 1,
-  LED4                                   = 2
+  LED4                                   = 2,
+  LED5                                   = 3
 } led_type;
 
-#define LED_NUM                          3
+#define LED_NUM                          4
 
 #if defined (AT_START_F403A_V1) || defined (AT_START_F407_V1)
 #define LED2_PIN                         GPIO_PINS_13
@@ -82,6 +83,10 @@ typedef enum
 #define LED4_PIN                         GPIO_PINS_15
 #define LED4_GPIO                        GPIOD
 #define LED4_GPIO_CRM_CLK                CRM_GPIOD_PERIPH_CLOCK
+
+#define LED5_PIN                         GPIO_PINS_8
+#define LED5_GPIO                        GPIOA
+#define LED5_GPIO_CRM_CLK                CRM_GPIOA_PERIPH_CLOCK
 #endif
 
 /**************** define print uart ******************/

@@ -29,17 +29,17 @@
 /**
   * @brief  system clock config program
   * @note   the system clock is configured as follow:
-  *         system clock (sclk)   = hext / 2 * pll_mult
+  *         system clock (sclk)   = hext * pll_mult
   *         system clock source   = pll (hext)
   *         - hext                = HEXT_VALUE
-  *         - sclk                = 240000000
+  *         - sclk                = 250000000
   *         - ahbdiv              = 1
-  *         - ahbclk              = 240000000
+  *         - ahbclk              = 250000000
   *         - apb2div             = 2
-  *         - apb2clk             = 120000000
+  *         - apb2clk             = 125000000
   *         - apb1div             = 2
-  *         - apb1clk             = 120000000
-  *         - pll_mult            = 60
+  *         - apb1clk             = 125000000
+  *         - pll_mult            = 10
   *         - pll_range           = GT72MHZ (greater than 72 mhz)
   * @param  none
   * @retval none
@@ -56,11 +56,9 @@ void system_clock_config(void)
   {
   }
 
-  /* config pll clock resource */
-  crm_pll_config(CRM_PLL_SOURCE_HEXT_DIV, CRM_PLL_MULT_60, CRM_PLL_OUTPUT_RANGE_GT72MHZ);
-
-  /* config hext division */
-  crm_hext_clock_div_set(CRM_HEXT_DIV_2);
+    /* 25 MHz * 9 = 225 MHz. The SDK exposes integer PLL multipliers only;
+      240 MHz would require 9.6x and 10x would exceed the MCU rating. */
+    crm_pll_config(CRM_PLL_SOURCE_HEXT, CRM_PLL_MULT_10, CRM_PLL_OUTPUT_RANGE_GT72MHZ);
 
   /* enable pll */
   crm_clock_source_enable(CRM_CLOCK_SOURCE_PLL, TRUE);

@@ -39,9 +39,9 @@
 #define STEP_DELAY_MS                    50
 
 /* at-start led resouce array */
-gpio_type *led_gpio_port[LED_NUM]        = {LED2_GPIO, LED3_GPIO, LED4_GPIO};
-uint16_t led_gpio_pin[LED_NUM]           = {LED2_PIN, LED3_PIN, LED4_PIN};
-crm_periph_clock_type led_gpio_crm_clk[LED_NUM] = {LED2_GPIO_CRM_CLK, LED3_GPIO_CRM_CLK, LED4_GPIO_CRM_CLK};
+gpio_type *led_gpio_port[LED_NUM]        = {LED2_GPIO, LED3_GPIO, LED4_GPIO, LED5_GPIO};
+uint16_t led_gpio_pin[LED_NUM]           = {LED2_PIN, LED3_PIN, LED4_PIN, LED5_PIN};
+crm_periph_clock_type led_gpio_crm_clk[LED_NUM] = {LED2_GPIO_CRM_CLK, LED3_GPIO_CRM_CLK, LED4_GPIO_CRM_CLK, LED5_GPIO_CRM_CLK};
 
 /* delay variable */
 static __IO uint32_t fac_us;
@@ -169,9 +169,11 @@ void at32_board_init()
   at32_led_init(LED2);
   at32_led_init(LED3);
   at32_led_init(LED4);
+  at32_led_init(LED5);
   at32_led_off(LED2);
   at32_led_off(LED3);
   at32_led_off(LED4);
+  at32_led_off(LED5);
 
   /* configure button in at_start board */
   at32_button_init();
