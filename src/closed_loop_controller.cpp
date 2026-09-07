@@ -142,7 +142,8 @@ ClosedLoopController::ClosedLoopController()
     adaptive_pid_enabled_(false), adaptive_config_{0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
     target_step_(0), actual_step_(0), last_actual_step_(0), command_step_(0),
     follow_error_(0.0f), measured_velocity_rps_(0.0f), target_velocity_rps_(0.0f),
-    step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), last_process_time_us_(0U),
+    step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), encoder_raw_angle_(0U),
+    magnetic_field_high_(false), magnetic_field_low_(false), last_process_time_us_(0U),
     last_step_state_(0U), last_dir_state_(0U), last_en_state_(0U),
     stop_on_encoder_fault_(true), stop_on_magnetic_fault_(true), encoder_fault_active_(false),
     magnetic_fault_active_(false), output_stopped_(false), phase_a_current_a_(0.0f),
@@ -268,9 +269,16 @@ void ClosedLoopController::syncProtocolTelemetry()
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_VEL_LOOP_HZ, velocity_loop_hz_);
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_CUR_LOOP_HZ, current_loop_hz_);
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_LAST_FAULT, fault_flags);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_TARGET_POSITION, static_cast<uint32_t>(target_step_));
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_ACTUAL_POSITION, static_cast<uint32_t>(actual_step_));
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_FOLLOW_ERROR, static_cast<uint32_t>(follow_error_));
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_RAW, encoder_raw_angle_);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG, getEncoderAngleMilliDegrees());
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_HIGH, magnetic_field_high_ ? 1U : 0U);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_LOW, magnetic_field_low_ ? 1U : 0U);
 }
 
-bool ClosedLoopController::writeParameter(uint8_t reg, uint32_t value)
+bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
 {
   if (protocol_ == nullptr)
   {
@@ -279,8 +287,27 @@ bool ClosedLoopController::writeParameter(uint8_t reg, uint32_t value)
   return protocol_->writeRegister(reg, value);
 }
 
-bool ClosedLoopController::readParameter(uint8_t reg, uint32_t *value)
+bool ClosedLoopController::readParameter(uint16_t reg, uint32_t *value)
 {
+  if (value == nullptr)
+  {
+    return false;
+  }
+  if (reg == TMC2209_REG_TSTEP)
+  {
+    *value = step_period_us_;
+    return true;
+  }
+  if (reg == TMC2209_REG_MSCNT)
+  {
+    *value = encoder_raw_angle_;
+    return true;
+  }
+  if (reg == TMC2209_REG_DRV_STATUS)
+  {
+    *value = magnetic_field_high_ || magnetic_field_low_ ? (1U << 24U) : 0U;
+    return true;
+  }
   if (protocol_ == nullptr)
   {
     return false;
@@ -310,7 +337,12 @@ void ClosedLoopController::syncStepDirection()
       command_step_ += (dir_state != 0U) ? 1 : -1;
       target_step_ = command_step_;
       driver_->setStepState(true);
-      delay_us(STEP_EDGE_TIMEOUT_US);
+      for (volatile uint32_t delay_count = 0U;
+           delay_count < (STEP_EDGE_TIMEOUT_US * 30U);
+           ++delay_count)
+      {
+        __NOP();
+      }
       driver_->setStepState(false);
     }
     last_step_state_ = step_state;
@@ -384,7 +416,6 @@ void ClosedLoopController::updateLoopFrequencyStats(uint32_t time_us)
 void ClosedLoopController::process(uint32_t time_us)
 {
   updateLoopFrequencyStats(time_us);
-  syncProtocolTelemetry();
 
   if (driver_ == nullptr || encoder_ == nullptr)
   {
@@ -395,6 +426,11 @@ void ClosedLoopController::process(uint32_t time_us)
   // 这里的逻辑是把编码器量化到一个可比较的相对位置值，
   // 后续 position_error 能直接反映目标和当前位置的偏差。
   uint16_t encoder_raw = encoder_->readRawAngle();
+  encoder_raw_angle_ = encoder_raw;
+  magnetic_field_high_ = encoder_->magneticFieldHigh();
+  magnetic_field_low_ = encoder_->magneticFieldLow();
+  reportMagneticFieldAlarm(magnetic_field_high_ || magnetic_field_low_);
+  syncProtocolTelemetry();
   int32_t actual_step = 0;
 
   if (encoder_raw > encoder_zero_)
@@ -588,7 +624,57 @@ int32_t ClosedLoopController::getPositionSteps() const
   return actual_step_;
 }
 
+int32_t ClosedLoopController::getTargetSteps() const
+{
+  return target_step_;
+}
+
 float ClosedLoopController::getFollowError() const
 {
   return follow_error_;
+}
+
+uint16_t ClosedLoopController::getEncoderRawAngle() const
+{
+  return encoder_raw_angle_;
+}
+
+uint32_t ClosedLoopController::getEncoderAngleMilliDegrees() const
+{
+  return static_cast<uint32_t>((static_cast<uint64_t>(encoder_raw_angle_) * 360000ULL) / 65536ULL);
+}
+
+bool ClosedLoopController::isMagneticFieldHigh() const
+{
+  return magnetic_field_high_;
+}
+
+bool ClosedLoopController::isMagneticFieldLow() const
+{
+  return magnetic_field_low_;
+}
+
+float ClosedLoopController::getPhaseCurrentTelemetryA() const
+{
+  return phase_a_current_a_;
+}
+
+float ClosedLoopController::getPhaseCurrentTelemetryB() const
+{
+  return phase_b_current_a_;
+}
+
+uint32_t ClosedLoopController::getPositionLoopHz() const
+{
+  return position_loop_hz_;
+}
+
+uint32_t ClosedLoopController::getVelocityLoopHz() const
+{
+  return velocity_loop_hz_;
+}
+
+uint32_t ClosedLoopController::getCurrentLoopHz() const
+{
+  return current_loop_hz_;
 }

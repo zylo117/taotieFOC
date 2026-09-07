@@ -15,20 +15,24 @@
 #include "usbd_int.h"
 
 #include "closed_loop_controller.h"
+#include "usb_cdc_protocol.h"
 #include "tmc2209_driver.h"
 #include "kth7823_encoder.h"
 
 TaskHandle_t led5_handler;
-TaskHandle_t led3_handler;
+TaskHandle_t control_handler;
+TaskHandle_t telemetry_handler;
 
 static ClosedLoopController g_controller;
 static Tmc2209Driver g_driver;
 static Tmc2209ProtocolAdapter g_protocol;
 static Kth7823Encoder g_encoder;
+static UsbCdcProtocolBridge g_usb_bridge;
 static usbd_core_type g_usb_core;
 
 void led5_task_function(void *pvParameters);
-void led3_task_function(void *pvParameters);
+void control_task_function(void *pvParameters);
+void telemetry_task_function(void *pvParameters);
 
 static void usb_device_init(void)
 {
@@ -87,37 +91,38 @@ int main(void)
   g_controller.setFaultPolicy(true, true);
   g_controller.enableLoopStats(true);
   g_controller.init(&g_driver, &g_encoder);
+  g_usb_bridge.init(&g_controller, &g_usb_core);
 
   taskENTER_CRITICAL();
 
   if (xTaskCreate((TaskFunction_t)led5_task_function,
                   (const char *)"LED5_task",
-                  (uint16_t)512,
+                  (uint16_t)256,
                   (void *)NULL,
                   (UBaseType_t)2,
                   (TaskHandle_t *)&led5_handler) != pdPASS)
   {
     printf("LED5 task could not be created as there was insufficient heap memory remaining.\r\n");
   }
-  else
-  {
-    printf("LED5 task was created successfully.\r\n");
-  }
 
-  if (xTaskCreate((TaskFunction_t)led3_task_function,
-                  (const char *)"LED3_task",
+  if (xTaskCreate((TaskFunction_t)control_task_function,
+                  (const char *)"Control_task",
                   (uint16_t)512,
                   (void *)NULL,
+                  (UBaseType_t)3,
+                  (TaskHandle_t *)&control_handler) != pdPASS)
+  {
+    printf("Control task could not be created as there was insufficient heap memory remaining.\r\n");
+  }
+  if (xTaskCreate((TaskFunction_t)telemetry_task_function,
+                  (const char *)"Telemetry_task",
+                  (uint16_t)384,
+                  (void *)NULL,
                   (UBaseType_t)2,
-                  (TaskHandle_t *)&led3_handler) != pdPASS)
+                  (TaskHandle_t *)&telemetry_handler) != pdPASS)
   {
-    printf("LED3 task could not be created as there was insufficient heap memory remaining.\r\n");
+    printf("Telemetry task could not be created as there was insufficient heap memory remaining.\r\n");
   }
-  else
-  {
-    printf("LED3 task was created successfully.\r\n");
-  }
-
   taskEXIT_CRITICAL();
   vTaskStartScheduler();
 }
@@ -128,20 +133,31 @@ void led5_task_function(void *pvParameters)
 
   while (1)
   {
-    g_controller.syncStepDirection();
-    g_controller.process((uint32_t)xTaskGetTickCount() * 1000UL);
     at32_led_toggle(LED5);
     vTaskDelay(1000);
   }
 }
 
-void led3_task_function(void *pvParameters)
+void control_task_function(void *pvParameters)
 {
   (void)pvParameters;
 
   while (1)
   {
-    at32_led_toggle(LED3);
-    vTaskDelay(500);
+    g_controller.syncStepDirection();
+    g_controller.process((uint32_t)xTaskGetTickCount() * 1000UL);
+    g_usb_bridge.poll();
+    vTaskDelay(1);
+  }
+}
+
+void telemetry_task_function(void *pvParameters)
+{
+  (void)pvParameters;
+
+  while (1)
+  {
+    g_usb_bridge.sendTelemetry();
+    vTaskDelay(20);
   }
 }

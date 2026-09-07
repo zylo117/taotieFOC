@@ -58,6 +58,8 @@ public:
   virtual ~AngleEncoder() = default;
   virtual bool init() = 0;
   virtual uint16_t readRawAngle() = 0;
+  virtual bool magneticFieldHigh() const { return false; }
+  virtual bool magneticFieldLow() const { return false; }
   virtual void setZero(uint16_t zero_angle) = 0;
   virtual bool calibrate(const EncoderCalibrationConfig &config, EncoderCalibrationResult *result) = 0;
 };

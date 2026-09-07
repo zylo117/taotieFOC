@@ -9,6 +9,8 @@ public:
   Kth7823Encoder();
   bool init() override;
   uint16_t readRawAngle() override;
+  bool magneticFieldHigh() const override;
+  bool magneticFieldLow() const override;
   void setZero(uint16_t zero_angle) override;
   bool calibrate(const EncoderCalibrationConfig &config, EncoderCalibrationResult *result) override;
 

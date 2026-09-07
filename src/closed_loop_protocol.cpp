@@ -86,6 +86,13 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_VEL_LOOP_HZ:
     case TMC2209_EXT_PARAM_CUR_LOOP_HZ:
     case TMC2209_EXT_PARAM_LAST_FAULT:
+    case TMC2209_EXT_PARAM_TARGET_POSITION:
+    case TMC2209_EXT_PARAM_ACTUAL_POSITION:
+    case TMC2209_EXT_PARAM_FOLLOW_ERROR:
+    case TMC2209_EXT_PARAM_ENCODER_RAW:
+    case TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG:
+    case TMC2209_EXT_PARAM_MAGNETIC_HIGH:
+    case TMC2209_EXT_PARAM_MAGNETIC_LOW:
       return true;
     default:
       return false;
@@ -242,45 +249,46 @@ const ClosedLoopDriverProtocolConfig &Tmc2209ProtocolAdapter::config() const
   return config_;
 }
 
-bool Tmc2209ProtocolAdapter::writeRegister(uint8_t reg, uint32_t value)
+bool Tmc2209ProtocolAdapter::writeRegister(uint16_t reg, uint32_t value)
 {
-  if (isCustomExtensionRegister(static_cast<uint16_t>(reg)))
+  if (isCustomExtensionRegister(reg))
   {
-    return setCustomParameter(static_cast<uint16_t>(reg), value);
+    return setCustomParameter(reg, value);
   }
 
-  if (!isOfficialTmcRegister(reg))
+  if (reg > 0xFFU || !isOfficialTmcRegister(static_cast<uint8_t>(reg)))
   {
     return false;
   }
 
-  const uint32_t request_word = buildRequestWord(reg, value);
+  const uint8_t official_reg = static_cast<uint8_t>(reg);
+  const uint32_t request_word = buildRequestWord(official_reg, value);
   const uint32_t payload = request_word & 0xFFFFUL;
-  return applyOfficialRegister(reg, payload);
+  return applyOfficialRegister(official_reg, payload);
 }
 
-bool Tmc2209ProtocolAdapter::readRegister(uint8_t reg, uint32_t *value)
+bool Tmc2209ProtocolAdapter::readRegister(uint16_t reg, uint32_t *value)
 {
-  if (isCustomExtensionRegister(static_cast<uint16_t>(reg)))
+  if (isCustomExtensionRegister(reg))
   {
-    const uint16_t id = static_cast<uint16_t>(reg);
-    return getCustomParameter(id, value);
+    return getCustomParameter(reg, value);
   }
 
-  if (!isOfficialTmcRegister(reg))
+  if (reg > 0xFFU || !isOfficialTmcRegister(static_cast<uint8_t>(reg)))
   {
     return false;
   }
 
   uint32_t raw_value = 0U;
-  if (!readOfficialRegister(reg, &raw_value))
+  const uint8_t official_reg = static_cast<uint8_t>(reg);
+  if (!readOfficialRegister(official_reg, &raw_value))
   {
     return false;
   }
 
   if (value != nullptr)
   {
-    *value = decodeResponseWord(reg, raw_value);
+    *value = decodeResponseWord(official_reg, raw_value);
   }
   return true;
 }
@@ -295,6 +303,40 @@ bool Tmc2209ProtocolAdapter::setCustomParameter(uint16_t id, uint32_t value)
   if (index >= 32U)
   {
     return false;
+  }
+
+  switch (id)
+  {
+    case TMC2209_EXT_PARAM_MICROSTEPS:
+      config_.microsteps = clamp_microsteps(static_cast<uint16_t>(value));
+      if (driver_ != nullptr) driver_->setMicrosteps(config_.microsteps);
+      break;
+    case TMC2209_EXT_PARAM_INTERPOLATION:
+      config_.interpolation_microsteps = clamp_microsteps(static_cast<uint16_t>(value));
+      if (driver_ != nullptr) driver_->setInterpolation(config_.microsteps, config_.interpolation_microsteps);
+      break;
+    case TMC2209_EXT_PARAM_RUN_CURRENT_A:
+      config_.run_current_a = clamp_current_a(static_cast<float>(value) / 1000.0f);
+      if (driver_ != nullptr) driver_->setRunCurrent(config_.run_current_a);
+      break;
+    case TMC2209_EXT_PARAM_HOLD_CURRENT_A:
+      config_.hold_current_a = clamp_current_a(static_cast<float>(value) / 1000.0f);
+      if (driver_ != nullptr) driver_->setHoldCurrent(config_.hold_current_a, config_.enable_hold_current);
+      break;
+    case TMC2209_EXT_PARAM_HOLD_ENABLED:
+      config_.enable_hold_current = value != 0U;
+      if (driver_ != nullptr) driver_->setHoldCurrent(config_.hold_current_a, config_.enable_hold_current);
+      break;
+    case TMC2209_EXT_PARAM_SILENT_MODE:
+      config_.silent_mode = value != 0U;
+      if (driver_ != nullptr) driver_->setSilentMode(config_.silent_mode);
+      break;
+    case TMC2209_EXT_PARAM_SENSE_RESISTOR:
+      config_.sense_resistor_ohm = static_cast<float>(value) / 1000.0f;
+      if (driver_ != nullptr) driver_->setSenseResistor(config_.sense_resistor_ohm);
+      break;
+    default:
+      break;
   }
   custom_parameters_[index] = value;
   return true;
@@ -311,7 +353,33 @@ bool Tmc2209ProtocolAdapter::getCustomParameter(uint16_t id, uint32_t *value) co
   {
     return false;
   }
-  *value = custom_parameters_[index];
+  switch (id)
+  {
+    case TMC2209_EXT_PARAM_MICROSTEPS:
+      *value = config_.microsteps;
+      break;
+    case TMC2209_EXT_PARAM_INTERPOLATION:
+      *value = config_.interpolation_microsteps;
+      break;
+    case TMC2209_EXT_PARAM_RUN_CURRENT_A:
+      *value = static_cast<uint32_t>(config_.run_current_a * 1000.0f);
+      break;
+    case TMC2209_EXT_PARAM_HOLD_CURRENT_A:
+      *value = static_cast<uint32_t>(config_.hold_current_a * 1000.0f);
+      break;
+    case TMC2209_EXT_PARAM_HOLD_ENABLED:
+      *value = config_.enable_hold_current ? 1U : 0U;
+      break;
+    case TMC2209_EXT_PARAM_SILENT_MODE:
+      *value = config_.silent_mode ? 1U : 0U;
+      break;
+    case TMC2209_EXT_PARAM_SENSE_RESISTOR:
+      *value = static_cast<uint32_t>(config_.sense_resistor_ohm * 1000.0f);
+      break;
+    default:
+      *value = custom_parameters_[index];
+      break;
+  }
   return true;
 }
 

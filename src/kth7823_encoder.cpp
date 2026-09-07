@@ -20,11 +20,6 @@ Kth7823Encoder::Kth7823Encoder() : zero_angle_(0U)
 
 bool Kth7823Encoder::init()
 {
-  spi_init_type spi_init_struct;
-
-  crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);
-  crm_periph_clock_enable(CRM_SPI2_PERIPH_CLOCK, TRUE);
-
   encoder_common::encoder_gpio_config_output(KTH7823_CS_PORT, KTH7823_CS_PIN);
   encoder_common::encoder_gpio_config_output(KTH7823_SCLK_PORT, KTH7823_SCLK_PIN);
   encoder_common::encoder_gpio_config_output(KTH7823_MOSI_PORT, KTH7823_MOSI_PIN);
@@ -35,17 +30,6 @@ bool Kth7823Encoder::init()
 
   encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, true);
 
-  spi_default_para_init(&spi_init_struct);
-  spi_init_struct.transmission_mode = SPI_TRANSMIT_FULL_DUPLEX;
-  spi_init_struct.master_slave_mode = SPI_MODE_MASTER;
-  spi_init_struct.mclk_freq_division = SPI_MCLK_DIV_8;
-  spi_init_struct.first_bit_transmission = SPI_FIRST_BIT_MSB;
-  spi_init_struct.frame_bit_num = SPI_FRAME_16BIT;
-  spi_init_struct.clock_polarity = SPI_CLOCK_POLARITY_LOW;
-  spi_init_struct.clock_phase = SPI_CLOCK_PHASE_1EDGE;
-  spi_init_struct.cs_mode_selection = SPI_CS_SOFTWARE_MODE;
-  spi_init(KTH7823_SPI, &spi_init_struct);
-  spi_enable(KTH7823_SPI, TRUE);
 
   zero_angle_ = readRawAngle();
   return true;
@@ -55,9 +39,19 @@ uint16_t Kth7823Encoder::readRawAngle()
 {
   uint16_t raw = 0U;
   encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, false);
-  raw = encoder_common::encoder_spi2_rw16(0x0000U);
+  raw = encoder_common::encoder_spi2_rw16(0x0300U);
   encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, true);
   return raw;
+}
+
+bool Kth7823Encoder::magneticFieldHigh() const
+{
+  return gpio_input_data_bit_read(KTH7823_MGH_PORT, KTH7823_MGH_PIN) != 0U;
+}
+
+bool Kth7823Encoder::magneticFieldLow() const
+{
+  return gpio_input_data_bit_read(KTH7823_MGL_PORT, KTH7823_MGL_PIN) != 0U;
 }
 
 void Kth7823Encoder::setZero(uint16_t zero_angle)

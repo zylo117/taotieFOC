@@ -71,7 +71,14 @@ enum Tmc2209CustomExtensionRegister
   TMC2209_EXT_PARAM_POS_LOOP_HZ = 0x10EU,
   TMC2209_EXT_PARAM_VEL_LOOP_HZ = 0x10FU,
   TMC2209_EXT_PARAM_CUR_LOOP_HZ = 0x110U,
-  TMC2209_EXT_PARAM_LAST_FAULT = 0x111U
+  TMC2209_EXT_PARAM_LAST_FAULT = 0x111U,
+  TMC2209_EXT_PARAM_TARGET_POSITION = 0x112U,
+  TMC2209_EXT_PARAM_ACTUAL_POSITION = 0x113U,
+  TMC2209_EXT_PARAM_FOLLOW_ERROR = 0x114U
+  ,TMC2209_EXT_PARAM_ENCODER_RAW = 0x115U
+  ,TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG = 0x116U
+  ,TMC2209_EXT_PARAM_MAGNETIC_HIGH = 0x117U
+  ,TMC2209_EXT_PARAM_MAGNETIC_LOW = 0x118U
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -92,10 +99,10 @@ public:
   virtual const ClosedLoopDriverProtocolConfig &config() const = 0;
 
   // 写入一个协议寄存器，例如 TMC 官方寄存器或扩展参数。
-  virtual bool writeRegister(uint8_t reg, uint32_t value) = 0;
+  virtual bool writeRegister(uint16_t reg, uint32_t value) = 0;
 
   // 读取一个协议寄存器的当前值。
-  virtual bool readRegister(uint8_t reg, uint32_t *value) = 0;
+  virtual bool readRegister(uint16_t reg, uint32_t *value) = 0;
 
   // 设置闭环扩展参数（例如微步数、当前、静音模式等）。
   virtual bool setCustomParameter(uint16_t id, uint32_t value) = 0;
@@ -117,8 +124,8 @@ public:
   bool init() override;
   bool configure(const ClosedLoopDriverProtocolConfig &config) override;
   const ClosedLoopDriverProtocolConfig &config() const override;
-  bool writeRegister(uint8_t reg, uint32_t value) override;
-  bool readRegister(uint8_t reg, uint32_t *value) override;
+  bool writeRegister(uint16_t reg, uint32_t value) override;
+  bool readRegister(uint16_t reg, uint32_t *value) override;
   bool setCustomParameter(uint16_t id, uint32_t value) override;
   bool getCustomParameter(uint16_t id, uint32_t *value) const override;
   void attachDriver(StepperDriver *driver) override;

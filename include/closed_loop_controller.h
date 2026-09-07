@@ -104,10 +104,10 @@ public:
   void setProtocol(ClosedLoopDriverProtocol *protocol);
 
   // 对外写入指定寄存器参数。
-  bool writeParameter(uint8_t reg, uint32_t value);
+  bool writeParameter(uint16_t reg, uint32_t value);
 
   // 对外读取指定寄存器参数。
-  bool readParameter(uint8_t reg, uint32_t *value);
+  bool readParameter(uint16_t reg, uint32_t *value);
 
   // 读取外部步进方向/使能/步进状态，并同步到闭环控制器状态机。
   void syncStepDirection();
@@ -148,8 +148,22 @@ public:
   // 读取当前闭环位置步数。
   int32_t getPositionSteps() const;
 
+  // 读取目标位置步数。
+  int32_t getTargetSteps() const;
+  uint16_t getEncoderRawAngle() const;
+  uint32_t getEncoderAngleMilliDegrees() const;
+  bool isMagneticFieldHigh() const;
+  bool isMagneticFieldLow() const;
+
   // 返回当前位置与目标之间的跟随误差。
   float getFollowError() const;
+
+  // 读取当前相电流和 loop 频率，用于 USB telemetry 回传。
+  float getPhaseCurrentTelemetryA() const;
+  float getPhaseCurrentTelemetryB() const;
+  uint32_t getPositionLoopHz() const;
+  uint32_t getVelocityLoopHz() const;
+  uint32_t getCurrentLoopHz() const;
 
 private:
   void updateLoopFrequencyStats(uint32_t time_us);
@@ -177,6 +191,9 @@ private:
   volatile float target_velocity_rps_;
   volatile uint32_t step_period_us_;
   volatile uint16_t encoder_zero_;
+  volatile uint16_t encoder_raw_angle_;
+  volatile bool magnetic_field_high_;
+  volatile bool magnetic_field_low_;
   volatile uint32_t last_process_time_us_;
   volatile uint8_t last_step_state_;
   volatile uint8_t last_dir_state_;
