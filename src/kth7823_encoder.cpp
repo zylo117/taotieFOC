@@ -14,7 +14,9 @@ uint16_t normalize_angle(uint16_t raw, uint16_t zero)
 }
 }
 
-Kth7823Encoder::Kth7823Encoder() : zero_angle_(0U)
+Kth7823Encoder::Kth7823Encoder()
+  : zero_angle_(0U), last_raw_frame_(0U), last_tx_frame_(0U), read_count_(0U),
+    all_ones_count_(0U), all_zeros_count_(0U)
 {
 }
 
@@ -38,7 +40,9 @@ bool Kth7823Encoder::init()
   gpio_init(KTH7823_SCLK_PORT, &gpio_init_struct);
 
   gpio_default_para_init(&gpio_init_struct);
-  gpio_init_struct.gpio_mode = GPIO_MODE_INPUT;
+  gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
+  gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
+  gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
   gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
   gpio_init_struct.gpio_pins = KTH7823_MISO_PIN;
   gpio_init(KTH7823_MISO_PORT, &gpio_init_struct);
@@ -73,10 +77,51 @@ bool Kth7823Encoder::init()
 uint16_t Kth7823Encoder::readRawAngle()
 {
   uint16_t raw = 0U;
+  last_tx_frame_ = 0x0300U;
   encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, false);
-  raw = encoder_common::encoder_spi2_rw16(0x0300U);
+  raw = encoder_common::encoder_spi2_rw16(last_tx_frame_);
   encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, true);
+  last_raw_frame_ = raw;
+  read_count_++;
+  if (raw == 0xFFFFU)
+  {
+    all_ones_count_++;
+  }
+  else if (raw == 0x0000U)
+  {
+    all_zeros_count_++;
+  }
   return raw;
+}
+
+uint16_t Kth7823Encoder::lastRawFrame() const
+{
+  return last_raw_frame_;
+}
+
+uint16_t Kth7823Encoder::lastTxFrame() const
+{
+  return last_tx_frame_;
+}
+
+uint32_t Kth7823Encoder::readCount() const
+{
+  return read_count_;
+}
+
+uint32_t Kth7823Encoder::allOnesCount() const
+{
+  return all_ones_count_;
+}
+
+uint32_t Kth7823Encoder::allZerosCount() const
+{
+  return all_zeros_count_;
+}
+
+uint8_t Kth7823Encoder::misoLevel() const
+{
+  return gpio_input_data_bit_read(KTH7823_MISO_PORT, KTH7823_MISO_PIN) != 0U ? 1U : 0U;
 }
 
 bool Kth7823Encoder::magneticFieldHigh() const

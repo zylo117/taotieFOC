@@ -440,7 +440,6 @@ void ClosedLoopController::process(uint32_t time_us)
   magnetic_field_high_ = encoder_->magneticFieldHigh();
   magnetic_field_low_ = encoder_->magneticFieldLow();
   reportMagneticFieldAlarm(magnetic_field_high_ || magnetic_field_low_);
-  syncProtocolTelemetry();
   int32_t actual_step = 0;
 
   actual_step = static_cast<int32_t>(encoder_raw) - static_cast<int32_t>(encoder_zero_);
@@ -455,6 +454,7 @@ void ClosedLoopController::process(uint32_t time_us)
 
   actual_step_ = actual_step;
   follow_error_ = static_cast<float>(target_step_ - actual_step_);
+  syncProtocolTelemetry();
 
   if (last_process_time_us_ == 0U)
   {

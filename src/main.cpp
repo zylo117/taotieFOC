@@ -22,6 +22,7 @@
 TaskHandle_t led5_handler;
 TaskHandle_t control_handler;
 TaskHandle_t telemetry_handler;
+TaskHandle_t usb_handler;
 
 static ClosedLoopController g_controller;
 static Tmc2209Driver g_driver;
@@ -33,6 +34,18 @@ static usbd_core_type g_usb_core;
 void led5_task_function(void *pvParameters);
 void control_task_function(void *pvParameters);
 void telemetry_task_function(void *pvParameters);
+void usb_task_function(void *pvParameters);
+
+static void control_timer_init(void)
+{
+  crm_periph_clock_enable(CRM_TMR4_PERIPH_CLOCK, TRUE);
+  tmr_base_init(TMR4, 1000U - 1U, system_core_clock / 20000000U - 1U);
+  tmr_cnt_dir_set(TMR4, TMR_COUNT_UP);
+  tmr_clock_source_div_set(TMR4, TMR_CLOCK_DIV1);
+  tmr_interrupt_enable(TMR4, TMR_OVF_INT, TRUE);
+  nvic_irq_enable(TMR4_GLOBAL_IRQn, 1U, 0U);
+  tmr_counter_enable(TMR4, TRUE);
+}
 
 static void usb_device_init(void)
 {
@@ -56,6 +69,20 @@ static void usb_device_init(void)
 extern "C" void USBFS_L_CAN1_RX0_IRQHandler(void)
 {
   usbd_irq_handler(&g_usb_core);
+}
+
+extern "C" void TMR4_GLOBAL_IRQHandler(void)
+{
+  if (tmr_interrupt_flag_get(TMR4, TMR_OVF_FLAG) != RESET)
+  {
+    BaseType_t higher_priority_task_woken = pdFALSE;
+    tmr_flag_clear(TMR4, TMR_OVF_FLAG);
+    if (control_handler != NULL)
+    {
+      vTaskNotifyGiveFromISR(control_handler, &higher_priority_task_woken);
+      portYIELD_FROM_ISR(higher_priority_task_woken);
+    }
+  }
 }
 
 extern "C" void usb_delay_ms(uint32_t ms)
@@ -87,11 +114,16 @@ int main(void)
   g_protocol.attachDriver(&g_driver);
   g_protocol.configure({32U, 256U, 0.8f, 0.2f, true, true, 0.110f, true, TMC2209_UART_GPIO, TMC2209_UART_PIN, 115200U});
   g_encoder.init();
+    printf("KTH7823 init: tx=0x%04X raw=0x%04X MISO=%u MGH=%u MGL=%u\r\n",
+      g_encoder.lastTxFrame(), g_encoder.lastRawFrame(), g_encoder.misoLevel(),
+      g_encoder.magneticFieldHigh() ? 1U : 0U,
+      g_encoder.magneticFieldLow() ? 1U : 0U);
   g_controller.setProtocol(&g_protocol);
   g_controller.setFaultPolicy(true, true);
   g_controller.enableLoopStats(true);
   g_controller.init(&g_driver, &g_encoder);
   g_usb_bridge.init(&g_controller, &g_usb_core);
+  control_timer_init();
 
   taskENTER_CRITICAL();
 
@@ -123,6 +155,16 @@ int main(void)
   {
     printf("Telemetry task could not be created as there was insufficient heap memory remaining.\r\n");
   }
+
+  if (xTaskCreate((TaskFunction_t)usb_task_function,
+                  (const char *)"USB_task",
+                  (uint16_t)256,
+                  (void *)NULL,
+                  (UBaseType_t)2,
+                  (TaskHandle_t *)&usb_handler) != pdPASS)
+  {
+    printf("USB task could not be created as there was insufficient heap memory remaining.\r\n");
+  }
   taskEXIT_CRITICAL();
   vTaskStartScheduler();
 }
@@ -141,23 +183,50 @@ void led5_task_function(void *pvParameters)
 void control_task_function(void *pvParameters)
 {
   (void)pvParameters;
+  uint32_t control_time_us = 0U;
 
   while (1)
   {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     g_controller.syncStepDirection();
-    g_controller.process((uint32_t)xTaskGetTickCount() * 1000UL);
-    g_usb_bridge.poll();
-    vTaskDelay(1);
+    control_time_us += 50U;
+    g_controller.process(control_time_us);
   }
 }
 
 void telemetry_task_function(void *pvParameters)
 {
   (void)pvParameters;
+  TickType_t last_log_tick = xTaskGetTickCount();
 
   while (1)
   {
     g_usb_bridge.sendTelemetry();
+    if ((xTaskGetTickCount() - last_log_tick) >= pdMS_TO_TICKS(500))
+    {
+          const uint32_t angle_mdeg = (static_cast<uint32_t>(g_encoder.lastRawFrame()) * 360000UL) / 65536UL;
+            printf("KTH7823: tx=0x%04X raw=0x%04X angle=%lu.%03lu MISO=%u MGH=%u MGL=%u reads=%lu ff=%lu 00=%lu\r\n",
+             g_encoder.lastTxFrame(), g_encoder.lastRawFrame(),
+              static_cast<unsigned long>(angle_mdeg / 1000UL),
+              static_cast<unsigned long>(angle_mdeg % 1000UL),
+             g_encoder.misoLevel(), g_encoder.magneticFieldHigh() ? 1U : 0U,
+             g_encoder.magneticFieldLow() ? 1U : 0U,
+             static_cast<unsigned long>(g_encoder.readCount()),
+             static_cast<unsigned long>(g_encoder.allOnesCount()),
+             static_cast<unsigned long>(g_encoder.allZerosCount()));
+      last_log_tick = xTaskGetTickCount();
+    }
     vTaskDelay(20);
+  }
+}
+
+void usb_task_function(void *pvParameters)
+{
+  (void)pvParameters;
+
+  while (1)
+  {
+    g_usb_bridge.poll();
+    vTaskDelay(1);
   }
 }

@@ -509,18 +509,6 @@
             </div>
           </div>
 
-          <div class="danger-box">
-            <strong>单线 UART 说明：</strong><br />
-            常见 USB-TTL 适配器通常没有真正的单线半双工支持；多数场景下推荐使用双线 TX/RX + GND。只有特定硬件或 MCU 端口支持 开漏 / 半双工单线模式时，才可工作。若你用的是标准 CH340 / CP2102 / FT232，通常需要双线模式。
-          </div>
-
-          <div class="field mt">
-            <label>协议帮助</label>
-            <div class="tiny">
-              这里按 TMC 兼容寄存器模型工作：官方寄存器保留真实地址，闭环扩展参数使用 0x100 以上区间，读写与 Klipper 兼容工作流相同。
-            </div>
-          </div>
-
           <div class="status-grid">
             <div class="status-item">
               <div class="label">A 相电流</div>
@@ -546,6 +534,18 @@
               <div class="label">错误信息</div>
               <div class="value" id="faultSummaryValue">正常</div>
             </div>
+            <div class="status-item">
+              <div class="label">磁编码器角度</div>
+              <div class="value" id="encoderAngleValue">0.00°</div>
+            </div>
+            <div class="status-item">
+              <div class="label">编码器原始帧</div>
+              <div class="value" id="encoderRawValue">0x0000</div>
+            </div>
+            <div class="status-item">
+              <div class="label">磁场状态 MGH / MGL</div>
+              <div class="value" id="magneticLevelValue">正常 / 正常</div>
+            </div>
           </div>
 
           <div class="log" id="logArea">
@@ -553,6 +553,23 @@
             <p class="log-line">[INFO] 当前支持：TMC2209 风格寄存器读写 + 自定义闭环参数</p>
           </div>
         </div>
+        
+          <div class="danger-box">
+            <strong>单线 UART 说明：</strong><br />
+            常见 USB-TTL 适配器通常没有真正的单线半双工支持；多数场景下推荐使用双线 TX/RX + GND。只有特定硬件或 MCU 端口支持 开漏 / 半双工单线模式时，才可工作。若你用的是标准 CH340 / CP2102 / FT232，通常需要双线模式。
+          </div>
+
+          <div class="field mt">
+            <label>协议帮助</label>
+            <div class="tiny">
+              这里按 TMC 兼容寄存器模型工作：官方寄存器保留真实地址，闭环扩展参数使用 0x100 以上区间，读写与 Klipper 兼容工作流相同。
+            </div>
+          </div>
+
+          <div class="field mt">
+            <label>寄存器地址与含义</label>
+            <div class="tiny" id="registerMap"></div>
+          </div>
       </aside>
 
       <div class="config-scroll">
@@ -738,6 +755,13 @@
       posLoopHz: 0,
       velLoopHz: 0,
       curLoopHz: 0
+      ,encoderRaw: 0
+      ,encoderAngleDeg: 0
+      ,magneticHigh: false
+      ,magneticLow: false
+      ,actualPosition: 0
+      ,lastEncoderLogAt: 0
+      ,rxBuffer: new Uint8Array(0)
     };
 
     const OFFICIAL_REGS = {
@@ -771,13 +795,67 @@
       SILENT_MODE: 0x105,
       SENSE_RESISTOR: 0x106,
       CLOSED_LOOP_ENABLE: 0x107
+      ,FAULT_STATUS: 0x108
+      ,ENCODER_FAULT: 0x109
+      ,MAGNETIC_FAULT: 0x10A
+      ,OUTPUT_STOP: 0x10B
+      ,PHASE_A_CURRENT_MA: 0x10C
+      ,PHASE_B_CURRENT_MA: 0x10D
+      ,POSITION_LOOP_HZ: 0x10E
+      ,VELOCITY_LOOP_HZ: 0x10F
+      ,CURRENT_LOOP_HZ: 0x110
+      ,LAST_FAULT: 0x111
+      ,TARGET_POSITION: 0x112
+      ,ACTUAL_POSITION: 0x113
+      ,FOLLOW_ERROR: 0x114
+      ,ENCODER_RAW: 0x115
+      ,ENCODER_ANGLE_MDEG: 0x116
+      ,MAGNETIC_HIGH: 0x117
+      ,MAGNETIC_LOW: 0x118
+      ,ENCODER_ZERO: 0x119
     };
+
+    const REGISTER_DESCRIPTIONS = new Map([
+      [OFFICIAL_REGS.GCONF, ['0x0000', 'GCONF', 'TMC 全局配置 / 单线 UART 选择']],
+      [OFFICIAL_REGS.GSTAT, ['0x0001', 'GSTAT', 'TMC 状态清除寄存器']],
+      [OFFICIAL_REGS.DRV_CONF, ['0x000A', 'DRV_CONF', '驱动器模式配置 / 静音模式']],
+      [OFFICIAL_REGS.IHOLD_IRUN, ['0x0010', 'IHOLD_IRUN', '保持电流与运行电流']],
+      [OFFICIAL_REGS.TSTEP, ['0x0012', 'TSTEP', '步进周期']],
+      [OFFICIAL_REGS.CHOPCONF, ['0x006C', 'CHOPCONF', '斩波与微步配置']],
+      [OFFICIAL_REGS.DRV_STATUS, ['0x006F', 'DRV_STATUS', '驱动状态']],
+      [CUSTOM_REGS.MICROSTEPS, ['0x0100', 'MICROSTEPS', '微步数']],
+      [CUSTOM_REGS.INTERPOLATION, ['0x0101', 'INTERPOLATION', '插值微步数']],
+      [CUSTOM_REGS.RUN_CURRENT_A, ['0x0102', 'RUN_CURRENT_A', '运行电流，单位 A × 1000']],
+      [CUSTOM_REGS.HOLD_CURRENT_A, ['0x0103', 'HOLD_CURRENT_A', '保持电流，单位 A × 1000']],
+      [CUSTOM_REGS.CLOSED_LOOP_ENABLE, ['0x0107', 'CLOSED_LOOP_ENABLE', '闭环使能']],
+      [CUSTOM_REGS.FAULT_STATUS, ['0x0108', 'FAULT_STATUS', '故障位图：bit0 编码器，bit1 磁场，bit2 停输出']],
+      [CUSTOM_REGS.ENCODER_FAULT, ['0x0109', 'ENCODER_FAULT', '编码器故障']],
+      [CUSTOM_REGS.MAGNETIC_FAULT, ['0x010A', 'MAGNETIC_FAULT', '磁场报警']],
+      [CUSTOM_REGS.OUTPUT_STOP, ['0x010B', 'OUTPUT_STOP', '输出已停止']],
+      [CUSTOM_REGS.PHASE_A_CURRENT_MA, ['0x010C', 'PHASE_A_CURRENT', 'A 相电流，单位 mA']],
+      [CUSTOM_REGS.PHASE_B_CURRENT_MA, ['0x010D', 'PHASE_B_CURRENT', 'B 相电流，单位 mA']],
+      [CUSTOM_REGS.POSITION_LOOP_HZ, ['0x010E', 'POSITION_LOOP_HZ', '位置环频率，单位 Hz']],
+      [CUSTOM_REGS.VELOCITY_LOOP_HZ, ['0x010F', 'VELOCITY_LOOP_HZ', '速度环频率，单位 Hz']],
+      [CUSTOM_REGS.CURRENT_LOOP_HZ, ['0x0110', 'CURRENT_LOOP_HZ', '电流环频率，单位 Hz']],
+      [CUSTOM_REGS.LAST_FAULT, ['0x0111', 'LAST_FAULT', '最近一次故障位图']],
+      [CUSTOM_REGS.TARGET_POSITION, ['0x0112', 'TARGET_POSITION', '目标位置，单位闭环步数']],
+      [CUSTOM_REGS.ACTUAL_POSITION, ['0x0113', 'ACTUAL_POSITION', '当前位置，单位闭环步数']],
+      [CUSTOM_REGS.FOLLOW_ERROR, ['0x0114', 'FOLLOW_ERROR', '跟随误差，单位闭环步数']]
+      ,[CUSTOM_REGS.ENCODER_RAW, ['0x0115', 'ENCODER_RAW', 'KTH7823 原始角度，0 至 65535']]
+      ,[CUSTOM_REGS.ENCODER_ANGLE_MDEG, ['0x0116', 'ENCODER_ANGLE', '磁编码器角度，单位 0.001°']]
+      ,[CUSTOM_REGS.MAGNETIC_HIGH, ['0x0117', 'MAGNETIC_HIGH', 'MGH 磁场过高输入']]
+      ,[CUSTOM_REGS.MAGNETIC_LOW, ['0x0118', 'MAGNETIC_LOW', 'MGL 磁场过低输入']]
+      ,[CUSTOM_REGS.ENCODER_ZERO, ['0x0119', 'ENCODER_ZERO', '编码器启动零点，原始角度值']]
+    ]);
 
     function log(message) {
       const line = document.createElement('p');
       line.className = 'log-line';
       line.textContent = message;
       logArea.appendChild(line);
+      while (logArea.children.length > 200) {
+        logArea.removeChild(logArea.firstElementChild);
+      }
       logArea.scrollTop = logArea.scrollHeight;
     }
 
@@ -807,6 +885,15 @@
       document.getElementById('velLoopRateValue').textContent = `${state.velLoopHz} Hz`;
       document.getElementById('curLoopRateValue').textContent = `${state.curLoopHz} Hz`;
       document.getElementById('faultSummaryValue').textContent = state.faultSummary;
+      document.getElementById('encoderAngleValue').textContent = `${state.encoderAngleDeg.toFixed(2)}°`;
+      document.getElementById('encoderRawValue').textContent = `0x${state.encoderRaw.toString(16).padStart(4, '0').toUpperCase()}`;
+      document.getElementById('magneticLevelValue').textContent = `${state.magneticHigh ? '报警' : '正常'} / ${state.magneticLow ? '报警' : '正常'}`;
+    }
+
+    function renderRegisterMap() {
+      const rows = [...REGISTER_DESCRIPTIONS.values()].map(([address, name, description]) =>
+        `<div>${address}　<strong>${name}</strong>　${description}</div>`).join('');
+      document.getElementById('registerMap').innerHTML = rows;
     }
 
     function clamp(value, min, max) {
@@ -852,8 +939,9 @@
     }
 
     function parseFrame(raw) {
-      if (!raw || raw.length < 9) return null;
+      if (!raw || raw.length < 10) return null;
       const arr = new Uint8Array(raw);
+      if (arr[0] !== 0x55 || arr[1] !== 0xAA || crc8(arr.slice(0, 9)) !== arr[9]) return null;
       const cmd = arr[2];
       const reg = (arr[3] << 8) | arr[4];
       const value = (
@@ -863,6 +951,71 @@
         arr[8]
       ) >>> 0;
       return { cmd, reg, value };
+    }
+
+    function appendRxBytes(value) {
+      const incoming = new Uint8Array(value);
+      const merged = new Uint8Array(state.rxBuffer.length + incoming.length);
+      merged.set(state.rxBuffer);
+      merged.set(incoming, state.rxBuffer.length);
+      state.rxBuffer = merged;
+
+      while (state.rxBuffer.length >= 10) {
+        let start = 0;
+        while (start + 1 < state.rxBuffer.length &&
+               (state.rxBuffer[start] !== 0x55 || state.rxBuffer[start + 1] !== 0xAA)) start++;
+        if (start > 0) state.rxBuffer = state.rxBuffer.slice(start);
+        if (state.rxBuffer.length < 10) return;
+        const frame = parseFrame(state.rxBuffer.slice(0, 10));
+        if (!frame) {
+          state.rxBuffer = state.rxBuffer.slice(1);
+          continue;
+        }
+        state.rxBuffer = state.rxBuffer.slice(10);
+        handleIncomingFrame(frame);
+      }
+    }
+
+    function handleIncomingFrame(frame) {
+      const description = REGISTER_DESCRIPTIONS.get(frame.reg);
+      const name = description ? description[1] : 'UNKNOWN';
+      const isTelemetry = frame.cmd === 0x10;
+      const diagnosticRegister = frame.reg === CUSTOM_REGS.ENCODER_RAW ||
+        frame.reg === CUSTOM_REGS.ENCODER_ANGLE_MDEG ||
+        frame.reg === CUSTOM_REGS.MAGNETIC_HIGH ||
+        frame.reg === CUSTOM_REGS.MAGNETIC_LOW;
+      if (!isTelemetry || !diagnosticRegister) {
+        log(`[RX] ${description ? description[0] : '0x' + frame.reg.toString(16).padStart(4, '0')} ${name} = ${frame.value}`);
+      }
+
+      if (frame.reg === CUSTOM_REGS.PHASE_A_CURRENT_MA) state.phaseACurrentA = frame.value / 1000;
+      if (frame.reg === CUSTOM_REGS.PHASE_B_CURRENT_MA) state.phaseBCurrentA = frame.value / 1000;
+      if (frame.reg === CUSTOM_REGS.POSITION_LOOP_HZ) state.posLoopHz = frame.value;
+      if (frame.reg === CUSTOM_REGS.VELOCITY_LOOP_HZ) state.velLoopHz = frame.value;
+      if (frame.reg === CUSTOM_REGS.CURRENT_LOOP_HZ) state.curLoopHz = frame.value;
+      if (frame.reg === CUSTOM_REGS.ENCODER_FAULT) state.encoderFault = frame.value !== 0;
+      if (frame.reg === CUSTOM_REGS.MAGNETIC_FAULT) state.magneticFault = frame.value !== 0;
+      if (frame.reg === CUSTOM_REGS.OUTPUT_STOP) state.outputStopped = frame.value !== 0;
+      if (frame.reg === CUSTOM_REGS.ENCODER_RAW) state.encoderRaw = frame.value;
+      if (frame.reg === CUSTOM_REGS.ENCODER_ANGLE_MDEG) {
+        state.encoderAngleDeg = (frame.value | 0) / 1000;
+        setCurrentAngle(state.encoderAngleDeg);
+      }
+      if (frame.reg === CUSTOM_REGS.MAGNETIC_HIGH) state.magneticHigh = frame.value !== 0;
+      if (frame.reg === CUSTOM_REGS.MAGNETIC_LOW) state.magneticLow = frame.value !== 0;
+      if (frame.reg === CUSTOM_REGS.ACTUAL_POSITION) {
+        state.actualPosition = frame.value | 0;
+      }
+      updateFaultStatus();
+      updateTelemetryDisplay();
+
+      if (isTelemetry && frame.reg === CUSTOM_REGS.MAGNETIC_LOW) {
+        const now = performance.now();
+        if (!state.lastEncoderLogAt || now - state.lastEncoderLogAt >= 500) {
+          log(`[KTH7823] raw=0x${state.encoderRaw.toString(16).padStart(4, '0').toUpperCase()} angle=${state.encoderAngleDeg.toFixed(3)}° MGH=${state.magneticHigh ? 1 : 0} MGL=${state.magneticLow ? 1 : 0}`);
+          state.lastEncoderLogAt = now;
+        }
+      }
     }
 
     async function readRegister(reg) {
@@ -919,13 +1072,7 @@
           const { value, done } = await state.reader.read();
           if (done) break;
           if (!value || value.length === 0) continue;
-          const frame = parseFrame(value);
-          if (frame) {
-            log(`[RX] reg=0x${frame.reg.toString(16).padStart(4, '0')} value=${frame.value}`);
-            if (frame.reg === OFFICIAL_REGS.TSTEP || frame.reg === 0x100) {
-              // 这里模拟显示处理，真实设备可按协议解析。
-            }
-          }
+          appendRxBytes(value);
         }
       } catch (err) {
         log('[ERROR] 串口读取出现错误：' + err.message);
@@ -1020,11 +1167,11 @@
       state.targetPosition = target;
       log('[INFO] 发送目标位置：' + target + '°');
       if (state.connected) {
-        await writeRegister(0x100, Math.round(target));
+        await writeRegister(CUSTOM_REGS.TARGET_POSITION, Math.round(target));
       }
     }
 
-    function applyAllConfig() {
+    async function applyAllConfig() {
       const config = {
         microsteps: Number(document.getElementById('microsteps').value || 32),
         interpMicrosteps: Number(document.getElementById('interpMicrosteps').value || 256),
@@ -1042,6 +1189,14 @@
 
       state.phaseACurrentA = Number(document.getElementById('phaseACurrentValue').textContent.replace(/[^0-9.]/g, '')) || 0;
       state.phaseBCurrentA = Number(document.getElementById('phaseBCurrentValue').textContent.replace(/[^0-9.]/g, '')) || 0;
+      if (state.connected) {
+        await writeRegister(CUSTOM_REGS.MICROSTEPS, config.microsteps);
+        await writeRegister(CUSTOM_REGS.INTERPOLATION, config.interpMicrosteps);
+        await writeRegister(CUSTOM_REGS.RUN_CURRENT_A, Math.round(config.runCurrent * 1000));
+        await writeRegister(CUSTOM_REGS.HOLD_CURRENT_A, Math.round(config.holdCurrent * 1000));
+        await writeRegister(CUSTOM_REGS.SILENT_MODE, config.silent);
+        await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, config.enabled);
+      }
       log('[INFO] 应用闭环配置：' + JSON.stringify(config));
     }
 
@@ -1056,7 +1211,12 @@
         OFFICIAL_REGS.DRV_STATUS,
         CUSTOM_REGS.RUN_CURRENT_A,
         CUSTOM_REGS.HOLD_CURRENT_A,
-        CUSTOM_REGS.CLOSED_LOOP_ENABLE
+        CUSTOM_REGS.CLOSED_LOOP_ENABLE,
+        CUSTOM_REGS.ENCODER_RAW,
+        CUSTOM_REGS.ENCODER_ANGLE_MDEG,
+        CUSTOM_REGS.MAGNETIC_HIGH,
+        CUSTOM_REGS.MAGNETIC_LOW,
+        CUSTOM_REGS.ENCODER_ZERO
       ];
       regs.forEach(async (reg) => {
         await readRegister(reg);
@@ -1109,6 +1269,7 @@
 
     bindDialDrag();
     bindControls();
+    renderRegisterMap();
     updateDialVisual();
     updateFaultStatus();
     updateTelemetryDisplay();
