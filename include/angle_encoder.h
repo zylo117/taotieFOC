@@ -8,17 +8,17 @@
 
 #define KTH7823_SPI              SPI2
 #define KTH7823_SCLK_PORT        GPIOB
-#define KTH7823_SCLK_PIN         GPIO_PINS_11
+#define KTH7823_SCLK_PIN         GPIO_PINS_13
 #define KTH7823_MISO_PORT        GPIOB
-#define KTH7823_MISO_PIN         GPIO_PINS_2
+#define KTH7823_MISO_PIN         GPIO_PINS_14
 #define KTH7823_MOSI_PORT        GPIOB
-#define KTH7823_MOSI_PIN         GPIO_PINS_1
+#define KTH7823_MOSI_PIN         GPIO_PINS_15
 #define KTH7823_CS_PORT          GPIOB
-#define KTH7823_CS_PIN           GPIO_PINS_10
+#define KTH7823_CS_PIN           GPIO_PINS_12
 #define KTH7823_MGH_PORT         GPIOB
-#define KTH7823_MGH_PIN          GPIO_PINS_13
-#define KTH7823_MGL_PORT         GPIOB
-#define KTH7823_MGL_PIN          GPIO_PINS_12
+#define KTH7823_MGH_PIN          GPIO_PINS_1
+#define KTH7823_MGL_PORT         GPIOA
+#define KTH7823_MGL_PIN          GPIO_PINS_2
 
 struct EncoderCalibrationConfig
 {

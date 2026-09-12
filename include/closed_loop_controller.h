@@ -150,6 +150,8 @@ public:
 
   // 读取目标位置步数。
   int32_t getTargetSteps() const;
+  uint16_t getEncoderZero() const;
+  void setEncoderZero(uint16_t zero_angle);
   uint16_t getEncoderRawAngle() const;
   uint32_t getEncoderAngleMilliDegrees() const;
   bool isMagneticFieldHigh() const;

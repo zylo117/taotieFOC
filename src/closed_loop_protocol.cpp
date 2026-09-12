@@ -93,6 +93,7 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG:
     case TMC2209_EXT_PARAM_MAGNETIC_HIGH:
     case TMC2209_EXT_PARAM_MAGNETIC_LOW:
+    case TMC2209_EXT_PARAM_ENCODER_ZERO:
       return true;
     default:
       return false;

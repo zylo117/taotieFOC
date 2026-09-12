@@ -20,18 +20,53 @@ Kth7823Encoder::Kth7823Encoder() : zero_angle_(0U)
 
 bool Kth7823Encoder::init()
 {
+  spi_init_type spi_init_struct;
+
+  crm_periph_clock_enable(CRM_GPIOA_PERIPH_CLOCK, TRUE);
+  crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);
+  crm_periph_clock_enable(CRM_SPI2_PERIPH_CLOCK, TRUE);
+
   encoder_common::encoder_gpio_config_output(KTH7823_CS_PORT, KTH7823_CS_PIN);
-  encoder_common::encoder_gpio_config_output(KTH7823_SCLK_PORT, KTH7823_SCLK_PIN);
-  encoder_common::encoder_gpio_config_output(KTH7823_MOSI_PORT, KTH7823_MOSI_PIN);
-  encoder_common::encoder_gpio_config_input(KTH7823_MISO_PORT, KTH7823_MISO_PIN);
+
+  gpio_init_type gpio_init_struct;
+  gpio_default_para_init(&gpio_init_struct);
+  gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
+  gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
+  gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
+  gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
+  gpio_init_struct.gpio_pins = KTH7823_SCLK_PIN | KTH7823_MOSI_PIN;
+  gpio_init(KTH7823_SCLK_PORT, &gpio_init_struct);
+
+  gpio_default_para_init(&gpio_init_struct);
+  gpio_init_struct.gpio_mode = GPIO_MODE_INPUT;
+  gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
+  gpio_init_struct.gpio_pins = KTH7823_MISO_PIN;
+  gpio_init(KTH7823_MISO_PORT, &gpio_init_struct);
 
   encoder_common::encoder_gpio_config_input(KTH7823_MGH_PORT, KTH7823_MGH_PIN);
   encoder_common::encoder_gpio_config_input(KTH7823_MGL_PORT, KTH7823_MGL_PIN);
 
   encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, true);
 
+  spi_i2s_reset(KTH7823_SPI);
+  spi_default_para_init(&spi_init_struct);
+  spi_init_struct.transmission_mode = SPI_TRANSMIT_FULL_DUPLEX;
+  spi_init_struct.master_slave_mode = SPI_MODE_MASTER;
+  spi_init_struct.mclk_freq_division = SPI_MCLK_DIV_32;
+  spi_init_struct.first_bit_transmission = SPI_FIRST_BIT_MSB;
+  spi_init_struct.frame_bit_num = SPI_FRAME_16BIT;
+  spi_init_struct.clock_polarity = SPI_CLOCK_POLARITY_HIGH;
+  spi_init_struct.clock_phase = SPI_CLOCK_PHASE_2EDGE;
+  spi_init_struct.cs_mode_selection = SPI_CS_SOFTWARE_MODE;
+  spi_init(KTH7823_SPI, &spi_init_struct);
+  spi_enable(KTH7823_SPI, TRUE);
 
-  zero_angle_ = readRawAngle();
+  uint32_t zero_sum = 0U;
+  for (uint8_t sample = 0U; sample < 8U; ++sample)
+  {
+    zero_sum += readRawAngle();
+  }
+  zero_angle_ = static_cast<uint16_t>(zero_sum / 8U);
   return true;
 }
 

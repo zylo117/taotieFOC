@@ -6,12 +6,12 @@
 
 #include "at32f403a_407.h"
 
-#define STEP_OUTPUT_PORT         GPIOA
-#define STEP_OUT_PIN             GPIO_PINS_15
-#define DIR_OUTPUT_PORT          GPIOA
-#define DIR_OUT_PIN              GPIO_PINS_14
+#define STEP_OUTPUT_PORT         GPIOB
+#define STEP_OUT_PIN             GPIO_PINS_10
+#define DIR_OUTPUT_PORT          GPIOB
+#define DIR_OUT_PIN              GPIO_PINS_11
 #define EN_OUTPUT_PORT           GPIOA
-#define EN_OUT_PIN               GPIO_PINS_13
+#define EN_OUT_PIN               GPIO_PINS_3
 
 #define TMC2209_UART_GPIO        GPIOA
 #define TMC2209_UART_PIN         GPIO_PINS_4

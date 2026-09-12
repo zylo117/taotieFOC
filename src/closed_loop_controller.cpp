@@ -280,6 +280,11 @@ void ClosedLoopController::syncProtocolTelemetry()
 
 bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
 {
+  if (reg == TMC2209_EXT_PARAM_ENCODER_ZERO)
+  {
+    setEncoderZero(static_cast<uint16_t>(value));
+    return true;
+  }
   if (protocol_ == nullptr)
   {
     return false;
@@ -292,6 +297,11 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t *value)
   if (value == nullptr)
   {
     return false;
+  }
+  if (reg == TMC2209_EXT_PARAM_ENCODER_ZERO)
+  {
+    *value = encoder_zero_;
+    return true;
   }
   if (reg == TMC2209_REG_TSTEP)
   {
@@ -433,13 +443,14 @@ void ClosedLoopController::process(uint32_t time_us)
   syncProtocolTelemetry();
   int32_t actual_step = 0;
 
-  if (encoder_raw > encoder_zero_)
+  actual_step = static_cast<int32_t>(encoder_raw) - static_cast<int32_t>(encoder_zero_);
+  if (actual_step > 32768)
   {
-    actual_step = static_cast<int32_t>(encoder_raw - encoder_zero_);
+    actual_step -= 65536;
   }
-  else
+  else if (actual_step < -32768)
   {
-    actual_step = -static_cast<int32_t>(encoder_zero_ - encoder_raw);
+    actual_step += 65536;
   }
 
   actual_step_ = actual_step;
@@ -577,6 +588,7 @@ void ClosedLoopController::calibrateEncoder(const EncoderCalibrationConfig &conf
   if (result.offset_ok)
   {
     encoder_zero_ = static_cast<uint16_t>(encoder_zero_ + static_cast<uint16_t>(result.offset_correction));
+    encoder_->setZero(encoder_zero_);
   }
 }
 
@@ -627,6 +639,20 @@ int32_t ClosedLoopController::getPositionSteps() const
 int32_t ClosedLoopController::getTargetSteps() const
 {
   return target_step_;
+}
+
+uint16_t ClosedLoopController::getEncoderZero() const
+{
+  return encoder_zero_;
+}
+
+void ClosedLoopController::setEncoderZero(uint16_t zero_angle)
+{
+  encoder_zero_ = zero_angle;
+  if (encoder_ != nullptr)
+  {
+    encoder_->setZero(zero_angle);
+  }
 }
 
 float ClosedLoopController::getFollowError() const
