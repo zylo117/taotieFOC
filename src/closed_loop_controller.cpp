@@ -146,7 +146,7 @@ ClosedLoopController::ClosedLoopController()
     motion_pulse_count_(0U), motion_window_ms_(2000U), motion_mode_(MOTION_MODE_POSITION_FORWARD),
     motion_running_(false), motion_paused_(false), motion_speed_rpm_(0.0f), encoder_speed_rpm_(0.0f), motion_position_deg_(0.0f),
     motion_last_step_time_us_(0U), motion_last_ramp_time_us_(0U), motion_steps_emitted_(0U), motion_direction_(1),
-    motion_step_high_(false),
+    motion_step_high_(false), step_pulse_width_us_(2U),
     step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), encoder_raw_angle_(0U),
     magnetic_field_high_(false), magnetic_field_low_(false), last_process_time_us_(0U),
     last_step_state_(0U), last_dir_state_(0U), last_en_state_(0U),
@@ -299,6 +299,7 @@ void ClosedLoopController::syncProtocolTelemetry()
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_POSITION_DEG,
                                 static_cast<uint32_t>(static_cast<int32_t>(motion_position_deg_ * 1000.0f)));
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS, motion_window_ms_);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_US, step_pulse_width_us_);
 }
 
 bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
@@ -348,6 +349,11 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
   if (reg == TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS)
   {
     setWaveformWindowMs(value);
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_US)
+  {
+    step_pulse_width_us_ = value < 1U ? 1U : (value > 20U ? 20U : value);
     return true;
   }
   if (protocol_ == nullptr)
@@ -411,6 +417,11 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t *value)
   if (reg == TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS)
   {
     *value = motion_window_ms_;
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_US)
+  {
+    *value = step_pulse_width_us_;
     return true;
   }
   if (reg == TMC2209_REG_TSTEP)
@@ -613,7 +624,9 @@ void ClosedLoopController::process(uint32_t time_us)
     {
       driver_->setDirection(motion_direction_ > 0);
       driver_->setStepState(true);
-      motion_step_high_ = true;
+      stepper_common::stepper_delay_us(step_pulse_width_us_);
+      driver_->setStepState(false);
+      motion_step_high_ = false;
       motion_last_step_time_us_ = time_us;
       motion_steps_emitted_ += 1U;
     }

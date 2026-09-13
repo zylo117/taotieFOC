@@ -499,7 +499,7 @@
               </div>
               <div class="field">
                 <label>脉冲数</label>
-                <input id="pulseCountInput" type="number" min="25600" step="25600" value="25600" />
+                <input id="pulseCountInput" type="number" min="25600" step="25600" value="2560000" />
               </div>
               <div class="field">
                 <label>运动模式</label>
@@ -515,6 +515,10 @@
               <div class="field">
                 <label>窗口长度</label>
                 <input id="waveWindowMsInput" type="number" min="2000" max="2000" step="50" value="2000" />
+              </div>
+              <div class="field">
+                <label>STEP 脉宽（µs）</label>
+                <input id="stepPulseWidthUsInput" type="number" min="1" max="20" step="1" value="2" />
               </div>
             </div>
             <div class="inline mt">
@@ -906,6 +910,7 @@
       ,[0x120, ['0x0120', 'SPEED_RPM', '当前测速转速，单位 RPM']]
       ,[0x121, ['0x0121', 'POSITION_DEG', '当前位置，单位 0.001°']]
       ,[0x122, ['0x0122', 'WAVE_WINDOW_MS', '波形窗口长度，单位 ms']]
+      ,[0x123, ['0x0123', 'STEP_PULSE_WIDTH_US', 'STEP 高电平脉宽，单位 µs']]
     ]);
 
     function log(message) {
@@ -1365,7 +1370,7 @@
     function getEffectivePulseCount() {
       const baseMicrosteps = Number(document.getElementById('microsteps').value || 32);
       const interpMicrosteps = Number(document.getElementById('interpMicrosteps').value || baseMicrosteps);
-      const pulseCount = Number(document.getElementById('pulseCountInput').value || 25600);
+      const pulseCount = Number(document.getElementById('pulseCountInput').value || 2560000);
       const effectiveBase = Math.max(1, Math.min(256, baseMicrosteps));
       const effectiveInterp = Math.max(1, Math.min(256, interpMicrosteps));
       const effectiveSubdivision = effectiveInterp > effectiveBase ? effectiveInterp : effectiveBase;
@@ -1504,7 +1509,9 @@
       const motionMode = Number(document.getElementById('motionModeSelect').value || 0);
       const pulseCount = Math.max(25600, Math.round(getEffectivePulseCount()));
       const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
+      const stepPulseWidthUs = clamp(Number(document.getElementById('stepPulseWidthUsInput').value || 2), 1, 20);
       document.getElementById('waveWindowMsInput').value = String(windowMs);
+      document.getElementById('stepPulseWidthUsInput').value = String(stepPulseWidthUs);
 
       if (state.connected) {
         await writeRegister(0x11A, startRpm);
@@ -1514,11 +1521,12 @@
         await writeRegister(0x11E, motionMode);
         await writeRegister(0x11F, 1);
         await writeRegister(0x122, windowMs);
+        await writeRegister(0x123, stepPulseWidthUs);
       }
 
       state.motionSpeedRpm = startRpm;
       state.waveHistory = [];
-      log(`[INFO] 发送测速控制：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms`);
+      log(`[INFO] 发送测速控制：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms step=${stepPulseWidthUs}us`);
     }
 
     async function stopMotionTest() {

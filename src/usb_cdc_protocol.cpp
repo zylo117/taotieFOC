@@ -159,6 +159,7 @@ void UsbCdcProtocolBridge::sendTelemetry()
     TMC2209_EXT_PARAM_SPEED_RPM,
     TMC2209_EXT_PARAM_POSITION_DEG,
     TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS
+    ,TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_US
   };
 
   static uint16_t telemetry_index = 0U;

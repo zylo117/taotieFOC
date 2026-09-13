@@ -226,6 +226,7 @@ private:
   volatile uint32_t motion_steps_emitted_;
   volatile int8_t motion_direction_;
   volatile bool motion_step_high_;
+  volatile uint32_t step_pulse_width_us_;
   volatile uint32_t step_period_us_;
   volatile uint16_t encoder_zero_;
   volatile uint16_t encoder_raw_angle_;

@@ -15,6 +15,16 @@ void stepper_write_gpio(gpio_type *port, uint16_t pin, bool state)
   }
 }
 
+void stepper_delay_us(uint32_t microseconds)
+{
+  const uint32_t cycles_per_us = system_core_clock / 1000000U;
+  const uint32_t loop_count = (cycles_per_us / 4U) * microseconds;
+  for (volatile uint32_t index = 0U; index < loop_count; ++index)
+  {
+    __NOP();
+  }
+}
+
 void stepper_init_step_gpio(void)
 {
   gpio_init_type gpio_init_struct;
