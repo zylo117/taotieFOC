@@ -143,8 +143,10 @@ ClosedLoopController::ClosedLoopController()
     target_step_(0), actual_step_(0), last_actual_step_(0), command_step_(0),
     follow_error_(0.0f), measured_velocity_rps_(0.0f), target_velocity_rps_(0.0f),
     motion_start_rpm_(0.0f), motion_max_rpm_(0.0f), motion_accel_rpm_s_(0.0f),
-    motion_pulse_count_(0U), motion_window_ms_(50U), motion_mode_(MOTION_MODE_POSITION_FORWARD),
+    motion_pulse_count_(0U), motion_window_ms_(2000U), motion_mode_(MOTION_MODE_POSITION_FORWARD),
     motion_running_(false), motion_paused_(false), motion_speed_rpm_(0.0f), motion_position_deg_(0.0f),
+    motion_last_step_time_us_(0U), motion_last_ramp_time_us_(0U), motion_steps_emitted_(0U), motion_direction_(1),
+    motion_step_high_(false),
     step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), encoder_raw_angle_(0U),
     magnetic_field_high_(false), magnetic_field_low_(false), last_process_time_us_(0U),
     last_step_state_(0U), last_dir_state_(0U), last_en_state_(0U),
@@ -439,6 +441,11 @@ void ClosedLoopController::syncStepDirection()
   uint8_t dir_state = gpio_input_data_bit_read(dir_port, GPIO_PINS_14);
   uint8_t en_state = gpio_input_data_bit_read(en_port, GPIO_PINS_13);
 
+  if (motion_running_)
+  {
+    return;
+  }
+
   if (step_state != last_step_state_)
   {
     if (step_state != 0U)
@@ -446,12 +453,6 @@ void ClosedLoopController::syncStepDirection()
       command_step_ += (dir_state != 0U) ? 1 : -1;
       target_step_ = command_step_;
       driver_->setStepState(true);
-      for (volatile uint32_t delay_count = 0U;
-           delay_count < (STEP_EDGE_TIMEOUT_US * 30U);
-           ++delay_count)
-      {
-        __NOP();
-      }
       driver_->setStepState(false);
     }
     last_step_state_ = step_state;
@@ -526,19 +527,102 @@ void ClosedLoopController::process(uint32_t time_us)
 {
   updateLoopFrequencyStats(time_us);
 
-  if (driver_ == nullptr || encoder_ == nullptr)
+  if (driver_ == nullptr)
   {
     return;
+  }
+
+  if (encoder_ != nullptr)
+  {
+    uint16_t encoder_raw = encoder_->readRawAngle();
+    encoder_raw_angle_ = encoder_raw;
+    magnetic_field_high_ = encoder_->magneticFieldHigh();
+    magnetic_field_low_ = encoder_->magneticFieldLow();
+    reportMagneticFieldAlarm(magnetic_field_high_ || magnetic_field_low_);
+
+    motion_position_deg_ = static_cast<float>(static_cast<int32_t>(encoder_raw) - static_cast<int32_t>(encoder_zero_)) * 360.0f / 65536.0f;
+    if (motion_position_deg_ > 180.0f)
+    {
+      motion_position_deg_ -= 360.0f;
+    }
+    else if (motion_position_deg_ < -180.0f)
+    {
+      motion_position_deg_ += 360.0f;
+    }
+  }
+
+  if (motion_running_)
+  {
+    if (motion_step_high_)
+    {
+      driver_->setStepState(false);
+      motion_step_high_ = false;
+      const uint32_t max_steps = motion_pulse_count_ == 0U ? UINT32_MAX : motion_pulse_count_;
+      if (motion_steps_emitted_ >= max_steps)
+      {
+        stopMotion();
+        return;
+      }
+    }
+
+    const uint16_t microsteps = driver_->config().microsteps == 0U ? 32U : driver_->config().microsteps;
+    const float max_rpm = motion_max_rpm_ > 0.0f ? motion_max_rpm_ : motion_start_rpm_;
+    const float accel_rpm = motion_accel_rpm_s_ > 0.0f ? motion_accel_rpm_s_ : 300.0f;
+    const float target_speed = max_rpm > 0.0f ? max_rpm : motion_start_rpm_;
+    if (motion_last_ramp_time_us_ == 0U)
+    {
+      motion_last_ramp_time_us_ = time_us;
+    }
+
+    const float dt = static_cast<float>(time_us - motion_last_ramp_time_us_) * 1.0e-6f;
+    if (dt > 0.0f)
+    {
+      if (motion_speed_rpm_ < target_speed)
+      {
+        motion_speed_rpm_ = motion_speed_rpm_ + accel_rpm * dt;
+        if (motion_speed_rpm_ > target_speed)
+        {
+          motion_speed_rpm_ = target_speed;
+        }
+      }
+      else if (motion_speed_rpm_ > target_speed)
+      {
+        motion_speed_rpm_ = motion_speed_rpm_ - accel_rpm * dt;
+        if (motion_speed_rpm_ < target_speed)
+        {
+          motion_speed_rpm_ = target_speed;
+        }
+      }
+      motion_speed_rpm_ = (motion_direction_ > 0) ? motion_speed_rpm_ : -motion_speed_rpm_;
+      motion_last_ramp_time_us_ = time_us;
+    }
+
+    const float commanded_rpm = fast_abs(motion_speed_rpm_);
+    const float step_hz = (commanded_rpm * static_cast<float>(200U * microsteps)) / 60.0f;
+    const uint32_t interval_us = step_hz > 0.0f ? static_cast<uint32_t>(1000000.0f / step_hz) : UINT32_MAX;
+    if (!output_stopped_ && interval_us != UINT32_MAX && (time_us - motion_last_step_time_us_ >= interval_us))
+    {
+      driver_->setDirection(motion_direction_ > 0);
+      driver_->setStepState(true);
+      motion_step_high_ = true;
+      motion_last_step_time_us_ = time_us;
+      motion_steps_emitted_ += 1U;
+    }
+  }
+  else if (driver_ != nullptr)
+  {
+    if (motion_step_high_)
+    {
+      driver_->setStepState(false);
+      motion_step_high_ = false;
+    }
+    driver_->setEnable(false);
   }
 
   // 读取编码器原始角度，并换算成相对零点的步数。
   // 这里的逻辑是把编码器量化到一个可比较的相对位置值，
   // 后续 position_error 能直接反映目标和当前位置的偏差。
-  uint16_t encoder_raw = encoder_->readRawAngle();
-  encoder_raw_angle_ = encoder_raw;
-  magnetic_field_high_ = encoder_->magneticFieldHigh();
-  magnetic_field_low_ = encoder_->magneticFieldLow();
-  reportMagneticFieldAlarm(magnetic_field_high_ || magnetic_field_low_);
+  uint16_t encoder_raw = encoder_raw_angle_;
   int32_t actual_step = 0;
 
   actual_step = static_cast<int32_t>(encoder_raw) - static_cast<int32_t>(encoder_zero_);
@@ -644,6 +728,26 @@ void ClosedLoopController::startMotion()
 {
   motion_running_ = true;
   motion_paused_ = false;
+  motion_steps_emitted_ = 0U;
+  motion_last_step_time_us_ = 0U;
+  motion_last_ramp_time_us_ = 0U;
+  motion_step_high_ = false;
+  if (motion_mode_ == MOTION_MODE_POSITION_REVERSE ||
+      motion_mode_ == MOTION_MODE_VELOCITY_REVERSE ||
+      motion_mode_ == MOTION_MODE_HOME_REVERSE)
+  {
+    motion_direction_ = -1;
+  }
+  else
+  {
+    motion_direction_ = 1;
+  }
+  motion_speed_rpm_ = motion_direction_ > 0 ? motion_start_rpm_ : -motion_start_rpm_;
+  if (driver_ != nullptr && !encoder_fault_active_ && !magnetic_fault_active_)
+  {
+    driver_->setEnable(true);
+    driver_->setDirection(motion_direction_ > 0);
+  }
 }
 
 void ClosedLoopController::stopMotion()
@@ -652,6 +756,15 @@ void ClosedLoopController::stopMotion()
   motion_paused_ = false;
   motion_speed_rpm_ = 0.0f;
   target_velocity_rps_ = 0.0f;
+  motion_steps_emitted_ = 0U;
+  motion_last_step_time_us_ = 0U;
+  motion_last_ramp_time_us_ = 0U;
+  motion_step_high_ = false;
+  if (driver_ != nullptr)
+  {
+    driver_->setStepState(false);
+    driver_->setEnable(false);
+  }
 }
 
 bool ClosedLoopController::isMotionRunning() const
@@ -680,9 +793,9 @@ void ClosedLoopController::setWaveformWindowMs(uint32_t window_ms)
   {
     motion_window_ms_ = 10U;
   }
-  else if (window_ms > 200U)
+  else if (window_ms > 2000U)
   {
-    motion_window_ms_ = 200U;
+    motion_window_ms_ = 2000U;
   }
   else
   {

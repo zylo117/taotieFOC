@@ -124,7 +124,7 @@ bool Tmc2209Driver::setSingleWireUart(gpio_type *port, uint16_t pin, bool enable
 void Tmc2209Driver::setEnable(bool enable)
 {
   enabled_ = enable;
-  stepper_common::stepper_write_gpio(EN_OUTPUT_PORT, EN_OUT_PIN, enable);
+  stepper_common::stepper_write_gpio(EN_OUTPUT_PORT, EN_OUT_PIN, !enable);
 }
 
 void Tmc2209Driver::setDirection(bool direction)

@@ -39,13 +39,26 @@ void encoder_gpio_config_output(gpio_type *port, uint16_t pin)
 
 uint16_t encoder_spi2_rw16(uint16_t tx_data)
 {
-  while (spi_i2s_flag_get(KTH7823_SPI, SPI_I2S_TDBE_FLAG) == RESET)
+  constexpr uint32_t spi_timeout = 100000U;
+  uint32_t timeout = spi_timeout;
+  while (spi_i2s_flag_get(KTH7823_SPI, SPI_I2S_TDBE_FLAG) == RESET && timeout > 0U)
   {
+    --timeout;
+  }
+  if (timeout == 0U)
+  {
+    return 0xFFFFU;
   }
   spi_i2s_data_transmit(KTH7823_SPI, tx_data);
 
-  while (spi_i2s_flag_get(KTH7823_SPI, SPI_I2S_RDBF_FLAG) == RESET)
+  timeout = spi_timeout;
+  while (spi_i2s_flag_get(KTH7823_SPI, SPI_I2S_RDBF_FLAG) == RESET && timeout > 0U)
   {
+    --timeout;
+  }
+  if (timeout == 0U)
+  {
+    return 0xFFFFU;
   }
   return static_cast<uint16_t>(spi_i2s_data_receive(KTH7823_SPI));
 }

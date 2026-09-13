@@ -220,6 +220,11 @@ private:
   volatile bool motion_paused_;
   volatile float motion_speed_rpm_;
   volatile float motion_position_deg_;
+  volatile uint32_t motion_last_step_time_us_;
+  volatile uint32_t motion_last_ramp_time_us_;
+  volatile uint32_t motion_steps_emitted_;
+  volatile int8_t motion_direction_;
+  volatile bool motion_step_high_;
   volatile uint32_t step_period_us_;
   volatile uint16_t encoder_zero_;
   volatile uint16_t encoder_raw_angle_;
