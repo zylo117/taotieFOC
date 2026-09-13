@@ -420,13 +420,10 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
       const uint32_t half_round_steps = micro_steps_per_round / 2U;
       driver_->setEnable(true);
       driver_->setDirection(true);
-        stepper_common::stepper_delay_ns(step_pulse_width_ns_ / 5);  // 经验值，2209方向最少要提前于脉冲的20ns，而脉宽最少要100ns，所以1/5
+      stepper_common::stepper_delay_ns(step_pulse_width_ns_ / 5);  // 经验值，2209方向最少要提前于脉冲的20ns，而脉宽最少要100ns，所以1/5
       for (uint32_t step_index = 0U; step_index < half_round_steps; ++step_index)
       {
-        driver_->setStepState(true);
-        stepper_common::stepper_delay_ns(step_pulse_width_ns_);
-        driver_->setStepState(false);
-        stepper_common::stepper_delay_ns(step_pulse_width_ns_);
+        driver_->sendStepPulse(step_pulse_width_ns_);
       }
     }
     last_en_state_ = 2U;
