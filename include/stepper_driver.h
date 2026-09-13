@@ -22,6 +22,9 @@ namespace stepper_common
 {
 // 向指定 GPIO 端口写入数字状态，封装了 AT32 的寄存器写法。
 void stepper_write_gpio(gpio_type *port, uint16_t pin, bool state);
+void stepper_write_gpio_high(gpio_type *port, uint16_t pin);
+void stepper_write_gpio_low(gpio_type *port, uint16_t pin);
+void stepper_write_gpio(gpio_type *port, uint16_t pin, bool state);
 void stepper_delay_us(uint32_t microseconds);
 void stepper_delay_ns(uint32_t nanoseconds);
 void stepper_init_motion_timer(void);
@@ -79,7 +82,7 @@ public:
   virtual void setEnable(bool enable) = 0;
   virtual void setDirection(bool direction) = 0;
   virtual void setStepState(bool state) = 0;
-  virtual void sendStepPulse(uint32_t width_us) = 0;
+  virtual void sendStepPulse(uint32_t width_ns) = 0;
 
   // 驱动器配置控制。
   virtual bool setMicrosteps(uint16_t microsteps) = 0;

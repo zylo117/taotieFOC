@@ -326,6 +326,53 @@ void delay_init()
 }
 
 /**
+ * @brief 底层汇编周期延时；参数单位：CPU内核周期
+ * @param cycles 等待多少CPU周期，最小>=2
+ * @note 汇编本身不感知主频；只是消耗指定CPU周期
+ * @warning 中断会拉长延时；短时序使用需要关中断
+ */
+void delay_cycles(uint32_t cycles)
+{
+    if (cycles == 0U)
+    {
+        return;
+    }
+    __asm__ volatile (
+        "1: subs %0, #1\n"
+        "bne 1b\n"
+        ::"r"(cycles):"cc"
+    );
+}
+
+/**
+ * @brief 纳秒延时，运行时自适应 system_core_clock 内核主频
+ * @param nns 需要延时多少纳秒
+ * @param core_clk_hz 系统内核时钟频率，单位Hz(如240000000)
+ * @retval none
+ * @note 内部换算：ns → CPU周期，向上取整；
+ *       适合 >=20ns；极短延时受函数调用开销影响；中断会破坏延时
+ */
+void delay_ns(uint32_t nns)
+{
+    if(nns == 0U)
+    {
+        return;
+    }
+    /*
+     * 公式：需要周期 = (nns * core_clk_hz) / 1000000000
+     * + 999999999 实现向上取整；必须uint64_t防止乘法溢出
+     */
+    uint64_t total_cycles = ((uint64_t)nns * system_core_clock + 999999999ULL) / 1000000000ULL;
+
+    /* 限制上限，防止传入超大ns数值 */
+    if(total_cycles > UINT32_MAX)
+    {
+        total_cycles = UINT32_MAX;
+    }
+    delay_cycles((uint32_t)total_cycles);
+}
+
+/**
   * @brief  inserts a delay time.
   * @param  nus: specifies the delay time length, in microsecond.
   * @retval none

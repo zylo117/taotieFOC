@@ -10,6 +10,9 @@ uint32_t motion_timer_frequency = 0U;
 uint32_t motion_timer_pulse_width = 0U;
 }
 
+void stepper_write_gpio_high(gpio_type *port, uint16_t pin){ port->scr=pin; }
+void stepper_write_gpio_low(gpio_type *port, uint16_t pin){ port->clr=pin; }
+
 void stepper_write_gpio(gpio_type *port, uint16_t pin, bool state)
 {
   if (state)
@@ -24,21 +27,12 @@ void stepper_write_gpio(gpio_type *port, uint16_t pin, bool state)
 
 void stepper_delay_us(uint32_t microseconds)
 {
-  const uint32_t cycles_per_us = system_core_clock / 1000000U;
-  const uint32_t loop_count = (cycles_per_us / 4U) * microseconds;
-  for (volatile uint32_t index = 0U; index < loop_count; ++index)
-  {
-    __NOP();
-  }
+  delay_us(microseconds);
 }
 
 void stepper_delay_ns(uint32_t nanoseconds)
 {
-  if (nanoseconds == 0U)
-  {
-    return;
-  }
-  stepper_delay_us((nanoseconds + 999U) / 1000U);
+  delay_ns(nanoseconds);
 }
 
 void stepper_init_motion_timer(void)
