@@ -94,6 +94,15 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_MAGNETIC_HIGH:
     case TMC2209_EXT_PARAM_MAGNETIC_LOW:
     case TMC2209_EXT_PARAM_ENCODER_ZERO:
+    case TMC2209_EXT_PARAM_START_RPM:
+    case TMC2209_EXT_PARAM_MAX_RPM:
+    case TMC2209_EXT_PARAM_ACCEL_RPM_S:
+    case TMC2209_EXT_PARAM_PULSE_COUNT:
+    case TMC2209_EXT_PARAM_MOTION_MODE:
+    case TMC2209_EXT_PARAM_MOTION_COMMAND:
+    case TMC2209_EXT_PARAM_SPEED_RPM:
+    case TMC2209_EXT_PARAM_POSITION_DEG:
+    case TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS:
       return true;
     default:
       return false;
@@ -336,6 +345,27 @@ bool Tmc2209ProtocolAdapter::setCustomParameter(uint16_t id, uint32_t value)
       config_.sense_resistor_ohm = static_cast<float>(value) / 1000.0f;
       if (driver_ != nullptr) driver_->setSenseResistor(config_.sense_resistor_ohm);
       break;
+    case TMC2209_EXT_PARAM_START_RPM:
+      custom_parameters_[index] = value;
+      break;
+    case TMC2209_EXT_PARAM_MAX_RPM:
+      custom_parameters_[index] = value;
+      break;
+    case TMC2209_EXT_PARAM_ACCEL_RPM_S:
+      custom_parameters_[index] = value;
+      break;
+    case TMC2209_EXT_PARAM_PULSE_COUNT:
+      custom_parameters_[index] = value;
+      break;
+    case TMC2209_EXT_PARAM_MOTION_MODE:
+      custom_parameters_[index] = value;
+      break;
+    case TMC2209_EXT_PARAM_MOTION_COMMAND:
+      custom_parameters_[index] = value;
+      break;
+    case TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS:
+      custom_parameters_[index] = value;
+      break;
     default:
       break;
   }
@@ -376,6 +406,27 @@ bool Tmc2209ProtocolAdapter::getCustomParameter(uint16_t id, uint32_t *value) co
       break;
     case TMC2209_EXT_PARAM_SENSE_RESISTOR:
       *value = static_cast<uint32_t>(config_.sense_resistor_ohm * 1000.0f);
+      break;
+    case TMC2209_EXT_PARAM_START_RPM:
+      *value = custom_parameters_[index];
+      break;
+    case TMC2209_EXT_PARAM_MAX_RPM:
+      *value = custom_parameters_[index];
+      break;
+    case TMC2209_EXT_PARAM_ACCEL_RPM_S:
+      *value = custom_parameters_[index];
+      break;
+    case TMC2209_EXT_PARAM_PULSE_COUNT:
+      *value = custom_parameters_[index];
+      break;
+    case TMC2209_EXT_PARAM_MOTION_MODE:
+      *value = custom_parameters_[index];
+      break;
+    case TMC2209_EXT_PARAM_MOTION_COMMAND:
+      *value = custom_parameters_[index];
+      break;
+    case TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS:
+      *value = custom_parameters_[index];
       break;
     default:
       *value = custom_parameters_[index];

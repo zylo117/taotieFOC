@@ -121,6 +121,25 @@ public:
   // 设置目标速度（转/秒）。
   void setTargetVelocity(float rps);
 
+  enum MotionMode : uint32_t
+  {
+    MOTION_MODE_POSITION_FORWARD = 0U,
+    MOTION_MODE_POSITION_REVERSE = 1U,
+    MOTION_MODE_VELOCITY_FORWARD = 2U,
+    MOTION_MODE_VELOCITY_REVERSE = 3U,
+    MOTION_MODE_HOME_FORWARD = 4U,
+    MOTION_MODE_HOME_REVERSE = 5U
+  };
+
+  void setMotionConfig(float start_rpm, float max_rpm, float accel_rpm_s, uint32_t pulse_count, MotionMode mode);
+  void startMotion();
+  void stopMotion();
+  bool isMotionRunning() const;
+  float getMotionSpeedRpm() const;
+  float getMotionPositionDeg() const;
+  uint32_t getWaveformWindowMs() const;
+  void setWaveformWindowMs(uint32_t window_ms);
+
   // 统一设置基本 PID 参数。
   void setPid(float kp, float ki, float kd);
 
@@ -191,6 +210,16 @@ private:
   volatile float follow_error_;
   volatile float measured_velocity_rps_;
   volatile float target_velocity_rps_;
+  volatile float motion_start_rpm_;
+  volatile float motion_max_rpm_;
+  volatile float motion_accel_rpm_s_;
+  volatile uint32_t motion_pulse_count_;
+  volatile uint32_t motion_window_ms_;
+  volatile MotionMode motion_mode_;
+  volatile bool motion_running_;
+  volatile bool motion_paused_;
+  volatile float motion_speed_rpm_;
+  volatile float motion_position_deg_;
   volatile uint32_t step_period_us_;
   volatile uint16_t encoder_zero_;
   volatile uint16_t encoder_raw_angle_;

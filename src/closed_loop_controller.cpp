@@ -142,6 +142,9 @@ ClosedLoopController::ClosedLoopController()
     adaptive_pid_enabled_(false), adaptive_config_{0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
     target_step_(0), actual_step_(0), last_actual_step_(0), command_step_(0),
     follow_error_(0.0f), measured_velocity_rps_(0.0f), target_velocity_rps_(0.0f),
+    motion_start_rpm_(0.0f), motion_max_rpm_(0.0f), motion_accel_rpm_s_(0.0f),
+    motion_pulse_count_(0U), motion_window_ms_(50U), motion_mode_(MOTION_MODE_POSITION_FORWARD),
+    motion_running_(false), motion_paused_(false), motion_speed_rpm_(0.0f), motion_position_deg_(0.0f),
     step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), encoder_raw_angle_(0U),
     magnetic_field_high_(false), magnetic_field_low_(false), last_process_time_us_(0U),
     last_step_state_(0U), last_dir_state_(0U), last_en_state_(0U),
@@ -276,6 +279,15 @@ void ClosedLoopController::syncProtocolTelemetry()
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG, getEncoderAngleMilliDegrees());
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_HIGH, magnetic_field_high_ ? 1U : 0U);
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_LOW, magnetic_field_low_ ? 1U : 0U);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_START_RPM, static_cast<uint32_t>(motion_start_rpm_));
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAX_RPM, static_cast<uint32_t>(motion_max_rpm_));
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_ACCEL_RPM_S, static_cast<uint32_t>(motion_accel_rpm_s_));
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_PULSE_COUNT, motion_pulse_count_);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_MODE, static_cast<uint32_t>(motion_mode_));
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_COMMAND, motion_running_ ? 1U : 0U);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_SPEED_RPM, static_cast<uint32_t>(motion_speed_rpm_));
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_POSITION_DEG, static_cast<uint32_t>(motion_position_deg_ * 1000.0f));
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS, motion_window_ms_);
 }
 
 bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
@@ -283,6 +295,48 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
   if (reg == TMC2209_EXT_PARAM_ENCODER_ZERO)
   {
     setEncoderZero(static_cast<uint16_t>(value));
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_START_RPM)
+  {
+    motion_start_rpm_ = static_cast<float>(value);
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_MAX_RPM)
+  {
+    motion_max_rpm_ = static_cast<float>(value);
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_ACCEL_RPM_S)
+  {
+    motion_accel_rpm_s_ = static_cast<float>(value);
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_PULSE_COUNT)
+  {
+    motion_pulse_count_ = value;
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_MOTION_MODE)
+  {
+    motion_mode_ = static_cast<MotionMode>(value);
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_MOTION_COMMAND)
+  {
+    if (value != 0U)
+    {
+      startMotion();
+    }
+    else
+    {
+      stopMotion();
+    }
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS)
+  {
+    setWaveformWindowMs(value);
     return true;
   }
   if (protocol_ == nullptr)
@@ -301,6 +355,51 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t *value)
   if (reg == TMC2209_EXT_PARAM_ENCODER_ZERO)
   {
     *value = encoder_zero_;
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_START_RPM)
+  {
+    *value = static_cast<uint32_t>(motion_start_rpm_);
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_MAX_RPM)
+  {
+    *value = static_cast<uint32_t>(motion_max_rpm_);
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_ACCEL_RPM_S)
+  {
+    *value = static_cast<uint32_t>(motion_accel_rpm_s_);
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_PULSE_COUNT)
+  {
+    *value = motion_pulse_count_;
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_MOTION_MODE)
+  {
+    *value = static_cast<uint32_t>(motion_mode_);
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_MOTION_COMMAND)
+  {
+    *value = motion_running_ ? 1U : 0U;
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_SPEED_RPM)
+  {
+    *value = static_cast<uint32_t>(motion_speed_rpm_);
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_POSITION_DEG)
+  {
+    *value = static_cast<uint32_t>(motion_position_deg_ * 1000.0f);
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS)
+  {
+    *value = motion_window_ms_;
     return true;
   }
   if (reg == TMC2209_REG_TSTEP)
@@ -530,6 +629,65 @@ void ClosedLoopController::setTargetStep(int32_t target_step)
 void ClosedLoopController::setTargetVelocity(float rps)
 {
   target_velocity_rps_ = rps;
+}
+
+void ClosedLoopController::setMotionConfig(float start_rpm, float max_rpm, float accel_rpm_s, uint32_t pulse_count, MotionMode mode)
+{
+  motion_start_rpm_ = start_rpm;
+  motion_max_rpm_ = max_rpm;
+  motion_accel_rpm_s_ = accel_rpm_s;
+  motion_pulse_count_ = pulse_count;
+  motion_mode_ = mode;
+}
+
+void ClosedLoopController::startMotion()
+{
+  motion_running_ = true;
+  motion_paused_ = false;
+}
+
+void ClosedLoopController::stopMotion()
+{
+  motion_running_ = false;
+  motion_paused_ = false;
+  motion_speed_rpm_ = 0.0f;
+  target_velocity_rps_ = 0.0f;
+}
+
+bool ClosedLoopController::isMotionRunning() const
+{
+  return motion_running_;
+}
+
+float ClosedLoopController::getMotionSpeedRpm() const
+{
+  return motion_speed_rpm_;
+}
+
+float ClosedLoopController::getMotionPositionDeg() const
+{
+  return motion_position_deg_;
+}
+
+uint32_t ClosedLoopController::getWaveformWindowMs() const
+{
+  return motion_window_ms_;
+}
+
+void ClosedLoopController::setWaveformWindowMs(uint32_t window_ms)
+{
+  if (window_ms < 10U)
+  {
+    motion_window_ms_ = 10U;
+  }
+  else if (window_ms > 200U)
+  {
+    motion_window_ms_ = 200U;
+  }
+  else
+  {
+    motion_window_ms_ = window_ms;
+  }
 }
 
 void ClosedLoopController::setPid(float kp, float ki, float kd)

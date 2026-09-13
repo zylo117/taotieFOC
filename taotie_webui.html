@@ -481,6 +481,50 @@
             <span>加速度：<strong id="accelValue">0.00</strong> rps²</span>
             <span>电流：<strong id="currentValue">0.00</strong> A</span>
           </div>
+
+          <div class="card">
+            <h3 style="margin:0 0 12px;">测速控制</h3>
+            <div class="grid-2">
+              <div class="field">
+                <label>启动转速</label>
+                <select id="startRpmSelect"></select>
+              </div>
+              <div class="field">
+                <label>最高转速</label>
+                <select id="maxRpmSelect"></select>
+              </div>
+              <div class="field">
+                <label>加速度</label>
+                <select id="accelRpmSelect"></select>
+              </div>
+              <div class="field">
+                <label>脉冲数</label>
+                <input id="pulseCountInput" type="number" min="25600" step="25600" value="25600" />
+              </div>
+              <div class="field">
+                <label>运动模式</label>
+                <select id="motionModeSelect">
+                  <option value="0">位置正转</option>
+                  <option value="1">位置反转</option>
+                  <option value="2">速度正转</option>
+                  <option value="3">速度反转</option>
+                  <option value="4">正转归零</option>
+                  <option value="5">反转归零</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>窗口长度</label>
+                <input id="waveWindowMsInput" type="number" min="10" max="200" step="10" value="50" />
+              </div>
+            </div>
+            <div class="inline mt">
+              <button id="startMotionBtn" class="primary">启动</button>
+              <button id="stopMotionBtn" class="danger">停止</button>
+              <button id="pauseWaveBtn">暂停查看</button>
+            </div>
+            <div class="tiny mt">说明：脉冲数按“基础细分 × 插值后微步数”规则计算；未插值或插值不大于基础细分时按基础细分处理。</div>
+            <canvas id="motionWaveCanvas" width="620" height="220" style="width:100%;height:220px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"></canvas>
+          </div>
         </div>
       </section>
 
@@ -762,6 +806,12 @@
       ,actualPosition: 0
       ,lastEncoderLogAt: 0
       ,rxBuffer: new Uint8Array(0)
+      ,motionSpeedRpm: 0
+      ,motionPositionDeg: 0
+      ,waveHistory: []
+      ,wavePaused: false
+      ,motionWaveTimer: null
+      ,lastWaveStamp: 0
     };
 
     const OFFICIAL_REGS = {
@@ -846,6 +896,15 @@
       ,[CUSTOM_REGS.MAGNETIC_HIGH, ['0x0117', 'MAGNETIC_HIGH', 'MGH 磁场过高输入']]
       ,[CUSTOM_REGS.MAGNETIC_LOW, ['0x0118', 'MAGNETIC_LOW', 'MGL 磁场过低输入']]
       ,[CUSTOM_REGS.ENCODER_ZERO, ['0x0119', 'ENCODER_ZERO', '编码器启动零点，原始角度值']]
+      ,[0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
+      ,[0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
+      ,[0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
+      ,[0x11D, ['0x011D', 'PULSE_COUNT', '测速脉冲总数']]
+      ,[0x11E, ['0x011E', 'MOTION_MODE', '运动模式：0位置正转 1位置反转 2速度正转 3速度反转 4正转归零 5反转归零']]
+      ,[0x11F, ['0x011F', 'MOTION_CMD', '运动命令：0停止 1启动']]
+      ,[0x120, ['0x0120', 'SPEED_RPM', '当前测速转速，单位 RPM']]
+      ,[0x121, ['0x0121', 'POSITION_DEG', '当前位置，单位 0.001°']]
+      ,[0x122, ['0x0122', 'WAVE_WINDOW_MS', '波形窗口长度，单位 ms']]
     ]);
 
     function log(message) {
@@ -888,6 +947,9 @@
       document.getElementById('encoderAngleValue').textContent = `${state.encoderAngleDeg.toFixed(2)}°`;
       document.getElementById('encoderRawValue').textContent = `0x${state.encoderRaw.toString(16).padStart(4, '0').toUpperCase()}`;
       document.getElementById('magneticLevelValue').textContent = `${state.magneticHigh ? '报警' : '正常'} / ${state.magneticLow ? '报警' : '正常'}`;
+      document.getElementById('speedValue').textContent = (state.speed || state.motionSpeedRpm / 60).toFixed(2);
+      document.getElementById('accelValue').textContent = (state.accel || 0).toFixed(2);
+      document.getElementById('currentValue').textContent = (state.currentA || 0).toFixed(2);
     }
 
     function renderRegisterMap() {
@@ -1248,6 +1310,207 @@
       document.getElementById('tuneState').value = '1';
     }
 
+    function buildRpmOptions(selectId, minValue, maxValue, stepValue, offset) {
+      const select = document.getElementById(selectId);
+      const options = [];
+      for (let value = minValue; value <= maxValue; value += stepValue) {
+        if (value <= 1000) {
+          if (value < 25) continue;
+          options.push(value);
+        } else if (value === 1000 || value > 1000) {
+          options.push(value);
+        }
+      }
+      if (offset !== undefined) {
+        const fallback = options.includes(offset) ? offset : options[0];
+        select.innerHTML = options.map((value) => `<option value="${value}">${value}</option>`).join('');
+        select.value = String(fallback);
+      } else {
+        select.innerHTML = options.map((value) => `<option value="${value}">${value}</option>`).join('');
+      }
+    }
+
+    function buildMotionControlOptions() {
+      const startSelect = document.getElementById('startRpmSelect');
+      const maxSelect = document.getElementById('maxRpmSelect');
+      const accelSelect = document.getElementById('accelRpmSelect');
+
+      const startValues = [];
+      for (let v = 0; v <= 600; v += 60) {
+        startValues.push(v);
+      }
+      startSelect.innerHTML = startValues.map((v) => `<option value="${v}">${v}</option>`).join('');
+      startSelect.value = '120';
+
+      const maxValues = [];
+      for (let v = 25; v <= 1000; v += 75) {
+        maxValues.push(v);
+      }
+      for (let v = 1000; v <= 10000; v += 1000) {
+        maxValues.push(v);
+      }
+      const maxUnique = [...new Set(maxValues.filter((v) => v >= 25 && v <= 10000))];
+      maxSelect.innerHTML = maxUnique.map((v) => `<option value="${v}">${v}</option>`).join('');
+      maxSelect.value = '1000';
+
+      const accelValues = [];
+      for (let v = 300; v <= 2400; v += 300) {
+        accelValues.push(v);
+      }
+      accelSelect.innerHTML = accelValues.map((v) => `<option value="${v}">${v}</option>`).join('');
+      accelSelect.value = '600';
+    }
+
+    function getEffectivePulseCount() {
+      const baseMicrosteps = Number(document.getElementById('microsteps').value || 32);
+      const interpMicrosteps = Number(document.getElementById('interpMicrosteps').value || baseMicrosteps);
+      const pulseCount = Number(document.getElementById('pulseCountInput').value || 25600);
+      const effectiveBase = Math.max(1, Math.min(256, baseMicrosteps));
+      const effectiveInterp = Math.max(1, Math.min(256, interpMicrosteps));
+      const effectiveSubdivision = effectiveInterp > effectiveBase ? effectiveInterp : effectiveBase;
+      const normalizedPulse = Math.max(1, Number.isFinite(pulseCount) ? pulseCount : 25600);
+      return Math.max(normalizedPulse, effectiveSubdivision);
+    }
+
+    function pushWaveSample() {
+      if (state.wavePaused) return;
+      const now = performance.now();
+      const sample = {
+        t: now,
+        rpm: Number(state.motionSpeedRpm || 0),
+        pos: Number(state.motionPositionDeg || 0)
+      };
+      state.waveHistory.push(sample);
+      const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 50), 10, 200);
+      const cutoff = now - windowMs;
+      state.waveHistory = state.waveHistory.filter((entry) => entry.t >= cutoff);
+      if (state.waveHistory.length > 2000) {
+        state.waveHistory = state.waveHistory.slice(-2000);
+      }
+    }
+
+    function drawWaveform() {
+      const canvas = document.getElementById('motionWaveCanvas');
+      const ctx = canvas.getContext('2d');
+      const width = canvas.width;
+      const height = canvas.height;
+      const leftPad = 48;
+      const rightPad = 52;
+      const plotLeft = leftPad;
+      const plotRight = width - rightPad;
+      const plotTop = 18;
+      const plotBottom = height - 24;
+      const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 50), 10, 200);
+      const now = performance.now();
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = 'rgba(2,6,23,0.82)';
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.strokeStyle = 'rgba(148,163,184,0.24)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = plotTop + ((plotBottom - plotTop) / 4) * i;
+        ctx.beginPath();
+        ctx.moveTo(plotLeft, y);
+        ctx.lineTo(plotRight, y);
+        ctx.stroke();
+      }
+
+      const speedLine = (rpm) => {
+        return plotBottom - ((rpm + 3000) / 6000) * (plotBottom - plotTop);
+      };
+      const posLine = (deg) => {
+        return plotBottom - ((deg + 20) / 40) * (plotBottom - plotTop);
+      };
+
+      ctx.strokeStyle = 'rgba(56,189,248,0.7)';
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = '12px sans-serif';
+      ctx.fillText('RPM', 10, 14);
+      ctx.fillText('位置°', width - 48, 14);
+      ctx.fillText('3000', 4, plotTop + 4);
+      ctx.fillText('0', 18, plotBottom - 2);
+      ctx.fillText('-3000', 2, plotBottom + 14);
+      ctx.fillText('20°', width - 42, plotTop + 4);
+      ctx.fillText('0°', width - 34, plotBottom - 2);
+      ctx.fillText('-20°', width - 42, plotBottom + 14);
+
+      ctx.beginPath();
+      ctx.moveTo(plotLeft, plotTop);
+      ctx.lineTo(plotLeft, plotBottom);
+      ctx.lineTo(plotRight, plotBottom);
+      ctx.stroke();
+
+      const points = state.waveHistory.length ? state.waveHistory : [{ t: now - windowMs, rpm: 0, pos: 0 }];
+      const filtered = points.filter((entry) => now - entry.t <= windowMs);
+      if (filtered.length > 1) {
+        ctx.beginPath();
+        filtered.forEach((entry, i) => {
+          const x = plotLeft + ((now - entry.t) / windowMs) * (plotRight - plotLeft);
+          const y = speedLine(entry.rpm);
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.beginPath();
+        filtered.forEach((entry, i) => {
+          const x = plotLeft + ((now - entry.t) / windowMs) * (plotRight - plotLeft);
+          const y = posLine(entry.pos);
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.strokeStyle = '#22c55e';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = 'rgba(148,163,184,0.75)';
+      ctx.fillText(`${windowMs} ms`, plotRight - 38, height - 6);
+    }
+
+    async function startMotionTest() {
+      const startRpm = Number(document.getElementById('startRpmSelect').value || 120);
+      const maxRpm = Number(document.getElementById('maxRpmSelect').value || 1000);
+      const accelRpm = Number(document.getElementById('accelRpmSelect').value || 600);
+      const motionMode = Number(document.getElementById('motionModeSelect').value || 0);
+      const pulseCount = Math.max(25600, Math.round(getEffectivePulseCount()));
+      const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 50), 10, 200);
+      document.getElementById('waveWindowMsInput').value = String(windowMs);
+
+      if (state.connected) {
+        await writeRegister(0x11A, startRpm);
+        await writeRegister(0x11B, maxRpm);
+        await writeRegister(0x11C, accelRpm);
+        await writeRegister(0x11D, pulseCount);
+        await writeRegister(0x11E, motionMode);
+        await writeRegister(0x11F, 1);
+        await writeRegister(0x122, windowMs);
+      }
+
+      state.motionSpeedRpm = startRpm;
+      state.waveHistory = [];
+      log(`[INFO] 发送测速控制：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms`);
+    }
+
+    async function stopMotionTest() {
+      if (state.connected) {
+        await writeRegister(0x11F, 0);
+      }
+      state.motionSpeedRpm = 0;
+      log('[WARN] 发送停止测速命令');
+    }
+
+    function toggleWavePause() {
+      state.wavePaused = !state.wavePaused;
+      const btn = document.getElementById('pauseWaveBtn');
+      btn.textContent = state.wavePaused ? '继续查看' : '暂停查看';
+      log(`[INFO] 波形${state.wavePaused ? '已暂停' : '已恢复'}`);
+    }
+
     function bindControls() {
       document.getElementById('connectBtn').addEventListener('click', connectSerial);
       document.getElementById('readAllBtn').addEventListener('click', readAllConfig);
@@ -1255,10 +1518,20 @@
       document.getElementById('sendTargetBtn').addEventListener('click', sendTargetPosition);
       document.getElementById('zeroBtn').addEventListener('click', zeroEncoder);
       document.getElementById('stopBtn').addEventListener('click', stopMotor);
+      document.getElementById('startMotionBtn').addEventListener('click', startMotionTest);
+      document.getElementById('stopMotionBtn').addEventListener('click', stopMotionTest);
+      document.getElementById('pauseWaveBtn').addEventListener('click', toggleWavePause);
       document.getElementById('tuneBtn').addEventListener('click', startAutoTune);
       document.getElementById('startTuneBtn').addEventListener('click', startAutoTune);
       document.getElementById('applyTuneBtn').addEventListener('click', function () {
         log('[INFO] 已应用整定结果到 PID 参数');
+      });
+      document.getElementById('waveWindowMsInput').addEventListener('change', function () {
+        const value = clamp(Number(this.value || 50), 10, 200);
+        this.value = String(value);
+        if (state.connected) {
+          writeRegister(0x122, value);
+        }
       });
 
       document.getElementById('targetPosInput').addEventListener('change', function () {
@@ -1267,12 +1540,41 @@
       });
     }
 
+    function handleCustomTelemetry(frame) {
+      if (frame.reg === 0x120) {
+        state.motionSpeedRpm = Number(frame.value || 0);
+      }
+      if (frame.reg === 0x121) {
+        state.motionPositionDeg = Number((frame.value || 0) / 1000.0);
+      }
+      if (frame.reg === 0x122) {
+        const windowValue = clamp(Number(frame.value || 50), 10, 200);
+        document.getElementById('waveWindowMsInput').value = String(windowValue);
+      }
+    }
+
     bindDialDrag();
     bindControls();
+    buildMotionControlOptions();
     renderRegisterMap();
     updateDialVisual();
     updateFaultStatus();
     updateTelemetryDisplay();
+
+    state.motionWaveTimer = window.setInterval(() => {
+      pushWaveSample();
+      drawWaveform();
+    }, 40);
+
+    setInterval(() => {
+      updateTelemetryDisplay();
+    }, 200);
+
+    const originalHandleIncomingFrame = handleIncomingFrame;
+    handleIncomingFrame = function (frame) {
+      originalHandleIncomingFrame(frame);
+      handleCustomTelemetry(frame);
+    };
   </script>
 </body>
 </html>
