@@ -32,6 +32,15 @@ void stepper_delay_us(uint32_t microseconds)
   }
 }
 
+void stepper_delay_ns(uint32_t nanoseconds)
+{
+  if (nanoseconds == 0U)
+  {
+    return;
+  }
+  stepper_delay_us((nanoseconds + 999U) / 1000U);
+}
+
 void stepper_init_motion_timer(void)
 {
   crm_periph_clock_enable(CRM_TMR2_PERIPH_CLOCK, TRUE);

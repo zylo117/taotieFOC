@@ -2,11 +2,14 @@
 #include <math.h>
 #include "at32f403a_407_board.h"
 
-#define STEP_EDGE_TIMEOUT_US  200U
-#define STEP_PERIOD_US_DEFAULT 5000U
-#define OPEN_LOOP_STEPS_PER_REV 51200U
-#define MAX_PID_OUTPUT        2000.0f
-#define MAX_I_TERM            100.0f
+#define STEP_EDGE_TIMEOUT_US    200U
+#define STEP_PERIOD_US_DEFAULT  5000U
+#define FULL_STEPS_PER_REV      200U
+#define MIN_STEP_PULSE_NS       100U
+#define DEFAULT_STEP_PULSE_NS   2000U
+#define MAX_STEP_PULSE_NS       20000U
+#define MAX_PID_OUTPUT          2000.0f
+#define MAX_I_TERM              100.0f
 
 namespace
 {
@@ -34,6 +37,38 @@ float clampCurrentA(float value)
     return 3.0f;
   }
   return value;
+}
+
+uint32_t clampStepPulseWidthNs(uint32_t value)
+{
+  if (value < MIN_STEP_PULSE_NS)
+  {
+    return MIN_STEP_PULSE_NS;
+  }
+  if (value > MAX_STEP_PULSE_NS)
+  {
+    return MAX_STEP_PULSE_NS;
+  }
+  return value;
+}
+
+uint32_t getStepsPerMechanicalRev(const StepperDriver *driver)
+{
+  uint16_t microsteps = 32U;
+  if (driver != nullptr)
+  {
+    microsteps = driver->config().microsteps;
+  }
+  if (microsteps == 0U)
+  {
+    microsteps = 32U;
+  }
+  return FULL_STEPS_PER_REV * static_cast<uint32_t>(microsteps);
+}
+
+uint32_t pulseWidthNsToUs(uint32_t pulse_width_ns)
+{
+  return (pulse_width_ns + 999U) / 1000U;
 }
 }
 
@@ -147,7 +182,7 @@ ClosedLoopController::ClosedLoopController()
     motion_pulse_count_(0U), motion_window_ms_(2000U), motion_mode_(MOTION_MODE_POSITION_FORWARD),
     motion_running_(false), motion_paused_(false), motion_speed_rpm_(0.0f), encoder_speed_rpm_(0.0f), motion_position_deg_(0.0f),
     motion_last_step_time_us_(0U), motion_last_ramp_time_us_(0U), motion_steps_emitted_(0U), motion_step_accumulator_(0.0f), motion_direction_(1),
-    motion_step_high_(false), step_pulse_width_us_(2U),
+    motion_step_high_(false), step_pulse_width_ns_(DEFAULT_STEP_PULSE_NS),
     step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), encoder_raw_angle_(0U),
     magnetic_field_high_(false), magnetic_field_low_(false), last_process_time_us_(0U),
     last_step_state_(0U), last_dir_state_(0U), last_en_state_(0U),
@@ -300,7 +335,7 @@ void ClosedLoopController::syncProtocolTelemetry()
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_POSITION_DEG,
                                 static_cast<uint32_t>(static_cast<int32_t>(motion_position_deg_ * 1000.0f)));
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS, motion_window_ms_);
-  protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_US, step_pulse_width_us_);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_US, step_pulse_width_ns_);
 }
 
 bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
@@ -354,7 +389,7 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
   }
   if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_US)
   {
-    step_pulse_width_us_ = value < 1U ? 1U : (value > 20U ? 20U : value);
+    step_pulse_width_ns_ = clampStepPulseWidthNs(value);
     return true;
   }
   if (reg == TMC2209_EXT_PARAM_MOTOR_ENABLE)
@@ -380,12 +415,19 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
     stopMotion();
     if (driver_ != nullptr)
     {
+      const uint32_t steps_per_rev = getStepsPerMechanicalRev(driver_);
+      const uint32_t half_rev_steps = steps_per_rev / 2U;
       driver_->setEnable(true);
       driver_->setDirection(true);
-      driver_->setStepState(true);
-      stepper_common::stepper_delay_us(step_pulse_width_us_);
-      driver_->setStepState(false);
+      for (uint32_t step_index = 0U; step_index < half_rev_steps; ++step_index)
+      {
+        driver_->setStepState(true);
+        stepper_common::stepper_delay_ns(step_pulse_width_ns_);
+        driver_->setStepState(false);
+        stepper_common::stepper_delay_ns(1000U);
+      }
     }
+    last_en_state_ = 2U;
     return true;
   }
   if (protocol_ == nullptr)
@@ -453,7 +495,7 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t *value)
   }
   if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_US)
   {
-    *value = step_pulse_width_us_;
+    *value = step_pulse_width_ns_;
     return true;
   }
   if (reg == TMC2209_REG_TSTEP)
@@ -608,6 +650,7 @@ void ClosedLoopController::process(uint32_t time_us)
     const float max_rpm = motion_max_rpm_ > 0.0f ? motion_max_rpm_ : motion_start_rpm_;
     const float accel_rpm = motion_accel_rpm_s_ > 0.0f ? motion_accel_rpm_s_ : 300.0f;
     const float target_speed = max_rpm > 0.0f ? max_rpm : motion_start_rpm_;
+    const uint32_t steps_per_rev = getStepsPerMechanicalRev(driver_);
     if (motion_last_ramp_time_us_ == 0U)
     {
       motion_last_ramp_time_us_ = time_us;
@@ -637,11 +680,11 @@ void ClosedLoopController::process(uint32_t time_us)
     }
 
     const float commanded_rpm = fast_abs(motion_speed_rpm_);
-    const float step_hz = (commanded_rpm * static_cast<float>(OPEN_LOOP_STEPS_PER_REV)) / 60.0f;
+    const float step_hz = (commanded_rpm * static_cast<float>(steps_per_rev)) / 60.0f;
     if (!output_stopped_ && step_hz > 0.0f)
     {
       driver_->setDirection(motion_direction_ > 0);
-      stepper_common::stepper_update_motion_timer(static_cast<uint32_t>(step_hz), step_pulse_width_us_);
+      stepper_common::stepper_update_motion_timer(static_cast<uint32_t>(step_hz), pulseWidthNsToUs(step_pulse_width_ns_));
       if (motion_last_step_time_us_ != 0U && time_us > motion_last_step_time_us_)
       {
         const float elapsed_s = static_cast<float>(time_us - motion_last_step_time_us_) * 1.0e-6f;
@@ -794,9 +837,10 @@ void ClosedLoopController::startMotion()
   {
     driver_->setEnable(true);
     driver_->setDirection(motion_direction_ > 0);
+    const uint32_t steps_per_rev = getStepsPerMechanicalRev(driver_);
     stepper_common::stepper_start_motion_timer(
-      static_cast<uint32_t>(fast_abs(motion_speed_rpm_) * static_cast<float>(OPEN_LOOP_STEPS_PER_REV) / 60.0f),
-      step_pulse_width_us_);
+      static_cast<uint32_t>(fast_abs(motion_speed_rpm_) * static_cast<float>(steps_per_rev) / 60.0f),
+      pulseWidthNsToUs(step_pulse_width_ns_));
   }
 }
 

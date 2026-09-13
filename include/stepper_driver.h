@@ -23,6 +23,7 @@ namespace stepper_common
 // 向指定 GPIO 端口写入数字状态，封装了 AT32 的寄存器写法。
 void stepper_write_gpio(gpio_type *port, uint16_t pin, bool state);
 void stepper_delay_us(uint32_t microseconds);
+void stepper_delay_ns(uint32_t nanoseconds);
 void stepper_init_motion_timer(void);
 void stepper_start_motion_timer(uint32_t step_hz, uint32_t pulse_width_us);
 void stepper_update_motion_timer(uint32_t step_hz, uint32_t pulse_width_us);
