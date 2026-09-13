@@ -4,7 +4,7 @@
 
 #define STEP_EDGE_TIMEOUT_US    200U
 #define STEP_PERIOD_US_DEFAULT  5000U
-#define FULL_STEPS_PER_REV      200U
+#define FULL_STEPS_PER_ROUND    200U  // 1.8度步进
 #define MIN_STEP_PULSE_NS       100U
 #define DEFAULT_STEP_PULSE_NS   2000U
 #define MAX_STEP_PULSE_NS       20000U
@@ -52,7 +52,8 @@ uint32_t clampStepPulseWidthNs(uint32_t value)
   return value;
 }
 
-uint32_t getStepsPerMechanicalRev(const StepperDriver *driver)
+// 每圈多少微步
+uint32_t getMicroStepsPerRound(const StepperDriver *driver)
 {
   uint16_t microsteps = 32U;
   if (driver != nullptr)
@@ -63,7 +64,7 @@ uint32_t getStepsPerMechanicalRev(const StepperDriver *driver)
   {
     microsteps = 32U;
   }
-  return FULL_STEPS_PER_REV * static_cast<uint32_t>(microsteps);
+  return FULL_STEPS_PER_ROUND * static_cast<uint32_t>(microsteps);
 }
 
 uint32_t pulseWidthNsToUs(uint32_t pulse_width_ns)
@@ -410,21 +411,21 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
     }
     return true;
   }
-  if (reg == TMC2209_EXT_PARAM_SINGLE_FORWARD_STEP)
+  if (reg == TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS)
   {
     stopMotion();
     if (driver_ != nullptr)
     {
-      const uint32_t steps_per_rev = getStepsPerMechanicalRev(driver_);
-      const uint32_t half_rev_steps = steps_per_rev / 2U;
+      const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
+      const uint32_t half_round_steps = micro_steps_per_round / 2U;
       driver_->setEnable(true);
       driver_->setDirection(true);
-      for (uint32_t step_index = 0U; step_index < half_rev_steps; ++step_index)
+      for (uint32_t step_index = 0U; step_index < half_round_steps; ++step_index)
       {
         driver_->setStepState(true);
         stepper_common::stepper_delay_ns(step_pulse_width_ns_);
         driver_->setStepState(false);
-        stepper_common::stepper_delay_ns(1000U);
+        stepper_common::stepper_delay_ns(step_pulse_width_ns_);
       }
     }
     last_en_state_ = 2U;
@@ -650,7 +651,7 @@ void ClosedLoopController::process(uint32_t time_us)
     const float max_rpm = motion_max_rpm_ > 0.0f ? motion_max_rpm_ : motion_start_rpm_;
     const float accel_rpm = motion_accel_rpm_s_ > 0.0f ? motion_accel_rpm_s_ : 300.0f;
     const float target_speed = max_rpm > 0.0f ? max_rpm : motion_start_rpm_;
-    const uint32_t steps_per_rev = getStepsPerMechanicalRev(driver_);
+    const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
     if (motion_last_ramp_time_us_ == 0U)
     {
       motion_last_ramp_time_us_ = time_us;
@@ -680,7 +681,7 @@ void ClosedLoopController::process(uint32_t time_us)
     }
 
     const float commanded_rpm = fast_abs(motion_speed_rpm_);
-    const float step_hz = (commanded_rpm * static_cast<float>(steps_per_rev)) / 60.0f;
+    const float step_hz = (commanded_rpm * static_cast<float>(micro_steps_per_round)) / 60.0f;
     if (!output_stopped_ && step_hz > 0.0f)
     {
       driver_->setDirection(motion_direction_ > 0);
@@ -837,9 +838,9 @@ void ClosedLoopController::startMotion()
   {
     driver_->setEnable(true);
     driver_->setDirection(motion_direction_ > 0);
-    const uint32_t steps_per_rev = getStepsPerMechanicalRev(driver_);
+    const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
     stepper_common::stepper_start_motion_timer(
-      static_cast<uint32_t>(fast_abs(motion_speed_rpm_) * static_cast<float>(steps_per_rev) / 60.0f),
+      static_cast<uint32_t>(fast_abs(motion_speed_rpm_) * static_cast<float>(micro_steps_per_round) / 60.0f),
       pulseWidthNsToUs(step_pulse_width_ns_));
   }
 }

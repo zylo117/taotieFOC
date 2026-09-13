@@ -106,7 +106,7 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_US:
     case TMC2209_EXT_PARAM_MOTOR_ENABLE:
     case TMC2209_EXT_PARAM_MOTOR_DISABLE:
-    case TMC2209_EXT_PARAM_SINGLE_FORWARD_STEP:
+    case TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS:
       return true;
     default:
       return false;
@@ -375,7 +375,7 @@ bool Tmc2209ProtocolAdapter::setCustomParameter(uint16_t id, uint32_t value)
       break;
     case TMC2209_EXT_PARAM_MOTOR_ENABLE:
     case TMC2209_EXT_PARAM_MOTOR_DISABLE:
-    case TMC2209_EXT_PARAM_SINGLE_FORWARD_STEP:
+    case TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS:
       custom_parameters_[index] = value;
       break;
     default:
@@ -445,7 +445,7 @@ bool Tmc2209ProtocolAdapter::getCustomParameter(uint16_t id, uint32_t *value) co
       break;
     case TMC2209_EXT_PARAM_MOTOR_ENABLE:
     case TMC2209_EXT_PARAM_MOTOR_DISABLE:
-    case TMC2209_EXT_PARAM_SINGLE_FORWARD_STEP:
+    case TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS:
       *value = custom_parameters_[index];
       break;
     default:
