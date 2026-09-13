@@ -144,7 +144,7 @@ ClosedLoopController::ClosedLoopController()
     follow_error_(0.0f), measured_velocity_rps_(0.0f), target_velocity_rps_(0.0f),
     motion_start_rpm_(0.0f), motion_max_rpm_(0.0f), motion_accel_rpm_s_(0.0f),
     motion_pulse_count_(0U), motion_window_ms_(2000U), motion_mode_(MOTION_MODE_POSITION_FORWARD),
-    motion_running_(false), motion_paused_(false), motion_speed_rpm_(0.0f), motion_position_deg_(0.0f),
+    motion_running_(false), motion_paused_(false), motion_speed_rpm_(0.0f), encoder_speed_rpm_(0.0f), motion_position_deg_(0.0f),
     motion_last_step_time_us_(0U), motion_last_ramp_time_us_(0U), motion_steps_emitted_(0U), motion_direction_(1),
     motion_step_high_(false),
     step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), encoder_raw_angle_(0U),
@@ -287,8 +287,10 @@ void ClosedLoopController::syncProtocolTelemetry()
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_PULSE_COUNT, motion_pulse_count_);
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_MODE, static_cast<uint32_t>(motion_mode_));
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_COMMAND, motion_running_ ? 1U : 0U);
-  protocol_->setCustomParameter(TMC2209_EXT_PARAM_SPEED_RPM, static_cast<uint32_t>(motion_speed_rpm_));
-  protocol_->setCustomParameter(TMC2209_EXT_PARAM_POSITION_DEG, static_cast<uint32_t>(motion_position_deg_ * 1000.0f));
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_SPEED_RPM,
+                                static_cast<uint32_t>(static_cast<int32_t>(encoder_speed_rpm_)));
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_POSITION_DEG,
+                                static_cast<uint32_t>(static_cast<int32_t>(motion_position_deg_ * 1000.0f)));
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS, motion_window_ms_);
 }
 
@@ -391,7 +393,7 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t *value)
   }
   if (reg == TMC2209_EXT_PARAM_SPEED_RPM)
   {
-    *value = static_cast<uint32_t>(motion_speed_rpm_);
+    *value = static_cast<uint32_t>(static_cast<int32_t>(encoder_speed_rpm_));
     return true;
   }
   if (reg == TMC2209_EXT_PARAM_POSITION_DEG)
@@ -637,8 +639,6 @@ void ClosedLoopController::process(uint32_t time_us)
 
   actual_step_ = actual_step;
   follow_error_ = static_cast<float>(target_step_ - actual_step_);
-  syncProtocolTelemetry();
-
   if (last_process_time_us_ == 0U)
   {
     last_process_time_us_ = time_us;
@@ -653,9 +653,12 @@ void ClosedLoopController::process(uint32_t time_us)
     float dt = static_cast<float>(dt_us) * 1.0e-6f;
     if (dt > 0.0f)
     {
-      measured_velocity_rps_ = (static_cast<float>(actual_step_ - last_actual_step_)) / dt / 200.0f;
+      measured_velocity_rps_ = (static_cast<float>(actual_step_ - last_actual_step_)) / 65536.0f / dt;
+      encoder_speed_rpm_ = measured_velocity_rps_ * 60.0f;
     }
   }
+
+  syncProtocolTelemetry();
 
   // 位置误差 = 目标位置 - 当前位置。
   float position_error = static_cast<float>(target_step_ - actual_step_);
@@ -755,6 +758,7 @@ void ClosedLoopController::stopMotion()
   motion_running_ = false;
   motion_paused_ = false;
   motion_speed_rpm_ = 0.0f;
+  encoder_speed_rpm_ = 0.0f;
   target_velocity_rps_ = 0.0f;
   motion_steps_emitted_ = 0U;
   motion_last_step_time_us_ = 0U;

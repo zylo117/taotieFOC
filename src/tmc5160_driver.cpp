@@ -51,13 +51,14 @@ bool Tmc5160Driver::readRegister(uint8_t reg, uint32_t *value)
 void Tmc5160Driver::setEnable(bool enable)
 {
   enabled_ = enable;
-  stepper_common::stepper_write_gpio(EN_OUTPUT_PORT, EN_OUT_PIN, !enable);
+  stepper_common::stepper_write_gpio(EN_OUTPUT_PORT, EN_OUT_PIN, enable ? EN_ACTIVE_LEVEL : !EN_ACTIVE_LEVEL);
 }
 
 void Tmc5160Driver::setDirection(bool direction)
 {
   direction_ = direction;
-  stepper_common::stepper_write_gpio(DIR_OUTPUT_PORT, DIR_OUT_PIN, direction);
+  stepper_common::stepper_write_gpio(DIR_OUTPUT_PORT, DIR_OUT_PIN,
+                                     direction ? DIR_FORWARD_LEVEL : !DIR_FORWARD_LEVEL);
 }
 
 void Tmc5160Driver::sendStepPulse(uint32_t width_us)

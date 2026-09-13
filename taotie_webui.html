@@ -810,6 +810,7 @@
       ,motionPositionDeg: 0
       ,waveHistory: []
       ,wavePaused: false
+      ,wavePausedAt: 0
       ,motionWaveTimer: null
       ,lastWaveStamp: 0
     };
@@ -1401,7 +1402,7 @@
       const plotTop = 18;
       const plotBottom = height - 24;
       const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
-      const now = performance.now();
+      const now = state.wavePaused ? state.wavePausedAt : performance.now();
 
       ctx.clearRect(0, 0, width, height);
       ctx.fillStyle = 'rgba(2,6,23,0.82)';
@@ -1443,6 +1444,22 @@
       ctx.fillText('20°', width - 42, plotTop + 4);
       ctx.fillText('0°', width - 34, plotBottom - 2);
       ctx.fillText('-20°', width - 42, plotBottom + 14);
+
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(plotLeft + 8, plotTop + 12);
+      ctx.lineTo(plotLeft + 28, plotTop + 12);
+      ctx.stroke();
+      ctx.fillStyle = '#38bdf8';
+      ctx.fillText('编码器速度 RPM', plotLeft + 34, plotTop + 16);
+      ctx.strokeStyle = '#22c55e';
+      ctx.beginPath();
+      ctx.moveTo(plotLeft + 170, plotTop + 12);
+      ctx.lineTo(plotLeft + 190, plotTop + 12);
+      ctx.stroke();
+      ctx.fillStyle = '#22c55e';
+      ctx.fillText('编码器位置 °', plotLeft + 196, plotTop + 16);
 
       ctx.beginPath();
       ctx.moveTo(plotLeft, plotTop);
@@ -1513,7 +1530,16 @@
     }
 
     function toggleWavePause() {
-      state.wavePaused = !state.wavePaused;
+      if (!state.wavePaused) {
+        state.wavePaused = true;
+        state.wavePausedAt = performance.now();
+      } else {
+        const resumeAt = performance.now();
+        const elapsed = resumeAt - state.wavePausedAt;
+        state.waveHistory = state.waveHistory.map((entry) => ({ ...entry, t: entry.t + elapsed }));
+        state.wavePaused = false;
+        state.wavePausedAt = 0;
+      }
       const btn = document.getElementById('pauseWaveBtn');
       btn.textContent = state.wavePaused ? '继续查看' : '暂停查看';
       log(`[INFO] 波形${state.wavePaused ? '已暂停' : '已恢复'}`);
@@ -1550,7 +1576,7 @@
 
     function handleCustomTelemetry(frame) {
       if (frame.reg === 0x120) {
-        state.motionSpeedRpm = Number(frame.value || 0);
+        state.motionSpeedRpm = frame.value | 0;
       }
       if (frame.reg === 0x121) {
         state.motionPositionDeg = Number((frame.value || 0) / 1000.0);

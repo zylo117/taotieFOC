@@ -12,6 +12,8 @@
 #define DIR_OUT_PIN              GPIO_PINS_11
 #define EN_OUTPUT_PORT           GPIOA
 #define EN_OUT_PIN               GPIO_PINS_3
+#define EN_ACTIVE_LEVEL          false
+#define DIR_FORWARD_LEVEL        true
 
 #define TMC2209_UART_GPIO        GPIOA
 #define TMC2209_UART_PIN         GPIO_PINS_4
