@@ -336,7 +336,7 @@ void ClosedLoopController::syncProtocolTelemetry()
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_POSITION_DEG,
                                 static_cast<uint32_t>(static_cast<int32_t>(motion_position_deg_ * 1000.0f)));
   protocol_->setCustomParameter(TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS, motion_window_ms_);
-  protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_US, step_pulse_width_ns_);
+  protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, step_pulse_width_ns_);
 }
 
 bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
@@ -388,7 +388,7 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
     setWaveformWindowMs(value);
     return true;
   }
-  if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_US)
+  if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS)
   {
     step_pulse_width_ns_ = clampStepPulseWidthNs(value);
     return true;
@@ -494,7 +494,7 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t *value)
     *value = motion_window_ms_;
     return true;
   }
-  if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_US)
+  if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS)
   {
     *value = step_pulse_width_ns_;
     return true;
