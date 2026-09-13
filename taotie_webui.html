@@ -477,8 +477,8 @@
           </div>
 
           <div class="status-line">
-            <span>速度：<strong id="speedValue">0.00</strong> rps</span>
-            <span>加速度：<strong id="accelValue">0.00</strong> rps²</span>
+            <span>速度：<strong id="speedValue">0.00</strong> RPM</span>
+            <span>加速度：<strong id="accelValue">0.00</strong> RPM/s</span>
             <span>电流：<strong id="currentValue">0.00</strong> A</span>
           </div>
 
@@ -486,20 +486,20 @@
             <h3 style="margin:0 0 12px;">测速控制</h3>
             <div class="grid-2">
               <div class="field">
-                <label>启动转速</label>
+                <label>启动转速（RPM）</label>
                 <select id="startRpmSelect"></select>
               </div>
               <div class="field">
-                <label>最高转速</label>
+                <label>最高转速（RPM）</label>
                 <select id="maxRpmSelect"></select>
               </div>
               <div class="field">
-                <label>加速度</label>
+                <label>加速度（RPM/s）</label>
                 <select id="accelRpmSelect"></select>
               </div>
               <div class="field">
-                <label>脉冲数</label>
-                <input id="pulseCountInput" type="number" min="25600" step="25600" value="2560000" />
+                <label>脉冲数（STEP 个数）</label>
+                <input id="pulseCountInput" type="number" min="51200" step="51200" value="2560000" />
               </div>
               <div class="field">
                 <label>运动模式</label>
@@ -526,7 +526,8 @@
               <button id="stopMotionBtn" class="danger">停止</button>
               <button id="pauseWaveBtn">暂停查看</button>
             </div>
-            <div class="tiny mt">说明：脉冲数按“基础细分 × 插值后微步数”规则计算；未插值或插值不大于基础细分时按基础细分处理。</div>
+            <div class="tiny mt">说明：脉冲数固定按 256 细分角度基准计算，1.8° 电机每转 51200 个 STEP，与驱动器微步和插值设置无关。</div>
+            <div class="tiny mt" id="motionDurationEstimate">预计时间：等待参数</div>
             <canvas id="motionWaveCanvas" width="620" height="220" style="width:100%;height:220px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"></canvas>
           </div>
         </div>
@@ -953,7 +954,7 @@
       document.getElementById('encoderAngleValue').textContent = `${state.encoderAngleDeg.toFixed(2)}°`;
       document.getElementById('encoderRawValue').textContent = `0x${state.encoderRaw.toString(16).padStart(4, '0').toUpperCase()}`;
       document.getElementById('magneticLevelValue').textContent = `${state.magneticHigh ? '报警' : '正常'} / ${state.magneticLow ? '报警' : '正常'}`;
-      document.getElementById('speedValue').textContent = (state.speed || state.motionSpeedRpm / 60).toFixed(2);
+      document.getElementById('speedValue').textContent = Number(state.motionSpeedRpm || 0).toFixed(2);
       document.getElementById('accelValue').textContent = (state.accel || 0).toFixed(2);
       document.getElementById('currentValue').textContent = (state.currentA || 0).toFixed(2);
     }
@@ -1368,15 +1369,25 @@
     }
 
     function getEffectivePulseCount() {
-      const baseMicrosteps = Number(document.getElementById('microsteps').value || 32);
-      const interpMicrosteps = Number(document.getElementById('interpMicrosteps').value || baseMicrosteps);
-      const pulseCount = Number(document.getElementById('pulseCountInput').value || 2560000);
-      const effectiveBase = Math.max(1, Math.min(256, baseMicrosteps));
-      const effectiveInterp = Math.max(1, Math.min(256, interpMicrosteps));
-      const effectiveSubdivision = effectiveInterp > effectiveBase ? effectiveInterp : effectiveBase;
-      const normalizedPulse = Math.max(1, Number.isFinite(pulseCount) ? pulseCount : 25600);
-      return Math.max(normalizedPulse, effectiveSubdivision);
+      const pulseCount = Number(document.getElementById('pulseCountInput').value || 51200);
+      const normalizedPulse = Math.max(51200, Number.isFinite(pulseCount) ? pulseCount : 51200);
+      return Math.round(normalizedPulse / 51200) * 51200;
     }
+    function updateMotionDurationEstimate() {
+      const pulseCount = Math.max(1, getEffectivePulseCount());
+      const startRpm = Number(document.getElementById('startRpmSelect').value || 0);
+      const maxRpm = Number(document.getElementById('maxRpmSelect').value || 0);
+      const accelRpm = Number(document.getElementById('accelRpmSelect').value || 0);
+      const stepsPerRevolution = 51200;
+      const accelSeconds = accelRpm > 0 && maxRpm > startRpm ? (maxRpm - startRpm) / accelRpm : 0;
+      const accelPulses = ((startRpm + maxRpm) * 0.5) * accelSeconds / 60 * stepsPerRevolution;
+      const physicalSeconds = accelPulses < pulseCount && maxRpm > 0
+        ? accelSeconds + (pulseCount - accelPulses) / (maxRpm / 60 * stepsPerRevolution)
+        : pulseCount / Math.max(1, startRpm / 60 * stepsPerRevolution);
+      document.getElementById('motionDurationEstimate').textContent =
+        `理论时间（固定 256 细分，${maxRpm} RPM）：约 ${physicalSeconds.toFixed(1)} s；STEP 基准：${stepsPerRevolution} 个/圈`;
+    }
+  updateMotionDurationEstimate();
 
     function pushWaveSample() {
       if (state.wavePaused) return;
@@ -1507,7 +1518,7 @@
       const maxRpm = Number(document.getElementById('maxRpmSelect').value || 1000);
       const accelRpm = Number(document.getElementById('accelRpmSelect').value || 600);
       const motionMode = Number(document.getElementById('motionModeSelect').value || 0);
-      const pulseCount = Math.max(25600, Math.round(getEffectivePulseCount()));
+      const pulseCount = Math.max(51200, Math.round(getEffectivePulseCount()));
       const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
       const stepPulseWidthUs = clamp(Number(document.getElementById('stepPulseWidthUsInput').value || 2), 1, 20);
       document.getElementById('waveWindowMsInput').value = String(windowMs);
@@ -1524,7 +1535,7 @@
         await writeRegister(0x123, stepPulseWidthUs);
       }
 
-      state.motionSpeedRpm = startRpm;
+      state.motionSpeedRpm = 0;
       state.waveHistory = [];
       log(`[INFO] 发送测速控制：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms step=${stepPulseWidthUs}us`);
     }
@@ -1563,6 +1574,9 @@
       document.getElementById('startMotionBtn').addEventListener('click', startMotionTest);
       document.getElementById('stopMotionBtn').addEventListener('click', stopMotionTest);
       document.getElementById('pauseWaveBtn').addEventListener('click', toggleWavePause);
+            ['startRpmSelect', 'maxRpmSelect', 'accelRpmSelect', 'pulseCountInput', 'microsteps'].forEach((id) => {
+              document.getElementById(id).addEventListener('change', updateMotionDurationEstimate);
+            });
       document.getElementById('tuneBtn').addEventListener('click', startAutoTune);
       document.getElementById('startTuneBtn').addEventListener('click', startAutoTune);
       document.getElementById('applyTuneBtn').addEventListener('click', function () {

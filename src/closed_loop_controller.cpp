@@ -4,6 +4,7 @@
 
 #define STEP_EDGE_TIMEOUT_US  200U
 #define STEP_PERIOD_US_DEFAULT 5000U
+#define OPEN_LOOP_STEPS_PER_REV 51200U
 #define MAX_PID_OUTPUT        2000.0f
 #define MAX_I_TERM            100.0f
 
@@ -145,7 +146,7 @@ ClosedLoopController::ClosedLoopController()
     motion_start_rpm_(0.0f), motion_max_rpm_(0.0f), motion_accel_rpm_s_(0.0f),
     motion_pulse_count_(0U), motion_window_ms_(2000U), motion_mode_(MOTION_MODE_POSITION_FORWARD),
     motion_running_(false), motion_paused_(false), motion_speed_rpm_(0.0f), encoder_speed_rpm_(0.0f), motion_position_deg_(0.0f),
-    motion_last_step_time_us_(0U), motion_last_ramp_time_us_(0U), motion_steps_emitted_(0U), motion_direction_(1),
+    motion_last_step_time_us_(0U), motion_last_ramp_time_us_(0U), motion_steps_emitted_(0U), motion_step_accumulator_(0.0f), motion_direction_(1),
     motion_step_high_(false), step_pulse_width_us_(2U),
     step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), encoder_raw_angle_(0U),
     magnetic_field_high_(false), magnetic_field_low_(false), last_process_time_us_(0U),
@@ -573,19 +574,6 @@ void ClosedLoopController::process(uint32_t time_us)
 
   if (motion_running_)
   {
-    if (motion_step_high_)
-    {
-      driver_->setStepState(false);
-      motion_step_high_ = false;
-      const uint32_t max_steps = motion_pulse_count_ == 0U ? UINT32_MAX : motion_pulse_count_;
-      if (motion_steps_emitted_ >= max_steps)
-      {
-        stopMotion();
-        return;
-      }
-    }
-
-    const uint16_t microsteps = driver_->config().microsteps == 0U ? 32U : driver_->config().microsteps;
     const float max_rpm = motion_max_rpm_ > 0.0f ? motion_max_rpm_ : motion_start_rpm_;
     const float accel_rpm = motion_accel_rpm_s_ > 0.0f ? motion_accel_rpm_s_ : 300.0f;
     const float target_speed = max_rpm > 0.0f ? max_rpm : motion_start_rpm_;
@@ -618,26 +606,34 @@ void ClosedLoopController::process(uint32_t time_us)
     }
 
     const float commanded_rpm = fast_abs(motion_speed_rpm_);
-    const float step_hz = (commanded_rpm * static_cast<float>(200U * microsteps)) / 60.0f;
-    const uint32_t interval_us = step_hz > 0.0f ? static_cast<uint32_t>(1000000.0f / step_hz) : UINT32_MAX;
-    if (!output_stopped_ && interval_us != UINT32_MAX && (time_us - motion_last_step_time_us_ >= interval_us))
+    const float step_hz = (commanded_rpm * static_cast<float>(OPEN_LOOP_STEPS_PER_REV)) / 60.0f;
+    if (!output_stopped_ && step_hz > 0.0f)
     {
       driver_->setDirection(motion_direction_ > 0);
-      driver_->setStepState(true);
-      stepper_common::stepper_delay_us(step_pulse_width_us_);
-      driver_->setStepState(false);
-      motion_step_high_ = false;
+      stepper_common::stepper_update_motion_timer(static_cast<uint32_t>(step_hz), step_pulse_width_us_);
+      if (motion_last_step_time_us_ != 0U && time_us > motion_last_step_time_us_)
+      {
+        const float elapsed_s = static_cast<float>(time_us - motion_last_step_time_us_) * 1.0e-6f;
+        motion_step_accumulator_ += step_hz * elapsed_s;
+        const uint32_t completed_steps = static_cast<uint32_t>(motion_step_accumulator_);
+        motion_step_accumulator_ -= static_cast<float>(completed_steps);
+        motion_steps_emitted_ += completed_steps;
+      }
       motion_last_step_time_us_ = time_us;
-      motion_steps_emitted_ += 1U;
+      const uint32_t max_steps = motion_pulse_count_ == 0U ? UINT32_MAX : motion_pulse_count_;
+      if (motion_steps_emitted_ >= max_steps)
+      {
+        stopMotion();
+        return;
+      }
+    }
+    else if (output_stopped_)
+    {
+      stepper_common::stepper_stop_motion_timer();
     }
   }
   else if (driver_ != nullptr)
   {
-    if (motion_step_high_)
-    {
-      driver_->setStepState(false);
-      motion_step_high_ = false;
-    }
     driver_->setEnable(false);
   }
 
@@ -752,6 +748,7 @@ void ClosedLoopController::startMotion()
   motion_running_ = true;
   motion_paused_ = false;
   motion_steps_emitted_ = 0U;
+  motion_step_accumulator_ = 0.0f;
   motion_last_step_time_us_ = 0U;
   motion_last_ramp_time_us_ = 0U;
   motion_step_high_ = false;
@@ -770,6 +767,9 @@ void ClosedLoopController::startMotion()
   {
     driver_->setEnable(true);
     driver_->setDirection(motion_direction_ > 0);
+    stepper_common::stepper_start_motion_timer(
+      static_cast<uint32_t>(fast_abs(motion_speed_rpm_) * static_cast<float>(OPEN_LOOP_STEPS_PER_REV) / 60.0f),
+      step_pulse_width_us_);
   }
 }
 
@@ -781,11 +781,13 @@ void ClosedLoopController::stopMotion()
   encoder_speed_rpm_ = 0.0f;
   target_velocity_rps_ = 0.0f;
   motion_steps_emitted_ = 0U;
+  motion_step_accumulator_ = 0.0f;
   motion_last_step_time_us_ = 0U;
   motion_last_ramp_time_us_ = 0U;
   motion_step_high_ = false;
   if (driver_ != nullptr)
   {
+    stepper_common::stepper_stop_motion_timer();
     driver_->setStepState(false);
     driver_->setEnable(false);
   }
