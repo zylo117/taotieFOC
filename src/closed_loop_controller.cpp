@@ -193,7 +193,7 @@ void ClosedLoopController::init(StepperDriver *driver, AngleEncoder *encoder)
   if (driver_ != nullptr)
   {
     driver_->init();
-    driver_->setEnable(true);
+    driver_->setEnable(false);
     driver_->setDirection(false);
     driver_->setStepState(false);
   }
@@ -355,6 +355,37 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
   if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_US)
   {
     step_pulse_width_us_ = value < 1U ? 1U : (value > 20U ? 20U : value);
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_MOTOR_ENABLE)
+  {
+    stopMotion();
+    if (driver_ != nullptr)
+    {
+      driver_->setEnable(true);
+    }
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_MOTOR_DISABLE)
+  {
+    stopMotion();
+    if (driver_ != nullptr)
+    {
+      driver_->setEnable(false);
+    }
+    return true;
+  }
+  if (reg == TMC2209_EXT_PARAM_SINGLE_FORWARD_STEP)
+  {
+    stopMotion();
+    if (driver_ != nullptr)
+    {
+      driver_->setEnable(true);
+      driver_->setDirection(true);
+      driver_->setStepState(true);
+      stepper_common::stepper_delay_us(step_pulse_width_us_);
+      driver_->setStepState(false);
+    }
     return true;
   }
   if (protocol_ == nullptr)
@@ -631,10 +662,6 @@ void ClosedLoopController::process(uint32_t time_us)
     {
       stepper_common::stepper_stop_motion_timer();
     }
-  }
-  else if (driver_ != nullptr)
-  {
-    driver_->setEnable(false);
   }
 
   // 读取编码器原始角度，并换算成相对零点的步数。

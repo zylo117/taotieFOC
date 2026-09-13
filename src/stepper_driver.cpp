@@ -63,6 +63,12 @@ void stepper_start_motion_timer(uint32_t step_hz, uint32_t pulse_width_us)
   gpio_init_struct.gpio_pins = STEP_OUT_PIN;
   gpio_init(STEP_OUTPUT_PORT, &gpio_init_struct);
 
+  // TMR2_MUX_10 also selects PB11 as TMR2_CH4. Re-assert PB11 as a normal
+  // GPIO so DIR remains a static logic output while PB10 carries STEP.
+  gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
+  gpio_init_struct.gpio_pins = DIR_OUT_PIN;
+  gpio_init(DIR_OUTPUT_PORT, &gpio_init_struct);
+
   const uint32_t timer_tick_hz = system_core_clock;
   uint32_t period = timer_tick_hz / step_hz;
   if (period < 2U)
@@ -78,7 +84,11 @@ void stepper_start_motion_timer(uint32_t step_hz, uint32_t pulse_width_us)
   }
   if (pulse_ticks > period)
   {
-    pulse_ticks = period;
+    pulse_ticks = period / 2U;
+  }
+  if (pulse_ticks == 0U)
+  {
+    pulse_ticks = 1U;
   }
 
   tmr_counter_enable(TMR2, FALSE);
@@ -133,7 +143,11 @@ void stepper_update_motion_timer(uint32_t step_hz, uint32_t pulse_width_us)
   }
   if (pulse_ticks > period)
   {
-    pulse_ticks = period;
+    pulse_ticks = period / 2U;
+  }
+  if (pulse_ticks == 0U)
+  {
+    pulse_ticks = 1U;
   }
   tmr_period_value_set(TMR2, period);
   tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, pulse_ticks);
@@ -154,7 +168,7 @@ void stepper_stop_motion_timer(void)
   gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
   gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
   gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
-  gpio_init_struct.gpio_pins = STEP_OUT_PIN;
+  gpio_init_struct.gpio_pins = STEP_OUT_PIN | DIR_OUT_PIN;
   gpio_init(STEP_OUTPUT_PORT, &gpio_init_struct);
   stepper_write_gpio(STEP_OUTPUT_PORT, STEP_OUT_PIN, false);
   motion_timer_running = false;

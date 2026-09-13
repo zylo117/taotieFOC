@@ -499,7 +499,7 @@
               </div>
               <div class="field">
                 <label>脉冲数（STEP 个数）</label>
-                <input id="pulseCountInput" type="number" min="51200" step="51200" value="2560000" />
+                <input id="pulseCountInput" type="number" min="0" step="51200" value="2560000" />
               </div>
               <div class="field">
                 <label>运动模式</label>
@@ -524,6 +524,9 @@
             <div class="inline mt">
               <button id="startMotionBtn" class="primary">启动</button>
               <button id="stopMotionBtn" class="danger">停止</button>
+              <button id="motorEnableBtn">电机使能（EN=0）</button>
+              <button id="motorDisableBtn">电机失能（EN=1）</button>
+              <button id="singleStepBtn" class="warn">单个正向脉冲</button>
               <button id="pauseWaveBtn">暂停查看</button>
             </div>
             <div class="tiny mt">说明：脉冲数固定按 256 细分角度基准计算，1.8° 电机每转 51200 个 STEP，与驱动器微步和插值设置无关。</div>
@@ -912,6 +915,9 @@
       ,[0x121, ['0x0121', 'POSITION_DEG', '当前位置，单位 0.001°']]
       ,[0x122, ['0x0122', 'WAVE_WINDOW_MS', '波形窗口长度，单位 ms']]
       ,[0x123, ['0x0123', 'STEP_PULSE_WIDTH_US', 'STEP 高电平脉宽，单位 µs']]
+      ,[0x124, ['0x0124', 'MOTOR_ENABLE', '电机使能，EN 输出低电平']]
+      ,[0x125, ['0x0125', 'MOTOR_DISABLE', '电机失能，EN 输出高电平']]
+      ,[0x126, ['0x0126', 'SINGLE_FORWARD_STEP', 'DIR 高电平并输出单个 STEP']]
     ]);
 
     function log(message) {
@@ -1548,6 +1554,15 @@
       log('[WARN] 发送停止测速命令');
     }
 
+    async function sendManualMotionCommand(reg, message) {
+      if (!state.connected) {
+        log('[WARN] 尚未连接串口，无法发送电机测试命令');
+        return;
+      }
+      await writeRegister(reg, 1);
+      log('[INFO] ' + message);
+    }
+
     function toggleWavePause() {
       if (!state.wavePaused) {
         state.wavePaused = true;
@@ -1573,6 +1588,9 @@
       document.getElementById('stopBtn').addEventListener('click', stopMotor);
       document.getElementById('startMotionBtn').addEventListener('click', startMotionTest);
       document.getElementById('stopMotionBtn').addEventListener('click', stopMotionTest);
+      document.getElementById('motorEnableBtn').addEventListener('click', () => sendManualMotionCommand(0x124, '电机使能：EN=0'));
+      document.getElementById('motorDisableBtn').addEventListener('click', () => sendManualMotionCommand(0x125, '电机失能：EN=1'));
+      document.getElementById('singleStepBtn').addEventListener('click', () => sendManualMotionCommand(0x126, '单个正向 STEP：DIR=1'));
       document.getElementById('pauseWaveBtn').addEventListener('click', toggleWavePause);
             ['startRpmSelect', 'maxRpmSelect', 'accelRpmSelect', 'pulseCountInput', 'microsteps'].forEach((id) => {
               document.getElementById(id).addEventListener('change', updateMotionDurationEstimate);
