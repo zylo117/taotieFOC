@@ -188,7 +188,6 @@ void control_task_function(void *pvParameters)
   while (1)
   {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    g_controller.syncStepDirection();
     control_time_us += 50U;
     g_controller.process(control_time_us);
   }

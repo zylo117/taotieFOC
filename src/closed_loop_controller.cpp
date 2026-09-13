@@ -165,6 +165,15 @@ void ClosedLoopController::init(StepperDriver *driver, AngleEncoder *encoder)
 {
   driver_ = driver;
   encoder_ = encoder;
+
+  crm_periph_clock_enable(CRM_GPIOC_PERIPH_CLOCK, TRUE);
+  gpio_init_type input_gpio;
+  gpio_default_para_init(&input_gpio);
+  input_gpio.gpio_mode = GPIO_MODE_INPUT;
+  input_gpio.gpio_pull = GPIO_PULL_DOWN;
+  input_gpio.gpio_pins = GPIO_PINS_13 | GPIO_PINS_14 | GPIO_PINS_15;
+  gpio_init(GPIOC, &input_gpio);
+
   position_pid_.setGains(base_position_kp_, base_position_ki_, base_position_kd_);
   velocity_pid_.setGains(base_velocity_kp_, base_velocity_ki_, base_velocity_kd_);
 
@@ -215,9 +224,8 @@ void ClosedLoopController::reportEncoderFault(bool active)
     driver_->setEnable(false);
     output_stopped_ = true;
   }
-  else if (!active && !magnetic_fault_active_ && driver_ != nullptr)
+  else if (!active && !magnetic_fault_active_)
   {
-    driver_->setEnable(true);
     output_stopped_ = false;
   }
 }
@@ -230,9 +238,8 @@ void ClosedLoopController::reportMagneticFieldAlarm(bool active)
     driver_->setEnable(false);
     output_stopped_ = true;
   }
-  else if (!active && !encoder_fault_active_ && driver_ != nullptr)
+  else if (!active && !encoder_fault_active_)
   {
-    driver_->setEnable(true);
     output_stopped_ = false;
   }
 }
