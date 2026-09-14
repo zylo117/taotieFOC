@@ -1590,7 +1590,22 @@
       document.getElementById('stopMotionBtn').addEventListener('click', stopMotionTest);
       document.getElementById('motorEnableBtn').addEventListener('click', () => sendManualMotionCommand(0x124, '电机使能：EN=0'));
       document.getElementById('motorDisableBtn').addEventListener('click', () => sendManualMotionCommand(0x125, '电机失能：EN=1'));
-      document.getElementById('singleStepBtn').addEventListener('click', () => sendManualMotionCommand(0x126, '单个正向 STEP：DIR=1'));
+      document.getElementById('singleStepBtn').addEventListener('click', async () => {
+          // 从页面下拉框读取参数
+          const startRpm = Number(document.getElementById('startRpmSelect').value);
+          const maxRpm = Number(document.getElementById('maxRpmSelect').value);
+          const accelRpm = Number(document.getElementById('accelRpmSelect').value);
+          const motionMode = Number(document.getElementById('motionModeSelect').value);
+
+          // 下发运动相关参数寄存器
+          await writeRegister(0x11A, startRpm);
+          await writeRegister(0x11B, maxRpm);
+          await writeRegister(0x11C, accelRpm);
+          await writeRegister(0x11E, motionMode);
+
+          // 再触发单步正向脉冲命令寄存器
+          await sendManualMotionCommand(0x126, '单个正向 STEP：DIR=1（已同步速度/加速度参数）');
+      });
       document.getElementById('pauseWaveBtn').addEventListener('click', toggleWavePause);
             ['startRpmSelect', 'maxRpmSelect', 'accelRpmSelect', 'pulseCountInput', 'microsteps'].forEach((id) => {
               document.getElementById(id).addEventListener('change', updateMotionDurationEstimate);

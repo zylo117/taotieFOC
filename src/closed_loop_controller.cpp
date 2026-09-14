@@ -413,19 +413,14 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
   }
   if (reg == TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS)
   {
-    stopMotion();
-    if (driver_ != nullptr)
-    {
-      const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
-      const uint32_t half_round_steps = micro_steps_per_round / 2U;
-      driver_->setEnable(true);
-      driver_->setDirection(true);
-      stepper_common::stepper_delay_ns(step_pulse_width_ns_ / 5);  // 经验值，2209方向最少要提前于脉冲的20ns，而脉宽最少要100ns，所以1/5
-      for (uint32_t step_index = 0U; step_index < half_round_steps; ++step_index)
-      {
-        driver_->sendStepPulse(step_pulse_width_ns_);
-      }
-    }
+    const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
+    const uint32_t half_round_steps = micro_steps_per_round / 2U;
+
+    // 设置运动参数，交给梯形规划引擎输出脉冲
+    setMotionConfig(motion_start_rpm_, motion_max_rpm_, motion_accel_rpm_s_,
+                    half_round_steps, MOTION_MODE_POSITION_FORWARD);
+    startMotion();
+
     last_en_state_ = 2U;
     return true;
   }
