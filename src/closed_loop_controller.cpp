@@ -818,8 +818,8 @@ void ClosedLoopController::startMotion()
   motion_paused_ = false;
   motion_steps_emitted_ = 0U;
   motion_step_accumulator_ = 0.0f;
-  motion_last_step_time_us_ = 0U;
-  motion_last_ramp_time_us_ = 0U;
+  motion_last_step_time_ns_ = 0ULL;
+  motion_last_ramp_time_ns_ = 0ULL;
   motion_step_high_ = false;
   if (motion_mode_ == MOTION_MODE_POSITION_REVERSE ||
       motion_mode_ == MOTION_MODE_VELOCITY_REVERSE ||
@@ -837,10 +837,161 @@ void ClosedLoopController::startMotion()
     driver_->setEnable(true);
     driver_->setDirection(motion_direction_ > 0);
     const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
-    stepper_common::stepper_start_motion_timer(
-      static_cast<uint32_t>(fast_abs(motion_speed_rpm_) * static_cast<float>(micro_steps_per_round) / 60.0f),
-      pulseWidthNsToUs(step_pulse_width_ns_));
+    // 在此补充实现，需要跑motion_pulse_count_个脉冲，速度从motion_start_rpm_用加速度motion_accel_rpm_s_（RPM/s）加速到motion_max_rpm_
+    // 最后再用加速度motion_accel_rpm_s_（RPM/s）减速到0，脉冲用driver_->sendStepPulse(step_pulse_width_ns_)发送，
+    // step_pulse_width_ns_是脉宽，固定且不可随便改，虽然短，但是也要考虑它可能存在的的影响
+    // 每一圈有micro_steps_per_round个细分微步
+
+    // 单位换算 RPM → step/s；RPM/s加速度 → step/s²
+    // f_step(step/s) = RPM * micro_steps_per_round / 60，每秒多少微步
+    const float rpm2step = static_cast<float>(micro_steps_per_round) / 60.0f;
+    motion_start_step_s_ = motion_start_rpm_ * rpm2step;
+    motion_max_step_s_   = motion_max_rpm_ * rpm2step;
+    motion_accel_step_s2_= motion_accel_rpm_s_ * rpm2step;
+
+    // 加速段：从start速度加速到max速度，需要多少步
+    // 运动学公式 v² - v0² = 2*a*s → s = (v² - v0²)/(2a)
+    const float v0 = motion_start_step_s_;
+    const float vmax = motion_max_step_s_;
+    const float a = motion_accel_step_s2_;
+    accel_total_steps_ = static_cast<uint32_t>((vmax*vmax - v0*v0) / (2.0f * a));
+
+    // 减速段：从vmax减速到0，加速度大小同样a
+    decel_total_steps_ = static_cast<uint32_t>( (vmax * vmax) / (2.0f * a) );
+
+    uint32_t total_req_steps = motion_pulse_count_;
+
+    // 判断：行程够不够跑完整梯形（加速+匀速+减速），不够就退化成三角曲线（无匀速段）
+    if(accel_total_steps_ + decel_total_steps_ <= total_req_steps)
+    {
+        // 完整梯形：存在匀速区间
+        cruise_total_steps_ = total_req_steps - accel_total_steps_ - decel_total_steps_;
+        motion_ramp_stage_ = RAMP_STAGE_ACCEL;
+    }
+    else
+    {
+        // 三角曲线：没有匀速段，重新计算能达到的峰值速度v_peak
+        // v_peak² = a * total_req_steps + v0²
+        // 重新分配加速/减速步数，加速到v_peak立刻减速
+        cruise_total_steps_ = 0;
+        float v_peak_sq = a * total_req_steps + v0 * v0;
+        float v_peak = sqrtf(v_peak_sq);
+        accel_total_steps_ = static_cast<uint32_t>((v_peak*v_peak - v0*v0)/(2*a));
+        decel_total_steps_ = total_req_steps - accel_total_steps_;
+        motion_ramp_stage_ = RAMP_STAGE_ACCEL;
+    }
+
+    // 关键标记：剩余步数 <= steps_to_decel_ 就进入减速阶段
+    steps_to_decel_ = decel_total_steps_;
+    current_step_speed_ = motion_start_step_s_; // 初始速度
+
+    // 复位步累积器，用于固定频率定时器里的脉冲生成（经典DDA微分器思路）
+    motion_step_accumulator_ = 0.0f;
+    // ===================================================================
   }
+}
+
+/**
+ * @brief 梯形加减速速度规划更新函数，纳秒时间基准，在FreeRTOS控制任务中异步调用
+ * @param now_ns 系统高精度硬件时间戳(纳秒)，使用DWT CYCCNT获取真实硬件时间，禁止软件虚拟累加时间
+ * @note 调用源：TMR4定时器中断通知唤醒control_task任务上下文；**禁止在中断内直接调用**
+ * @note DDA微分累加器实现，任务调度延迟时依靠时间差批量补齐脉冲，保证不会丢失脉冲
+ * @note sendStepPulse输出STEP脉冲，脉宽由参数step_pulse_width_ns_固定，底层驱动完成ns级脉冲生成
+ */
+void ClosedLoopController::rampUpdate(uint64_t now_ns)
+{
+    // 如果当前没有运动在运行，直接退出
+    if(!motion_running_)
+    {
+        return;
+    }
+
+    // 条件：已经输出全部需要的脉冲，运动正常结束
+    if(motion_steps_emitted_ >= motion_pulse_count_)
+    {
+        motion_running_ = false;                // 标记运动停止
+        motion_ramp_stage_ = RAMP_STAGE_DONE;   // 设置状态为运动完成
+        current_step_speed_ = 0.0f;             // 运动结束强制把当前速度清零，防止下次运动残留速度
+        return;
+    }
+
+    // 计算还剩余多少微步脉冲有待输出
+    uint32_t remaining_steps = motion_pulse_count_ - motion_steps_emitted_;
+
+    // ========== 1.加减速阶段的速度积分更新 ==========
+    // 计算距离上一次rampUpdate调用的时间差(纳秒)
+    uint64_t delta_ramp_ns = now_ns - motion_last_ramp_time_ns_;
+    // 纳秒转换为秒，用于加速度公式计算
+    float dt_ramp_s = static_cast<float>(delta_ramp_ns) / 1.0e9f;
+
+    if(motion_ramp_stage_ == RAMP_STAGE_ACCEL)
+    {
+        // 【加速阶段】速度 = 当前速度 + 加速度 * 时间
+        current_step_speed_ += motion_accel_step_s2_ * dt_ramp_s;
+
+        // 速度限幅：到达设定最大速度，切换到匀速阶段
+        if(current_step_speed_ >= motion_max_step_s_)
+        {
+            current_step_speed_ = motion_max_step_s_;
+            motion_ramp_stage_ = RAMP_STAGE_CRUISE;
+        }
+
+        // 关键判断：剩余步数 <= 减速需要的总步数 → 必须立刻切入减速，防止冲过目标位置
+        // 短行程三角曲线模式下会直接从加速转入减速，不会经过匀速
+        if(remaining_steps <= steps_to_decel_)
+        {
+            motion_ramp_stage_ = RAMP_STAGE_DECEL;
+        }
+    }
+    else if(motion_ramp_stage_ == RAMP_STAGE_CRUISE)
+    {
+        // 【匀速阶段】速度保持不变，只监控剩余步数，判断何时开启减速
+        if(remaining_steps <= steps_to_decel_)
+        {
+            motion_ramp_stage_ = RAMP_STAGE_DECEL;
+        }
+    }
+    else if(motion_ramp_stage_ == RAMP_STAGE_DECEL)
+    {
+        // 【减速阶段】速度 = 当前速度 - 加速度 * 时间（减速加速度大小与加速一致）
+        current_step_speed_ -= motion_accel_step_s2_ * dt_ramp_s;
+
+        // 速度下限保护，不能出现负速度
+        if(current_step_speed_ < 0.0f)
+        {
+            current_step_speed_ = 0.0f;
+        }
+    }
+
+    // 更新本次的时间戳，作为下一次调用的“上一次时间点”
+    motion_last_ramp_time_ns_ = now_ns;
+
+    // ========== 2.DDA微分累加器：生成步进脉冲，核心部分 ==========
+    // DDA原理：步进步数增量 = 瞬时速度(step/s) × 流逝时间(s)
+    // 即使任务被抢占延迟很久，delta_step_ns会记录真实流逝时间，累加器累积需要输出的步数
+    // while循环一次性输出多个脉冲，做到调度抖动下不丢脉冲
+
+    // 获取两次脉冲生成之间真实流逝的纳秒
+    uint64_t delta_step_ns = now_ns - motion_last_step_time_ns_;
+    // 时间单位换算：纳秒 → 秒
+    float dt_step_s = static_cast<float>(delta_step_ns) / 1.0e9f;
+
+    // 累加本次时间内应该产生的步数（浮点数，允许小数累积）
+    motion_step_accumulator_ += current_step_speed_ * dt_step_s;
+
+    // 只要累加器≥1，代表需要输出1个step脉冲；循环批量输出，直到没有脉冲待输出或者全部脉冲发完
+    while( (motion_step_accumulator_ >= 1.0f) && (motion_steps_emitted_ < motion_pulse_count_) )
+    {
+        // 调用驱动输出STEP脉冲；脉冲高电平宽度固定为step_pulse_width_ns_，底层实现ns延时
+        driver_->sendStepPulse(step_pulse_width_ns_);
+        // 已经发出的脉冲计数+1
+        motion_steps_emitted_ ++;
+        // 已经消耗1步，累加器减去1，小数部分保留，留给下一次调度
+        motion_step_accumulator_ -= 1.0f;
+    }
+
+    // 更新脉冲模块的时间戳
+    motion_last_step_time_ns_ = now_ns;
 }
 
 void ClosedLoopController::stopMotion()

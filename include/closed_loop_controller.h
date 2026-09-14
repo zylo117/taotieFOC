@@ -134,6 +134,7 @@ public:
   void setMotionConfig(float start_rpm, float max_rpm, float accel_rpm_s, uint32_t pulse_count, MotionMode mode);
   void startMotion();
   void stopMotion();
+  void rampUpdate(uint64_t now_ns);
   bool isMotionRunning() const;
   float getMotionSpeedRpm() const;
   float getMotionPositionDeg() const;
@@ -221,6 +222,8 @@ private:
   volatile float motion_speed_rpm_;
   volatile float encoder_speed_rpm_;
   volatile float motion_position_deg_;
+  volatile uint32_t motion_last_step_time_ns_;
+  volatile uint32_t motion_last_ramp_time_ns_;
   volatile uint32_t motion_last_step_time_us_;
   volatile uint32_t motion_last_ramp_time_us_;
   volatile uint32_t motion_steps_emitted_;
@@ -255,6 +258,23 @@ private:
   uint32_t position_samples_;
   uint32_t velocity_samples_;
   uint32_t current_samples_;
+
+  // ====================== 【补充梯形加减速预计算】======================
+  // 梯形加减速预计算参数（startMotion里一次性算出）
+  float motion_accel_step_s2_;       // 加速度：微步/s²
+  float motion_start_step_s_;        // 起始速度：微步/s
+  float motion_max_step_s_;          // 最高速度：微步/s
+  uint32_t accel_total_steps_;       // 加速段总步数
+  uint32_t decel_total_steps_;       // 减速段总步数
+  uint32_t cruise_total_steps_;      // 匀速段步数
+  enum MotionRampStage {
+      RAMP_STAGE_ACCEL,
+      RAMP_STAGE_CRUISE,
+      RAMP_STAGE_DECEL,
+      RAMP_STAGE_DONE
+  } motion_ramp_stage_;              // 当前阶段：加速/匀速/减速/结束
+  float current_step_speed_;         // 当前瞬时速度，微步/s
+  uint32_t steps_to_decel_;          // 剩余多少步必须开始减速
 };
 
 #endif
