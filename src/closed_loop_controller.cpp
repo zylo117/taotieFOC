@@ -814,12 +814,9 @@ void ClosedLoopController::setMotionConfig(float start_rpm, float max_rpm, float
 
 void ClosedLoopController::startMotion()
 {
-  motion_running_ = true;
   motion_paused_ = false;
   motion_steps_emitted_ = 0U;
   motion_step_accumulator_ = 0.0f;
-  motion_last_step_time_ns_ = 0ULL;
-  motion_last_ramp_time_ns_ = 0ULL;
   motion_step_high_ = false;
   if (motion_mode_ == MOTION_MODE_POSITION_REVERSE ||
       motion_mode_ == MOTION_MODE_VELOCITY_REVERSE ||
@@ -837,7 +834,7 @@ void ClosedLoopController::startMotion()
     driver_->setEnable(true);
     driver_->setDirection(motion_direction_ > 0);
     const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
-    // 在此补充实现，需要跑motion_pulse_count_个脉冲，速度从motion_start_rpm_用加速度motion_accel_rpm_s_（RPM/s）加速到motion_max_rpm_
+    // 需要跑motion_pulse_count_个脉冲，速度从motion_start_rpm_用加速度motion_accel_rpm_s_（RPM/s）加速到motion_max_rpm_
     // 最后再用加速度motion_accel_rpm_s_（RPM/s）减速到0，脉冲用driver_->sendStepPulse(step_pulse_width_ns_)发送，
     // step_pulse_width_ns_是脉宽，固定且不可随便改，虽然短，但是也要考虑它可能存在的的影响
     // 每一圈有micro_steps_per_round个细分微步
@@ -861,6 +858,24 @@ void ClosedLoopController::startMotion()
 
     uint32_t total_req_steps = motion_pulse_count_;
 
+    // 极少步数直接禁用加减速，直接匀速
+    if(total_req_steps < MIN_RAMP_STEPS)
+    {
+        // 短步数：直接恒速运行，不做加减速，直接进入匀速阶段
+        accel_total_steps_ = 0U;
+        decel_total_steps_ = 0U;
+        cruise_total_steps_ = total_req_steps;
+        motion_ramp_stage_ = RAMP_STAGE_CRUISE;
+        steps_to_decel_ = 0xFFFFFFFFU; // 极大值：永远不会触发自动切入减速
+        current_step_speed_ = motion_start_step_s_;
+        motion_step_accumulator_ = 0.0f;
+
+        motion_last_step_time_ns_ = get_hw_time_ns();
+        motion_last_ramp_time_ns_ = get_hw_time_ns();
+        motion_running_ = true;
+        return; // 直接返回，跳过后面梯形/三角的计算
+    }
+
     // 判断：行程够不够跑完整梯形（加速+匀速+减速），不够就退化成三角曲线（无匀速段）
     if(accel_total_steps_ + decel_total_steps_ <= total_req_steps)
     {
@@ -877,7 +892,9 @@ void ClosedLoopController::startMotion()
         float v_peak_sq = a * total_req_steps + v0 * v0;
         float v_peak = sqrtf(v_peak_sq);
         accel_total_steps_ = static_cast<uint32_t>((v_peak*v_peak - v0*v0)/(2*a));
+        if(accel_total_steps_ < 1U) accel_total_steps_ = 1U; // 至少1步加速
         decel_total_steps_ = total_req_steps - accel_total_steps_;
+        if(decel_total_steps_ < 1U) decel_total_steps_ = 1U; // 至少1步减速
         motion_ramp_stage_ = RAMP_STAGE_ACCEL;
     }
 
@@ -888,6 +905,11 @@ void ClosedLoopController::startMotion()
     // 复位步累积器，用于固定频率定时器里的脉冲生成（经典DDA微分器思路）
     motion_step_accumulator_ = 0.0f;
     // ===================================================================
+
+    // 全部参数准备好再开始
+    motion_last_step_time_ns_ = get_hw_time_ns();
+    motion_last_ramp_time_ns_ = get_hw_time_ns();
+    motion_running_ = true;
   }
 }
 
@@ -912,6 +934,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_running_ = false;                // 标记运动停止
         motion_ramp_stage_ = RAMP_STAGE_DONE;   // 设置状态为运动完成
         current_step_speed_ = 0.0f;             // 运动结束强制把当前速度清零，防止下次运动残留速度
+        stopMotion();
         return;
     }
 
@@ -946,7 +969,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     else if(motion_ramp_stage_ == RAMP_STAGE_CRUISE)
     {
         // 【匀速阶段】速度保持不变，只监控剩余步数，判断何时开启减速
-        if(remaining_steps <= steps_to_decel_)
+        // steps_to_decel_为极大值时不会触发切换到减速
+        if( (steps_to_decel_ != 0xFFFFFFFFU) && (remaining_steps <= steps_to_decel_) )
         {
             motion_ramp_stage_ = RAMP_STAGE_DECEL;
         }
@@ -1003,12 +1027,12 @@ void ClosedLoopController::stopMotion()
   target_velocity_rps_ = 0.0f;
   motion_steps_emitted_ = 0U;
   motion_step_accumulator_ = 0.0f;
-  motion_last_step_time_us_ = 0U;
-  motion_last_ramp_time_us_ = 0U;
+  motion_last_step_time_ns_ = 0ULL;
+  motion_last_ramp_time_ns_ = 0ULL;
   motion_step_high_ = false;
   if (driver_ != nullptr)
   {
-    stepper_common::stepper_stop_motion_timer();
+    // stepper_common::stepper_stop_motion_timer();
     driver_->setStepState(false);
     driver_->setEnable(false);
   }

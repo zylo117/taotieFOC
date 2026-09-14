@@ -36,22 +36,6 @@ void control_task_function(void *pvParameters);
 void telemetry_task_function(void *pvParameters);
 void usb_task_function(void *pvParameters);
 
-#include "core_cm4.h"
-// AT32F403A system_core_clock 是内核时钟，例如 240000000UL
-static inline uint64_t get_hw_time_ns(void)
-{
-    static int dwt_init_done = 0;
-    if(!dwt_init_done)
-    {
-        CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-        DWT->CYCCNT = 0;
-        DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-        dwt_init_done = 1;
-    }
-    uint32_t cc = DWT->CYCCNT;
-    // ns = cycle * 1000 / (core_freq_MHz)
-    return ( (uint64_t)cc * 1000ULL ) / ( system_core_clock / 1000000ULL );
-}
 
 static void control_timer_init(void)
 {

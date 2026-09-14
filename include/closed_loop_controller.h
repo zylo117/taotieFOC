@@ -11,6 +11,23 @@
 #define USE_HARD_FLOAT_ACCELERATION 1
 #endif
 
+#include "core_cm4.h"
+// AT32F403A system_core_clock 是内核时钟，例如 240000000UL
+static inline uint64_t get_hw_time_ns(void)
+{
+    static int dwt_init_done = 0;
+    if(!dwt_init_done)
+    {
+        CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+        DWT->CYCCNT = 0;
+        DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+        dwt_init_done = 1;
+    }
+    uint32_t cc = DWT->CYCCNT;
+    // ns = cycle * 1000 / (core_freq_MHz)
+    return ( (uint64_t)cc * 1000ULL ) / ( system_core_clock / 1000000ULL );
+}
+
 // 自适应 PID 的基础参数配置。
 // 它描述了在不同速度和加速度区间下，系统对跟随误差的容忍度与增益调整幅度。
 struct PidAutoTuneConfig
@@ -222,8 +239,8 @@ private:
   volatile float motion_speed_rpm_;
   volatile float encoder_speed_rpm_;
   volatile float motion_position_deg_;
-  volatile uint32_t motion_last_step_time_ns_;
-  volatile uint32_t motion_last_ramp_time_ns_;
+  volatile uint64_t motion_last_step_time_ns_;
+  volatile uint64_t motion_last_ramp_time_ns_;
   volatile uint32_t motion_last_step_time_us_;
   volatile uint32_t motion_last_ramp_time_us_;
   volatile uint32_t motion_steps_emitted_;
@@ -261,6 +278,7 @@ private:
 
   // ====================== 【补充梯形加减速预计算】======================
   // 梯形加减速预计算参数（startMotion里一次性算出）
+  static constexpr uint32_t MIN_RAMP_STEPS = 4U; // 少于该步数，禁用加减速，直接恒速跑
   float motion_accel_step_s2_;       // 加速度：微步/s²
   float motion_start_step_s_;        // 起始速度：微步/s
   float motion_max_step_s_;          // 最高速度：微步/s
