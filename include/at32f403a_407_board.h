@@ -131,7 +131,7 @@ uint8_t at32_button_state(void);
 
 /* delay function */
 void delay_init(void);
-void delay_ns(uint32_t nns);
+void delay_ns(uint64_t nns);
 void delay_us(uint32_t nus);
 void delay_ms(uint16_t nms);
 void delay_sec(uint16_t sec);

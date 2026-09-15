@@ -15,7 +15,7 @@ public:
   void setEnable(bool enable) override;
   void setDirection(bool direction) override;
   void setStepState(bool state) override;
-  void sendStepPulse(uint32_t width_ns) override;
+  void sendStepPulse(uint64_t width_ns) override;
   bool setMicrosteps(uint16_t microsteps) override;
   bool setRunCurrent(float amps) override;
   bool setHoldCurrent(float amps, bool enabled) override;

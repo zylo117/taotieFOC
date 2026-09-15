@@ -5,9 +5,9 @@
 #define STEP_EDGE_TIMEOUT_US    200U
 #define STEP_PERIOD_US_DEFAULT  5000U
 #define FULL_STEPS_PER_ROUND    200U  // 1.8度步进
-#define MIN_STEP_PULSE_NS       100U
-#define DEFAULT_STEP_PULSE_NS   2000U
-#define MAX_STEP_PULSE_NS       20000U
+#define MIN_STEP_PULSE_NS       100ULL
+#define DEFAULT_STEP_PULSE_NS   2000ULL
+#define MAX_STEP_PULSE_NS       20000ULL
 #define MAX_PID_OUTPUT          2000.0f
 #define MAX_I_TERM              100.0f
 
@@ -39,7 +39,7 @@ float clampCurrentA(float value)
   return value;
 }
 
-uint32_t clampStepPulseWidthNs(uint32_t value)
+uint64_t clampStepPulseWidthNs(uint64_t value)
 {
   if (value < MIN_STEP_PULSE_NS)
   {
@@ -67,9 +67,9 @@ uint32_t getMicroStepsPerRound(const StepperDriver *driver)
   return FULL_STEPS_PER_ROUND * static_cast<uint32_t>(microsteps);
 }
 
-uint32_t pulseWidthNsToUs(uint32_t pulse_width_ns)
+uint64_t pulseWidthNsToUs(uint64_t pulse_width_ns)
 {
-  return (pulse_width_ns + 999U) / 1000U;
+  return (pulse_width_ns + 999ULL) / 1000ULL;
 }
 }
 
@@ -189,8 +189,8 @@ ClosedLoopController::ClosedLoopController()
     last_step_state_(0U), last_dir_state_(0U), last_en_state_(0U),
     stop_on_encoder_fault_(true), stop_on_magnetic_fault_(true), encoder_fault_active_(false),
     magnetic_fault_active_(false), output_stopped_(false), phase_a_current_a_(0.0f),
-    phase_b_current_a_(0.0f), loop_stats_enabled_(false), last_position_tick_us_(0U),
-    last_velocity_tick_us_(0U), last_current_tick_us_(0U), position_loop_hz_(0U),
+    phase_b_current_a_(0.0f), loop_stats_enabled_(false), last_position_tick_ns_(0ULL),
+    last_velocity_tick_ns_(0ULL), last_current_tick_ns_(0ULL), position_loop_hz_(0U),
     velocity_loop_hz_(0U), current_loop_hz_(0U), position_samples_(0U), velocity_samples_(0U),
     current_samples_(0U)
 {
@@ -559,44 +559,44 @@ void ClosedLoopController::syncStepDirection()
   }
 }
 
-void ClosedLoopController::updateLoopFrequencyStats(uint32_t time_us)
+void ClosedLoopController::updateLoopFrequencyStats(uint64_t time_ns)
 {
   if (!loop_stats_enabled_)
   {
     return;
   }
 
-  if (time_us > last_position_tick_us_)
+  if (time_ns > last_position_tick_ns_)
   {
-    const uint32_t delta_pos_us = time_us - last_position_tick_us_;
-    if (delta_pos_us > 0U)
+    const uint64_t delta_pos_ns = time_ns - last_position_tick_ns_;
+    if (delta_pos_ns > 0ULL)
     {
-      position_loop_hz_ = (1000000U / delta_pos_us);
+      position_loop_hz_ = (1000000000ULL / delta_pos_ns);
       position_samples_++;
     }
-    last_position_tick_us_ = time_us;
+    last_position_tick_ns_ = time_ns;
   }
 
-  if (time_us > last_velocity_tick_us_)
+  if (time_ns > last_velocity_tick_ns_)
   {
-    const uint32_t delta_vel_us = time_us - last_velocity_tick_us_;
-    if (delta_vel_us > 0U)
+    const uint64_t delta_vel_ns = time_ns - last_velocity_tick_ns_;
+    if (delta_vel_ns > 0ULL)
     {
-      velocity_loop_hz_ = (1000000U / delta_vel_us);
+      velocity_loop_hz_ = (1000000000ULL / delta_vel_ns);
       velocity_samples_++;
     }
-    last_velocity_tick_us_ = time_us;
+    last_velocity_tick_ns_ = time_ns;
   }
 
-  if (time_us > last_current_tick_us_)
+  if (time_ns > last_current_tick_ns_)
   {
-    const uint32_t delta_cur_us = time_us - last_current_tick_us_;
-    if (delta_cur_us > 0U)
+    const uint64_t delta_cur_ns = time_ns - last_current_tick_ns_;
+    if (delta_cur_ns > 0ULL)
     {
-      current_loop_hz_ = (1000000U / delta_cur_us);
+      current_loop_hz_ = (1000000000ULL / delta_cur_ns);
       current_samples_++;
     }
-    last_current_tick_us_ = time_us;
+    last_current_tick_ns_ = time_ns;
   }
 }
 
@@ -923,94 +923,94 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         return;
     }
 
-    // 条件：已经输出全部需要的脉冲，运动正常结束
-    if(motion_steps_emitted_ >= motion_pulse_count_)
-    {
-        motion_running_ = false;                // 标记运动停止
-        motion_ramp_stage_ = RAMP_STAGE_DONE;   // 设置状态为运动完成
-        current_step_speed_ = 0.0f;             // 运动结束强制把当前速度清零，防止下次运动残留速度
-        stopMotion();
-        return;
-    }
+  // 条件：已经输出全部需要的脉冲，运动正常结束
+  if(motion_steps_emitted_ >= motion_pulse_count_)
+  {
+      motion_running_ = false;                // 标记运动停止
+      motion_ramp_stage_ = RAMP_STAGE_DONE;   // 设置状态为运动完成
+      current_step_speed_ = 0.0f;             // 运动结束强制把当前速度清零，防止下次运动残留速度
+      stopMotion();
+      return;
+  }
 
-    // 计算还剩余多少微步脉冲有待输出
-    uint32_t remaining_steps = motion_pulse_count_ - motion_steps_emitted_;
+  // 计算还剩余多少微步脉冲有待输出
+  uint32_t remaining_steps = motion_pulse_count_ - motion_steps_emitted_;
 
-    // ========== 1.加减速阶段的速度积分更新 ==========
-    // 计算距离上一次rampUpdate调用的时间差(纳秒)
-    uint64_t delta_ramp_ns = now_ns - motion_last_ramp_time_ns_;
-    // 纳秒转换为秒，用于加速度公式计算
-    float dt_ramp_s = static_cast<float>(delta_ramp_ns) / 1.0e9f;
+  // ========== 1.加减速阶段的速度积分更新 ==========
+  // 计算距离上一次rampUpdate调用的时间差(纳秒)
+  uint64_t delta_ramp_ns = now_ns - motion_last_ramp_time_ns_;
+  // 纳秒转换为秒，用于加速度公式计算
+  float dt_ramp_s = static_cast<float>(delta_ramp_ns) / 1.0e9f;
 
-    if(motion_ramp_stage_ == RAMP_STAGE_ACCEL)
-    {
-        // 【加速阶段】速度 = 当前速度 + 加速度 * 时间
-        current_step_speed_ += motion_accel_step_s2_ * dt_ramp_s;
+  if(motion_ramp_stage_ == RAMP_STAGE_ACCEL)
+  {
+      // 【加速阶段】速度 = 当前速度 + 加速度 * 时间
+      current_step_speed_ += motion_accel_step_s2_ * dt_ramp_s;
 
-        // 速度限幅：到达设定最大速度，切换到匀速阶段
-        if(current_step_speed_ >= motion_max_step_s_)
-        {
-            current_step_speed_ = motion_max_step_s_;
-            motion_ramp_stage_ = RAMP_STAGE_CRUISE;
-        }
+      // 速度限幅：到达设定最大速度，切换到匀速阶段
+      if(current_step_speed_ >= motion_max_step_s_)
+      {
+          current_step_speed_ = motion_max_step_s_;
+          motion_ramp_stage_ = RAMP_STAGE_CRUISE;
+      }
 
-        // 关键判断：剩余步数 <= 减速需要的总步数 → 必须立刻切入减速，防止冲过目标位置
-        // 短行程三角曲线模式下会直接从加速转入减速，不会经过匀速
-        if(remaining_steps <= steps_to_decel_)
-        {
-            motion_ramp_stage_ = RAMP_STAGE_DECEL;
-        }
-    }
-    else if(motion_ramp_stage_ == RAMP_STAGE_CRUISE)
-    {
-        // 【匀速阶段】速度保持不变，只监控剩余步数，判断何时开启减速
-        // steps_to_decel_为极大值时不会触发切换到减速
-        if( (steps_to_decel_ != 0xFFFFFFFFU) && (remaining_steps <= steps_to_decel_) )
-        {
-            motion_ramp_stage_ = RAMP_STAGE_DECEL;
-        }
-    }
-    else if(motion_ramp_stage_ == RAMP_STAGE_DECEL)
-    {
-        // 【减速阶段】速度 = 当前速度 - 加速度 * 时间（减速加速度大小与加速一致）
-        current_step_speed_ -= motion_accel_step_s2_ * dt_ramp_s;
+      // 关键判断：剩余步数 <= 减速需要的总步数 → 必须立刻切入减速，防止冲过目标位置
+      // 短行程三角曲线模式下会直接从加速转入减速，不会经过匀速
+      if(remaining_steps <= steps_to_decel_)
+      {
+          motion_ramp_stage_ = RAMP_STAGE_DECEL;
+      }
+  }
+  else if(motion_ramp_stage_ == RAMP_STAGE_CRUISE)
+  {
+      // 【匀速阶段】速度保持不变，只监控剩余步数，判断何时开启减速
+      // steps_to_decel_为极大值时不会触发切换到减速
+      if( (steps_to_decel_ != 0xFFFFFFFFU) && (remaining_steps <= steps_to_decel_) )
+      {
+          motion_ramp_stage_ = RAMP_STAGE_DECEL;
+      }
+  }
+  else if(motion_ramp_stage_ == RAMP_STAGE_DECEL)
+  {
+      // 【减速阶段】速度 = 当前速度 - 加速度 * 时间（减速加速度大小与加速一致）
+      current_step_speed_ -= motion_accel_step_s2_ * dt_ramp_s;
 
-        // 速度下限保护，不能出现负速度
-        if(current_step_speed_ < 0.0f)
-        {
-            current_step_speed_ = 0.0f;
-        }
-    }
+      // 速度下限保护，不能出现负速度
+      if(current_step_speed_ < 0.0f)
+      {
+          current_step_speed_ = 0.0f;
+      }
+  }
 
-    // 更新本次的时间戳，作为下一次调用的“上一次时间点”
-    motion_last_ramp_time_ns_ = now_ns;
+  // 更新本次的时间戳，作为下一次调用的“上一次时间点”
+  motion_last_ramp_time_ns_ = now_ns;
 
-    // ========== 2.DDA微分累加器：生成步进脉冲，核心部分 ==========
-    // DDA原理：步进步数增量 = 瞬时速度(step/s) × 流逝时间(s)
-    // 即使任务被抢占延迟很久，delta_step_ns会记录真实流逝时间，累加器累积需要输出的步数
-    // while循环一次性输出多个脉冲，做到调度抖动下不丢脉冲
+  // ========== 2.DDA微分累加器：生成步进脉冲，核心部分 ==========
+  // DDA原理：步进步数增量 = 瞬时速度(step/s) × 流逝时间(s)
+  // 即使任务被抢占延迟很久，delta_step_ns会记录真实流逝时间，累加器累积需要输出的步数
+  // while循环一次性输出多个脉冲，做到调度抖动下不丢脉冲
 
-    // 获取两次脉冲生成之间真实流逝的纳秒
-    uint64_t delta_step_ns = now_ns - motion_last_step_time_ns_;
-    // 时间单位换算：纳秒 → 秒
-    float dt_step_s = static_cast<float>(delta_step_ns) / 1.0e9f;
+  // 获取两次脉冲生成之间真实流逝的纳秒
+  uint64_t delta_step_ns = now_ns - motion_last_step_time_ns_;
+  // 时间单位换算：纳秒 → 秒
+  float dt_step_s = static_cast<float>(delta_step_ns) / 1.0e9f;
 
-    // 累加本次时间内应该产生的步数（浮点数，允许小数累积）
-    motion_step_accumulator_ += current_step_speed_ * dt_step_s;
+  // 累加本次时间内应该产生的步数（浮点数，允许小数累积）
+  motion_step_accumulator_ += current_step_speed_ * dt_step_s;
 
-    // 只要累加器≥1，代表需要输出1个step脉冲；循环批量输出，直到没有脉冲待输出或者全部脉冲发完
-    while( (motion_step_accumulator_ >= 1.0f) && (motion_steps_emitted_ < motion_pulse_count_) )
-    {
-        // 调用驱动输出STEP脉冲；脉冲高电平宽度固定为step_pulse_width_ns_，底层实现ns延时
-        driver_->sendStepPulse(step_pulse_width_ns_);
-        // 已经发出的脉冲计数+1
-        motion_steps_emitted_ ++;
-        // 已经消耗1步，累加器减去1，小数部分保留，留给下一次调度
-        motion_step_accumulator_ -= 1.0f;
-    }
+  // 只要累加器≥1，代表需要输出1个step脉冲；循环批量输出，直到没有脉冲待输出或者全部脉冲发完
+  while( (motion_step_accumulator_ >= 1.0f) && (motion_steps_emitted_ < motion_pulse_count_) )
+  {
+      // 调用驱动输出STEP脉冲；脉冲高电平宽度固定为step_pulse_width_ns_，底层实现ns延时
+      driver_->sendStepPulse(step_pulse_width_ns_);
+      // 已经发出的脉冲计数+1
+      motion_steps_emitted_ ++;
+      // 已经消耗1步，累加器减去1，小数部分保留，留给下一次调度
+      motion_step_accumulator_ -= 1.0f;
+  }
 
-    // 更新脉冲模块的时间戳
-    motion_last_step_time_ns_ = now_ns;
+  // 更新脉冲模块的时间戳
+  motion_last_step_time_ns_ = now_ns;
 }
 
 void ClosedLoopController::stopMotion()
@@ -1134,9 +1134,9 @@ void ClosedLoopController::enableLoopStats(bool enable)
   loop_stats_enabled_ = enable;
   if (enable)
   {
-    last_position_tick_us_ = 0U;
-    last_velocity_tick_us_ = 0U;
-    last_current_tick_us_ = 0U;
+    last_position_tick_ns_ = 0ULL;
+    last_velocity_tick_ns_ = 0ULL;
+    last_current_tick_ns_ = 0ULL;
   }
 }
 
@@ -1163,9 +1163,9 @@ void ClosedLoopController::resetLoopFrequencyStats()
   position_samples_ = 0U;
   velocity_samples_ = 0U;
   current_samples_ = 0U;
-  last_position_tick_us_ = 0U;
-  last_velocity_tick_us_ = 0U;
-  last_current_tick_us_ = 0U;
+  last_position_tick_ns_ = 0ULL;
+  last_velocity_tick_ns_ = 0ULL;
+  last_current_tick_ns_ = 0ULL;
 }
 
 int32_t ClosedLoopController::getPositionSteps() const

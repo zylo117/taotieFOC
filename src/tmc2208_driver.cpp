@@ -66,7 +66,7 @@ void Tmc2208Driver::setStepState(bool state)
   stepper_common::stepper_write_gpio(STEP_OUTPUT_PORT, STEP_OUT_PIN, state);
 }
 
-void Tmc2208Driver::sendStepPulse(uint32_t width_ns)
+void Tmc2208Driver::sendStepPulse(uint64_t width_ns)
 {
   stepper_common::stepper_write_gpio_high(STEP_OUTPUT_PORT, STEP_OUT_PIN);
   delay_ns(width_ns);

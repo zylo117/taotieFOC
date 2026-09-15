@@ -30,7 +30,7 @@ void stepper_delay_us(uint32_t microseconds)
   delay_us(microseconds);
 }
 
-void stepper_delay_ns(uint32_t nanoseconds)
+void stepper_delay_ns(uint64_t nanoseconds)
 {
   delay_ns(nanoseconds);
 }

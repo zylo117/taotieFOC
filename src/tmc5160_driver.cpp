@@ -61,7 +61,7 @@ void Tmc5160Driver::setDirection(bool direction)
                                      direction ? DIR_FORWARD_LEVEL : !DIR_FORWARD_LEVEL);
 }
 
-void Tmc5160Driver::sendStepPulse(uint32_t width_ns)
+void Tmc5160Driver::sendStepPulse(uint64_t width_ns)
 {
   stepper_common::stepper_write_gpio_high(STEP_OUTPUT_PORT, STEP_OUT_PIN);
   delay_ns(width_ns);

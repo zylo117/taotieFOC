@@ -352,7 +352,7 @@ void delay_cycles(uint32_t cycles)
  * @note 内部换算：ns → CPU周期，向上取整；
  *       适合 >=20ns；极短延时受函数调用开销影响；中断会破坏延时
  */
-void delay_ns(uint32_t nns)
+void delay_ns(uint64_t nns)
 {
     if(nns == 0U)
     {

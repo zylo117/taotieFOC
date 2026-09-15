@@ -205,7 +205,7 @@ public:
   uint32_t getCurrentLoopHz() const;
 
 private:
-  void updateLoopFrequencyStats(uint32_t time_us);
+  void updateLoopFrequencyStats(uint64_t time_ns);
   StepperDriver *driver_;
   AngleEncoder *encoder_;
   ClosedLoopDriverProtocol *protocol_;
@@ -247,7 +247,7 @@ private:
   volatile float motion_step_accumulator_;
   volatile int8_t motion_direction_;
   volatile bool motion_step_high_;
-  volatile uint32_t step_pulse_width_ns_;
+  volatile uint64_t step_pulse_width_ns_;
   volatile uint32_t step_period_us_;
   volatile uint16_t encoder_zero_;
   volatile uint16_t encoder_raw_angle_;
@@ -266,9 +266,9 @@ private:
   float phase_b_current_a_;
 
   bool loop_stats_enabled_;
-  uint32_t last_position_tick_us_;
-  uint32_t last_velocity_tick_us_;
-  uint32_t last_current_tick_us_;
+  uint64_t last_position_tick_ns_;
+  uint64_t last_velocity_tick_ns_;
+  uint64_t last_current_tick_ns_;
   uint32_t position_loop_hz_;
   uint32_t velocity_loop_hz_;
   uint32_t current_loop_hz_;
