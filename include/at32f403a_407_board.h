@@ -63,10 +63,10 @@ extern "C" {
 /******************** define led ********************/
 typedef enum
 {
-  LED2                                   = 0,
-  LED3                                   = 1,
-  LED4                                   = 2,
-  LED5                                   = 3
+    LED2 = 0,
+    LED3 = 1,
+    LED4 = 2,
+    LED5 = 3
 } led_type;
 
 #define LED_NUM                          4
@@ -99,8 +99,8 @@ typedef enum
 /******************* define button *******************/
 typedef enum
 {
-  USER_BUTTON                            = 0,
-  NO_BUTTON                              = 1
+    USER_BUTTON = 0,
+    NO_BUTTON = 1
 } button_type;
 
 #define USER_BUTTON_PIN                  GPIO_PINS_0

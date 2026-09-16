@@ -49,7 +49,8 @@ extern "C" {
   * @{
   */
 
-void generate_julia_fpu(uint16_t size_x, uint16_t size_y, uint16_t offset_x, uint16_t offset_y, uint16_t zoom, uint8_t * buffer);
+void generate_julia_fpu(uint16_t size_x, uint16_t size_y, uint16_t offset_x, uint16_t offset_y, uint16_t zoom,
+                        uint8_t* buffer);
 
 /**
   * @}

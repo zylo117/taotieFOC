@@ -22,46 +22,46 @@
 
 struct EncoderCalibrationConfig
 {
-  bool enable_offset_calibration;
-  bool enable_direction_calibration;
-  bool enable_noise_calibration;
-  bool enable_walk_calibration;
-  uint16_t sample_count;
-  float noise_threshold;
-  float walk_threshold;
-  int16_t offset_correction;
-  bool invert_direction;
+    bool enable_offset_calibration;
+    bool enable_direction_calibration;
+    bool enable_noise_calibration;
+    bool enable_walk_calibration;
+    uint16_t sample_count;
+    float noise_threshold;
+    float walk_threshold;
+    int16_t offset_correction;
+    bool invert_direction;
 };
 
 struct EncoderCalibrationResult
 {
-  bool offset_ok;
-  bool direction_ok;
-  bool noise_ok;
-  bool walk_ok;
-  int32_t offset_correction;
-  float noise_rms;
-  float walk_peak;
+    bool offset_ok;
+    bool direction_ok;
+    bool noise_ok;
+    bool walk_ok;
+    int32_t offset_correction;
+    float noise_rms;
+    float walk_peak;
 };
 
 namespace encoder_common
 {
-void encoder_write_gpio(gpio_type *port, uint16_t pin, bool state);
-void encoder_gpio_config_input(gpio_type *port, uint16_t pin);
-void encoder_gpio_config_output(gpio_type *port, uint16_t pin);
-uint16_t encoder_spi2_rw16(uint16_t tx_data);
+    void encoder_write_gpio(gpio_type* port, uint16_t pin, bool state);
+    void encoder_gpio_config_input(gpio_type* port, uint16_t pin);
+    void encoder_gpio_config_output(gpio_type* port, uint16_t pin);
+    uint16_t encoder_spi2_rw16(uint16_t tx_data);
 }
 
 class AngleEncoder
 {
 public:
-  virtual ~AngleEncoder() = default;
-  virtual bool init() = 0;
-  virtual uint16_t readRawAngle() = 0;
-  virtual bool magneticFieldHigh() const { return false; }
-  virtual bool magneticFieldLow() const { return false; }
-  virtual void setZero(uint16_t zero_angle) = 0;
-  virtual bool calibrate(const EncoderCalibrationConfig &config, EncoderCalibrationResult *result) = 0;
+    virtual ~AngleEncoder() = default;
+    virtual bool init() = 0;
+    virtual uint16_t readRawAngle() = 0;
+    virtual bool magneticFieldHigh() const { return false; }
+    virtual bool magneticFieldLow() const { return false; }
+    virtual void setZero(uint16_t zero_angle) = 0;
+    virtual bool calibrate(const EncoderCalibrationConfig& config, EncoderCalibrationResult* result) = 0;
 };
 
 #endif

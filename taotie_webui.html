@@ -1,1667 +1,1707 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>闭环驱动参数配置器</title>
-  <style>
-    :root {
-      --bg: #0f172a;
-      --bg2: #111827;
-      --panel: rgba(15, 23, 42, 0.86);
-      --panel-2: rgba(30, 41, 59, 0.9);
-      --line: rgba(148, 163, 184, 0.25);
-      --text: #e2e8f0;
-      --muted: #94a3b8;
-      --primary: #38bdf8;
-      --primary-2: #22c55e;
-      --warning: #f59e0b;
-      --danger: #ef4444;
-      --danger-2: #f97316;
-      --shadow: 0 18px 48px rgba(15, 23, 42, 0.45);
-      --radius: 18px;
-    }
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>闭环驱动参数配置器</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --bg2: #111827;
+            --panel: rgba(15, 23, 42, 0.86);
+            --panel-2: rgba(30, 41, 59, 0.9);
+            --line: rgba(148, 163, 184, 0.25);
+            --text: #e2e8f0;
+            --muted: #94a3b8;
+            --primary: #38bdf8;
+            --primary-2: #22c55e;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --danger-2: #f97316;
+            --shadow: 0 18px 48px rgba(15, 23, 42, 0.45);
+            --radius: 18px;
+        }
 
-    * { box-sizing: border-box; }
+        * {
+            box-sizing: border-box;
+        }
 
-    html, body {
-      margin: 0;
-      min-height: 100%;
-      background: radial-gradient(circle at top, #1e293b 0%, var(--bg) 45%, #020817 100%);
-      color: var(--text);
-      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
-    }
+        html, body {
+            margin: 0;
+            min-height: 100%;
+            background: radial-gradient(circle at top, #1e293b 0%, var(--bg) 45%, #020817 100%);
+            color: var(--text);
+            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+        }
 
-    body {
-      padding: 24px;
-    }
+        body {
+            padding: 24px;
+        }
 
-    .app {
-      max-width: 1500px;
-      margin: 0 auto;
-      display: grid;
-      gap: 18px;
-    }
+        .app {
+            max-width: 1500px;
+            margin: 0 auto;
+            display: grid;
+            gap: 18px;
+        }
 
-    .topbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 16px;
-      padding: 18px 22px;
-      border: 1px solid var(--line);
-      background: rgba(15, 23, 42, 0.88);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-    }
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            padding: 18px 22px;
+            border: 1px solid var(--line);
+            background: rgba(15, 23, 42, 0.88);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+        }
 
-    .title {
-      font-size: clamp(1.2rem, 2vw, 2rem);
-      font-weight: 700;
-      letter-spacing: 0.02em;
-    }
+        .title {
+            font-size: clamp(1.2rem, 2vw, 2rem);
+            font-weight: 700;
+            letter-spacing: 0.02em;
+        }
 
-    .subtitle {
-      color: var(--muted);
-      font-size: 0.9rem;
-      margin-top: 4px;
-    }
+        .subtitle {
+            color: var(--muted);
+            font-size: 0.9rem;
+            margin-top: 4px;
+        }
 
-    .actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-    }
+        .actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
 
-    button,
-    select,
-    input {
-      border-radius: 12px;
-      border: 1px solid var(--line);
-      background: rgba(15, 23, 42, 0.9);
-      color: var(--text);
-      font: inherit;
-    }
+        button,
+        select,
+        input {
+            border-radius: 12px;
+            border: 1px solid var(--line);
+            background: rgba(15, 23, 42, 0.9);
+            color: var(--text);
+            font: inherit;
+        }
 
-    button {
-      padding: 10px 14px;
-      cursor: pointer;
-      border-color: rgba(56, 189, 248, 0.4);
-      transition: 0.18s ease;
-      font-weight: 600;
-    }
+        button {
+            padding: 10px 14px;
+            cursor: pointer;
+            border-color: rgba(56, 189, 248, 0.4);
+            transition: 0.18s ease;
+            font-weight: 600;
+        }
 
-    button:hover {
-      transform: translateY(-1px);
-      border-color: rgba(56, 189, 248, 0.75);
-    }
+        button:hover {
+            transform: translateY(-1px);
+            border-color: rgba(56, 189, 248, 0.75);
+        }
 
-    .primary { background: linear-gradient(135deg, rgba(56,189,248,0.2), rgba(34,197,94,0.18)); }
-    .warn { border-color: rgba(245, 158, 11, 0.5); }
-    .danger { border-color: rgba(239, 68, 68, 0.5); }
+        .primary {
+            background: linear-gradient(135deg, rgba(56, 189, 248, 0.2), rgba(34, 197, 94, 0.18));
+        }
 
-    .panel-grid {
-      display: grid;
-      grid-template-columns: minmax(300px, 0.9fr) minmax(260px, 0.62fr) minmax(420px, 1.3fr);
-      gap: 18px;
-      align-items: start;
-    }
+        .warn {
+            border-color: rgba(245, 158, 11, 0.5);
+        }
 
-    .config-scroll {
-      display: grid;
-      gap: 18px;
-      max-height: calc(100vh - 180px);
-      overflow-y: auto;
-      padding-right: 6px;
-    }
+        .danger {
+            border-color: rgba(239, 68, 68, 0.5);
+        }
 
-    .panel {
-      background: rgba(15, 23, 42, 0.88);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      overflow: hidden;
-    }
+        .panel-grid {
+            display: grid;
+            grid-template-columns: minmax(300px, 0.9fr) minmax(260px, 0.62fr) minmax(420px, 1.3fr);
+            gap: 18px;
+            align-items: start;
+        }
 
-    .panel-header {
-      padding: 16px 18px 12px;
-      border-bottom: 1px solid var(--line);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      background: rgba(15, 23, 42, 0.7);
-    }
+        .config-scroll {
+            display: grid;
+            gap: 18px;
+            max-height: calc(100vh - 180px);
+            overflow-y: auto;
+            padding-right: 6px;
+        }
 
-    .panel-header h3 {
-      margin: 0;
-      font-size: 1.1rem;
-    }
+        .panel {
+            background: rgba(15, 23, 42, 0.88);
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
 
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      border-radius: 999px;
-      padding: 6px 10px;
-      font-size: 0.72rem;
-      font-weight: 700;
-      letter-spacing: 0.04em;
-      background: rgba(148, 163, 184, 0.12);
-      color: var(--text);
-      border: 1px solid rgba(148,163,184,0.2);
-    }
+        .panel-header {
+            padding: 16px 18px 12px;
+            border-bottom: 1px solid var(--line);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            background: rgba(15, 23, 42, 0.7);
+        }
 
-    .badge.ok { background: rgba(34,197,94,0.12); color: #86efac; border-color: rgba(34,197,94,0.3); }
-    .badge.warn { background: rgba(245,158,11,0.12); color: #fcd34d; border-color: rgba(245,158,11,0.3); }
-    .badge.danger { background: rgba(239,68,68,0.12); color: #fca5a5; border-color: rgba(239,68,68,0.3); }
+        .panel-header h3 {
+            margin: 0;
+            font-size: 1.1rem;
+        }
 
-    .panel-body {
-      padding: 18px;
-      display: grid;
-      gap: 16px;
-    }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            border-radius: 999px;
+            padding: 6px 10px;
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            background: rgba(148, 163, 184, 0.12);
+            color: var(--text);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+        }
 
-    .grid-2 {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 14px;
-    }
+        .badge.ok {
+            background: rgba(34, 197, 94, 0.12);
+            color: #86efac;
+            border-color: rgba(34, 197, 94, 0.3);
+        }
 
-    .card {
-      background: rgba(15, 23, 42, 0.58);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 14px;
-    }
+        .badge.warn {
+            background: rgba(245, 158, 11, 0.12);
+            color: #fcd34d;
+            border-color: rgba(245, 158, 11, 0.3);
+        }
 
-    .field {
-      display: flex;
-      flex-direction: column;
-      gap: 7px;
-    }
+        .badge.danger {
+            background: rgba(239, 68, 68, 0.12);
+            color: #fca5a5;
+            border-color: rgba(239, 68, 68, 0.3);
+        }
 
-    .field label {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      color: var(--muted);
-      font-size: 0.84rem;
-    }
+        .panel-body {
+            padding: 18px;
+            display: grid;
+            gap: 16px;
+        }
 
-    .field input,
-    .field select {
-      width: 100%;
-      padding: 10px 12px;
-      background: rgba(15, 23, 42, 0.96);
-      color: var(--text);
-    }
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
+        }
 
-    .mt {
-      margin-top: 4px;
-    }
+        .card {
+            background: rgba(15, 23, 42, 0.58);
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            padding: 14px;
+        }
 
-    .inline {
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
+        .field {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
 
-    .danger-box {
-      border: 1px solid rgba(239, 68, 68, 0.4);
-      background: rgba(127, 29, 29, 0.18);
-      color: #fecaca;
-      border-radius: 12px;
-      padding: 12px 14px;
-      line-height: 1.6;
-      font-size: 0.83rem;
-    }
+        .field label {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            color: var(--muted);
+            font-size: 0.84rem;
+        }
 
-    .status-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 10px;
-    }
+        .field input,
+        .field select {
+            width: 100%;
+            padding: 10px 12px;
+            background: rgba(15, 23, 42, 0.96);
+            color: var(--text);
+        }
 
-    .status-item {
-      display: grid;
-      gap: 6px;
-      padding: 10px 12px;
-      border-radius: 12px;
-      background: rgba(15, 23, 42, 0.6);
-      border: 1px solid var(--line);
-    }
+        .mt {
+            margin-top: 4px;
+        }
 
-    .status-item .label {
-      color: var(--muted);
-      font-size: 0.72rem;
-    }
+        .inline {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
 
-    .status-item .value {
-      font-size: 1rem;
-      font-weight: 700;
-    }
+        .danger-box {
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            background: rgba(127, 29, 29, 0.18);
+            color: #fecaca;
+            border-radius: 12px;
+            padding: 12px 14px;
+            line-height: 1.6;
+            font-size: 0.83rem;
+        }
 
-    .led {
-      display: inline-block;
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background: var(--primary-2);
-      box-shadow: 0 0 12px rgba(34, 197, 94, 0.8);
-      vertical-align: middle;
-    }
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
 
-    .led.warn {
-      background: var(--warning);
-      box-shadow: 0 0 12px rgba(245, 158, 11, 0.8);
-    }
+        .status-item {
+            display: grid;
+            gap: 6px;
+            padding: 10px 12px;
+            border-radius: 12px;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--line);
+        }
 
-    .led.danger {
-      background: var(--danger);
-      box-shadow: 0 0 12px rgba(239, 68, 68, 0.8);
-    }
+        .status-item .label {
+            color: var(--muted);
+            font-size: 0.72rem;
+        }
 
-    .dial-panel {
-      display: grid;
-      place-items: center;
-      min-height: 300px;
-      background: linear-gradient(180deg, rgba(15,23,42,0.35), rgba(15,23,42,0.72));
-    }
+        .status-item .value {
+            font-size: 1rem;
+            font-weight: 700;
+        }
 
-    .dial-wrap {
-      position: relative;
-      width: min(58vw, 280px);
-      aspect-ratio: 1;
-      display: grid;
-      place-items: center;
-    }
+        .led {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--primary-2);
+            box-shadow: 0 0 12px rgba(34, 197, 94, 0.8);
+            vertical-align: middle;
+        }
 
-    .dial-ring {
-      width: 100%;
-      height: 100%;
-      border-radius: 50%;
-      position: absolute;
-      inset: 0;
-      background: radial-gradient(circle at center, rgba(15,23,42,0.6), rgba(15,23,42,0.93));
-      border: 2px solid rgba(56, 189, 248, 0.4);
-      box-shadow: inset 0 0 32px rgba(56,189,248,0.15), 0 0 28px rgba(14,116,144,0.38);
-      user-select: none;
-      touch-action: none;
-    }
+        .led.warn {
+            background: var(--warning);
+            box-shadow: 0 0 12px rgba(245, 158, 11, 0.8);
+        }
 
-    .dial-grid {
-      position: absolute;
-      inset: 12%;
-      border-radius: 50%;
-      border: 1px solid rgba(148,163,184,0.18);
-      background: radial-gradient(circle at center, rgba(30,41,59,0.2), rgba(15,23,42,0.45));
-    }
+        .led.danger {
+            background: var(--danger);
+            box-shadow: 0 0 12px rgba(239, 68, 68, 0.8);
+        }
 
-    .dial-center {
-      position: absolute;
-      inset: 12%;
-      border-radius: 50%;
-      z-index: 2;
-    }
+        .dial-panel {
+            display: grid;
+            place-items: center;
+            min-height: 300px;
+            background: linear-gradient(180deg, rgba(15, 23, 42, 0.35), rgba(15, 23, 42, 0.72));
+        }
 
-    .dial-pointer-svg {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      z-index: 3;
-      pointer-events: none;
-      overflow: visible;
-    }
+        .dial-wrap {
+            position: relative;
+            width: min(58vw, 280px);
+            aspect-ratio: 1;
+            display: grid;
+            place-items: center;
+        }
 
-    .dial-pointer-line {
-      stroke: rgba(56, 189, 248, 1);
-      stroke-width: 3.5;
-      stroke-linecap: round;
-      filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.7));
-    }
+        .dial-ring {
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(circle at center, rgba(15, 23, 42, 0.6), rgba(15, 23, 42, 0.93));
+            border: 2px solid rgba(56, 189, 248, 0.4);
+            box-shadow: inset 0 0 32px rgba(56, 189, 248, 0.15), 0 0 28px rgba(14, 116, 144, 0.38);
+            user-select: none;
+            touch-action: none;
+        }
 
-    .dial-pointer-dot {
-      fill: rgba(56, 189, 248, 1);
-      filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.7));
-    }
+        .dial-grid {
+            position: absolute;
+            inset: 12%;
+            border-radius: 50%;
+            border: 1px solid rgba(148, 163, 184, 0.18);
+            background: radial-gradient(circle at center, rgba(30, 41, 59, 0.2), rgba(15, 23, 42, 0.45));
+        }
 
-    .dial-pointer::after {
-      content: "";
-      position: absolute;
-      bottom: -10px;
-      left: 50%;
-      width: 16px;
-      height: 16px;
-      border-radius: 50%;
-      background: rgba(56,189,248,1);
-      transform: translateX(-50%);
-      box-shadow: 0 0 18px rgba(56,189,248,0.8);
-    }
+        .dial-center {
+            position: absolute;
+            inset: 12%;
+            border-radius: 50%;
+            z-index: 2;
+        }
 
-    .dial-label {
-      position: absolute;
-      bottom: 18%;
-      left: 50%;
-      transform: translateX(-50%);
-      text-align: center;
-      z-index: 4;
-      color: var(--muted);
-      font-size: 0.8rem;
-    }
+        .dial-pointer-svg {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 3;
+            pointer-events: none;
+            overflow: visible;
+        }
 
-    .dial-value {
-      position: absolute;
-      top: 18%;
-      left: 50%;
-      transform: translateX(-50%);
-      font-weight: 700;
-      font-size: 1.2rem;
-      color: var(--text);
-      z-index: 4;
-    }
+        .dial-pointer-line {
+            stroke: rgba(56, 189, 248, 1);
+            stroke-width: 3.5;
+            stroke-linecap: round;
+            filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.7));
+        }
 
-    .status-line {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      justify-content: space-between;
-      padding: 8px 0 0;
-      color: var(--muted);
-      font-size: 0.82rem;
-    }
+        .dial-pointer-dot {
+            fill: rgba(56, 189, 248, 1);
+            filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.7));
+        }
 
-    .log {
-      min-height: 160px;
-      max-height: 220px;
-      overflow: auto;
-      border-radius: 12px;
-      border: 1px solid var(--line);
-      background: rgba(2, 6, 23, 0.6);
-      padding: 12px 14px;
-      font-family: "Consolas", "SFMono-Regular", monospace;
-      font-size: 0.8rem;
-      line-height: 1.6;
-      color: #dbeafe;
-    }
+        .dial-pointer::after {
+            content: "";
+            position: absolute;
+            bottom: -10px;
+            left: 50%;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: rgba(56, 189, 248, 1);
+            transform: translateX(-50%);
+            box-shadow: 0 0 18px rgba(56, 189, 248, 0.8);
+        }
 
-    .log-line { margin: 0; }
+        .dial-label {
+            position: absolute;
+            bottom: 18%;
+            left: 50%;
+            transform: translateX(-50%);
+            text-align: center;
+            z-index: 4;
+            color: var(--muted);
+            font-size: 0.8rem;
+        }
 
-    .tiny { font-size: 0.72rem; color: var(--muted); }
+        .dial-value {
+            position: absolute;
+            top: 18%;
+            left: 50%;
+            transform: translateX(-50%);
+            font-weight: 700;
+            font-size: 1.2rem;
+            color: var(--text);
+            z-index: 4;
+        }
 
-    input[readonly],
-    input:disabled,
-    textarea[readonly] {
-      cursor: default;
-      opacity: 0.9;
-      pointer-events: none;
-    }
+        .status-line {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 0 0;
+            color: var(--muted);
+            font-size: 0.82rem;
+        }
 
-    @media (max-width: 1024px) {
-      .panel-grid {
-        grid-template-columns: 1fr;
-      }
+        .log {
+            min-height: 160px;
+            max-height: 220px;
+            overflow: auto;
+            border-radius: 12px;
+            border: 1px solid var(--line);
+            background: rgba(2, 6, 23, 0.6);
+            padding: 12px 14px;
+            font-family: "Consolas", "SFMono-Regular", monospace;
+            font-size: 0.8rem;
+            line-height: 1.6;
+            color: #dbeafe;
+        }
 
-      .config-scroll {
-        max-height: none;
-        overflow: visible;
-      }
-    }
-  </style>
+        .log-line {
+            margin: 0;
+        }
+
+        .tiny {
+            font-size: 0.72rem;
+            color: var(--muted);
+        }
+
+        input[readonly],
+        input:disabled,
+        textarea[readonly] {
+            cursor: default;
+            opacity: 0.9;
+            pointer-events: none;
+        }
+
+        @media (max-width: 1024px) {
+            .panel-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .config-scroll {
+                max-height: none;
+                overflow: visible;
+            }
+        }
+    </style>
 </head>
 <body>
-  <div class="app">
+<div class="app">
     <header class="topbar">
-      <div>
-        <div class="title">闭环驱动参数配置器</div>
-        <div class="subtitle">TMC 兼容协议 + 闭环扩展参数 + 实时位置控制</div>
-      </div>
-      <div class="actions">
-        <button id="connectBtn" class="primary">连接串口</button>
-        <button id="readAllBtn">读取全部</button>
-        <button id="writeAllBtn">应用配置</button>
-        <button id="tuneBtn" class="warn">自动整定</button>
-        <span id="faultBadge" class="badge ok"><span class="led"></span> 无故障</span>
-        <span id="connBadge" class="badge">未连接</span>
-      </div>
+        <div>
+            <div class="title">闭环驱动参数配置器</div>
+            <div class="subtitle">TMC 兼容协议 + 闭环扩展参数 + 实时位置控制</div>
+        </div>
+        <div class="actions">
+            <button id="connectBtn" class="primary">连接串口</button>
+            <button id="readAllBtn">读取全部</button>
+            <button id="writeAllBtn">应用配置</button>
+            <button id="tuneBtn" class="warn">自动整定</button>
+            <span id="faultBadge" class="badge ok"><span class="led"></span> 无故障</span>
+            <span id="connBadge" class="badge">未连接</span>
+        </div>
     </header>
 
     <div class="panel-grid">
-      <section class="panel">
-        <div class="panel-header">
-          <h3>实时位置监控</h3>
-          <span class="badge ok">闭环反馈</span>
-        </div>
-        <div class="panel-body">
-          <div class="dial-panel">
-            <div class="dial-wrap">
-              <div class="dial-ring" id="dial" aria-label="位置拨盘">
-                <div class="dial-grid"></div>
-                <svg class="dial-pointer-svg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-                  <g id="dialPointerGroup">
-                    <line class="dial-pointer-line" x1="50" y1="50" x2="50" y2="18"></line>
-                    <circle class="dial-pointer-dot" cx="50" cy="50" r="3.5"></circle>
-                  </g>
-                </svg>
-                <div class="dial-center"></div>
-                <div class="dial-value" id="posValue">0°</div>
-                <div class="dial-label">当前位置</div>
-              </div>
-            </div>
-          </div>
-
-          <div class="grid-2">
-            <div class="card">
-              <div class="field">
-                <label>目标位置 <span class="tiny" id="targetPosReadout">0°</span></label>
-                <input id="targetPosInput" type="number" value="0" step="1" />
-              </div>
-            </div>
-            <div class="card">
-              <div class="field">
-                <label>当前位置 <span class="tiny" id="currentPosReadout">0°</span></label>
-                <input id="currentPosDisplay" type="text" value="0°" readonly />
-              </div>
-            </div>
-          </div>
-
-          <div class="inline">
-            <button id="sendTargetBtn" class="primary">发送目标位置</button>
-            <button id="zeroBtn">归零</button>
-            <button id="stopBtn" class="danger">停止</button>
-          </div>
-
-          <div class="status-line">
-            <span>速度：<strong id="speedValue">0.00</strong> RPM</span>
-            <span>加速度：<strong id="accelValue">0.00</strong> RPM/s</span>
-            <span>电流：<strong id="currentValue">0.00</strong> A</span>
-          </div>
-
-          <div class="card">
-            <h3 style="margin:0 0 12px;">测速控制</h3>
-            <div class="grid-2">
-              <div class="field">
-                <label>启动转速（RPM）</label>
-                <select id="startRpmSelect"></select>
-              </div>
-              <div class="field">
-                <label>最高转速（RPM）</label>
-                <select id="maxRpmSelect"></select>
-              </div>
-              <div class="field">
-                <label>加速度（RPM/s）</label>
-                <select id="accelRpmSelect"></select>
-              </div>
-              <div class="field">
-                <label>脉冲数（STEP 个数）</label>
-                <input id="pulseCountInput" type="number" min="0" step="51200" value="2560000" />
-              </div>
-              <div class="field">
-                <label>运动模式</label>
-                <select id="motionModeSelect">
-                  <option value="0">位置正转</option>
-                  <option value="1">位置反转</option>
-                  <option value="2">速度正转</option>
-                  <option value="3">速度反转</option>
-                  <option value="4">正转归零</option>
-                  <option value="5">反转归零</option>
-                </select>
-              </div>
-              <div class="field">
-                <label>窗口长度</label>
-                <input id="waveWindowMsInput" type="number" min="2000" max="2000" step="50" value="2000" />
-              </div>
-              <div class="field">
-                <label>STEP 脉宽（ns）</label>
-                <input id="stepPulseWidthNsInput" type="number" min="100" max="20000" step="20" value="100" />
-              </div>
-            </div>
-            <div class="inline mt">
-              <button id="startMotionBtn" class="primary">启动</button>
-              <button id="stopMotionBtn" class="danger">停止</button>
-              <button id="motorEnableBtn">电机使能（EN=0）</button>
-              <button id="motorDisableBtn">电机失能（EN=1）</button>
-              <button id="singleStepBtn" class="warn">半圈正向脉冲</button>
-              <button id="pauseWaveBtn">暂停查看</button>
-            </div>
-            <div class="tiny mt">说明：脉冲数固定按 256 细分角度基准计算，1.8° 电机每转 51200 个 STEP，与驱动器微步和插值设置无关。</div>
-            <div class="tiny mt" id="motionDurationEstimate">预计时间：等待参数</div>
-            <canvas id="motionWaveCanvas" width="620" height="220" style="width:100%;height:220px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"></canvas>
-          </div>
-        </div>
-      </section>
-
-      <aside class="panel">
-        <div class="panel-header">
-          <h3>串口与协议状态</h3>
-          <span id="protoBadge" class="badge">TMC 兼容</span>
-        </div>
-        <div class="panel-body">
-          <div class="grid-2">
-            <div class="field">
-              <label>串口波特率</label>
-              <select id="baudRate">
-                <option value="115200" selected>115200</option>
-                <option value="57600">57600</option>
-                <option value="230400">230400</option>
-                <option value="921600">921600</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>通信方式</label>
-              <select id="uartMode">
-                <option value="dual">双线 UART（推荐）</option>
-                <option value="single">单线 UART（仅部分硬件支持）</option>
-              </select>
-            </div>
-          </div>
-
-          <div class="status-grid">
-            <div class="status-item">
-              <div class="label">A 相电流</div>
-              <div class="value" id="phaseACurrentValue">0.00 A</div>
-            </div>
-            <div class="status-item">
-              <div class="label">B 相电流</div>
-              <div class="value" id="phaseBCurrentValue">0.00 A</div>
-            </div>
-            <div class="status-item">
-              <div class="label">位置环频率</div>
-              <div class="value" id="posLoopRateValue">0 Hz</div>
-            </div>
-            <div class="status-item">
-              <div class="label">速度环频率</div>
-              <div class="value" id="velLoopRateValue">0 Hz</div>
-            </div>
-            <div class="status-item">
-              <div class="label">电流环频率</div>
-              <div class="value" id="curLoopRateValue">0 Hz</div>
-            </div>
-            <div class="status-item">
-              <div class="label">错误信息</div>
-              <div class="value" id="faultSummaryValue">正常</div>
-            </div>
-            <div class="status-item">
-              <div class="label">磁编码器角度</div>
-              <div class="value" id="encoderAngleValue">0.00°</div>
-            </div>
-            <div class="status-item">
-              <div class="label">编码器原始帧</div>
-              <div class="value" id="encoderRawValue">0x0000</div>
-            </div>
-            <div class="status-item">
-              <div class="label">磁场状态 MGH / MGL</div>
-              <div class="value" id="magneticLevelValue">正常 / 正常</div>
-            </div>
-          </div>
-
-          <div class="log" id="logArea">
-            <p class="log-line">[INFO] 闭环驱动参数配置器已启动</p>
-            <p class="log-line">[INFO] 当前支持：TMC2209 风格寄存器读写 + 自定义闭环参数</p>
-          </div>
-        </div>
-        
-          <div class="danger-box">
-            <strong>单线 UART 说明：</strong><br />
-            常见 USB-TTL 适配器通常没有真正的单线半双工支持；多数场景下推荐使用双线 TX/RX + GND。只有特定硬件或 MCU 端口支持 开漏 / 半双工单线模式时，才可工作。若你用的是标准 CH340 / CP2102 / FT232，通常需要双线模式。
-          </div>
-
-          <div class="field mt">
-            <label>协议帮助</label>
-            <div class="tiny">
-              这里按 TMC 兼容寄存器模型工作：官方寄存器保留真实地址，闭环扩展参数使用 0x100 以上区间，读写与 Klipper 兼容工作流相同。
-            </div>
-          </div>
-
-          <div class="field mt">
-            <label>寄存器地址与含义</label>
-            <div class="tiny" id="registerMap"></div>
-          </div>
-      </aside>
-
-      <div class="config-scroll">
         <section class="panel">
-          <div class="panel-header">
-            <h3>驱动参数配置</h3>
-            <span class="badge warn">协议参数</span>
-          </div>
-          <div class="panel-body">
-            <div class="grid-2">
-              <div class="card">
-                <h3 style="margin-top:0;">电机基础参数</h3>
-                <div class="field">
-                  <label>微步数</label>
-                  <input id="microsteps" type="number" value="32" min="2" max="256" />
-                </div>
-                <div class="field mt">
-                  <label>插值微步</label>
-                  <input id="interpMicrosteps" type="number" value="256" min="32" max="256" />
-                </div>
-                <div class="field mt">
-                  <label>运行电流（A）</label>
-                  <input id="runCurrent" type="number" value="0.8" min="0" max="3" step="0.01" />
-                </div>
-                <div class="field mt">
-                  <label>保持电流（A）</label>
-                  <input id="holdCurrent" type="number" value="0.2" min="0" max="3" step="0.01" />
-                </div>
-                <div class="field mt">
-                  <label>静音模式</label>
-                  <select id="silentMode">
-                    <option value="1">启用</option>
-                    <option value="0">关闭</option>
-                  </select>
-                </div>
-              </div>
-
-              <div class="card">
-                <h3 style="margin-top:0;">闭环与速度参数</h3>
-                <div class="field">
-                  <label>当前位置（编码器）</label>
-                  <input id="encoderPos" type="number" value="0" step="1" />
-                </div>
-                <div class="field mt">
-                  <label>目标速度（rps）</label>
-                  <input id="targetVelocity" type="number" value="1.2" step="0.01" />
-                </div>
-                <div class="field mt">
-                  <label>最大加速度（rps²）</label>
-                  <input id="maxAccel" type="number" value="3.5" step="0.01" />
-                </div>
-                <div class="field mt">
-                  <label>跟随误差阈值</label>
-                  <input id="followError" type="number" value="0.25" step="0.01" />
-                </div>
-                <div class="field mt">
-                  <label>当前闭环使能</label>
-                  <select id="closedLoopEnable">
-                    <option value="1">开启</option>
-                    <option value="0">关闭</option>
-                  </select>
-                </div>
-              </div>
+            <div class="panel-header">
+                <h3>实时位置监控</h3>
+                <span class="badge ok">闭环反馈</span>
             </div>
-          </div>
+            <div class="panel-body">
+                <div class="dial-panel">
+                    <div class="dial-wrap">
+                        <div class="dial-ring" id="dial" aria-label="位置拨盘">
+                            <div class="dial-grid"></div>
+                            <svg class="dial-pointer-svg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"
+                                 aria-hidden="true">
+                                <g id="dialPointerGroup">
+                                    <line class="dial-pointer-line" x1="50" y1="50" x2="50" y2="18"></line>
+                                    <circle class="dial-pointer-dot" cx="50" cy="50" r="3.5"></circle>
+                                </g>
+                            </svg>
+                            <div class="dial-center"></div>
+                            <div class="dial-value" id="posValue">0°</div>
+                            <div class="dial-label">当前位置</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid-2">
+                    <div class="card">
+                        <div class="field">
+                            <label>目标位置 <span class="tiny" id="targetPosReadout">0°</span></label>
+                            <input id="targetPosInput" type="number" value="0" step="1"/>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="field">
+                            <label>当前位置 <span class="tiny" id="currentPosReadout">0°</span></label>
+                            <input id="currentPosDisplay" type="text" value="0°" readonly/>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="inline">
+                    <button id="sendTargetBtn" class="primary">发送目标位置</button>
+                    <button id="zeroBtn">归零</button>
+                    <button id="stopBtn" class="danger">停止</button>
+                </div>
+
+                <div class="status-line">
+                    <span>速度：<strong id="speedValue">0.00</strong> RPM</span>
+                    <span>加速度：<strong id="accelValue">0.00</strong> RPM/s</span>
+                    <span>电流：<strong id="currentValue">0.00</strong> A</span>
+                </div>
+
+                <div class="card">
+                    <h3 style="margin:0 0 12px;">测速控制</h3>
+                    <div class="grid-2">
+                        <div class="field">
+                            <label>启动转速（RPM）</label>
+                            <select id="startRpmSelect"></select>
+                        </div>
+                        <div class="field">
+                            <label>最高转速（RPM）</label>
+                            <select id="maxRpmSelect"></select>
+                        </div>
+                        <div class="field">
+                            <label>加速度（RPM/s）</label>
+                            <select id="accelRpmSelect"></select>
+                        </div>
+                        <div class="field">
+                            <label>脉冲数（STEP 个数）</label>
+                            <input id="pulseCountInput" type="number" min="0" step="51200" value="2560000"/>
+                        </div>
+                        <div class="field">
+                            <label>运动模式</label>
+                            <select id="motionModeSelect">
+                                <option value="0">位置正转</option>
+                                <option value="1">位置反转</option>
+                                <option value="2">速度正转</option>
+                                <option value="3">速度反转</option>
+                                <option value="4">正转归零</option>
+                                <option value="5">反转归零</option>
+                            </select>
+                        </div>
+                        <div class="field">
+                            <label>窗口长度</label>
+                            <input id="waveWindowMsInput" type="number" min="2000" max="2000" step="50" value="2000"/>
+                        </div>
+                        <div class="field">
+                            <label>STEP 脉宽（ns）</label>
+                            <input id="stepPulseWidthNsInput" type="number" min="100" max="20000" step="20"
+                                   value="100"/>
+                        </div>
+                    </div>
+                    <div class="inline mt">
+                        <button id="startMotionBtn" class="primary">启动</button>
+                        <button id="stopMotionBtn" class="danger">停止</button>
+                        <button id="motorEnableBtn">电机使能（EN=0）</button>
+                        <button id="motorDisableBtn">电机失能（EN=1）</button>
+                        <button id="singleStepBtn" class="warn">半圈正向脉冲</button>
+                        <button id="pauseWaveBtn">暂停查看</button>
+                    </div>
+                    <div class="tiny mt">说明：脉冲数固定按 256 细分角度基准计算，1.8° 电机每转 51200 个
+                        STEP，与驱动器微步和插值设置无关。
+                    </div>
+                    <div class="tiny mt" id="motionDurationEstimate">预计时间：等待参数</div>
+                    <canvas id="motionWaveCanvas" width="620" height="220"
+                            style="width:100%;height:220px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"></canvas>
+                </div>
+            </div>
         </section>
 
-        <section class="panel">
-          <div class="panel-header">
-            <h3>PID 参数</h3>
-            <span class="badge ok">位置 / 速度环</span>
-          </div>
-          <div class="panel-body">
-            <div class="grid-2">
-              <div class="card">
-                <h3 style="margin-top:0;">位置 PID</h3>
-                <div class="field">
-                  <label>Kp</label>
-                  <input id="posKp" type="number" value="1.0" step="0.01" />
-                </div>
-                <div class="field mt">
-                  <label>Ki</label>
-                  <input id="posKi" type="number" value="0.04" step="0.01" />
-                </div>
-                <div class="field mt">
-                  <label>Kd</label>
-                  <input id="posKd" type="number" value="0.02" step="0.01" />
-                </div>
-              </div>
-
-              <div class="card">
-                <h3 style="margin-top:0;">速度 PID</h3>
-                <div class="field">
-                  <label>Kp</label>
-                  <input id="velKp" type="number" value="0.7" step="0.01" />
-                </div>
-                <div class="field mt">
-                  <label>Ki</label>
-                  <input id="velKi" type="number" value="0.06" step="0.01" />
-                </div>
-                <div class="field mt">
-                  <label>Kd</label>
-                  <input id="velKd" type="number" value="0.01" step="0.01" />
-                </div>
-              </div>
+        <aside class="panel">
+            <div class="panel-header">
+                <h3>串口与协议状态</h3>
+                <span id="protoBadge" class="badge">TMC 兼容</span>
             </div>
-          </div>
-        </section>
+            <div class="panel-body">
+                <div class="grid-2">
+                    <div class="field">
+                        <label>串口波特率</label>
+                        <select id="baudRate">
+                            <option value="115200" selected>115200</option>
+                            <option value="57600">57600</option>
+                            <option value="230400">230400</option>
+                            <option value="921600">921600</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label>通信方式</label>
+                        <select id="uartMode">
+                            <option value="dual">双线 UART（推荐）</option>
+                            <option value="single">单线 UART（仅部分硬件支持）</option>
+                        </select>
+                    </div>
+                </div>
 
-        <section class="panel">
-          <div class="panel-header">
-            <h3>自动整定</h3>
-            <span class="badge danger">危险参数</span>
-          </div>
-          <div class="panel-body">
+                <div class="status-grid">
+                    <div class="status-item">
+                        <div class="label">A 相电流</div>
+                        <div class="value" id="phaseACurrentValue">0.00 A</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="label">B 相电流</div>
+                        <div class="value" id="phaseBCurrentValue">0.00 A</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="label">位置环频率</div>
+                        <div class="value" id="posLoopRateValue">0 Hz</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="label">速度环频率</div>
+                        <div class="value" id="velLoopRateValue">0 Hz</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="label">电流环频率</div>
+                        <div class="value" id="curLoopRateValue">0 Hz</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="label">错误信息</div>
+                        <div class="value" id="faultSummaryValue">正常</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="label">磁编码器角度</div>
+                        <div class="value" id="encoderAngleValue">0.00°</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="label">编码器原始帧</div>
+                        <div class="value" id="encoderRawValue">0x0000</div>
+                    </div>
+                    <div class="status-item">
+                        <div class="label">磁场状态 MGH / MGL</div>
+                        <div class="value" id="magneticLevelValue">正常 / 正常</div>
+                    </div>
+                </div>
+
+                <div class="log" id="logArea">
+                    <p class="log-line">[INFO] 闭环驱动参数配置器已启动</p>
+                    <p class="log-line">[INFO] 当前支持：TMC2209 风格寄存器读写 + 自定义闭环参数</p>
+                </div>
+            </div>
+
             <div class="danger-box">
-              <strong>警告：</strong> 自动整定会提高电机动态响应和输出电流，若增益过大或转速过高，可能导致振荡、发热、编码器丢步，甚至导致机械结构损坏。请在低负载状态下使用，且先确认机械固定可靠。
+                <strong>单线 UART 说明：</strong><br/>
+                常见 USB-TTL 适配器通常没有真正的单线半双工支持；多数场景下推荐使用双线 TX/RX + GND。只有特定硬件或 MCU
+                端口支持 开漏 / 半双工单线模式时，才可工作。若你用的是标准 CH340 / CP2102 / FT232，通常需要双线模式。
             </div>
 
-            <div class="grid-2">
-              <div class="card">
-                <div class="field">
-                  <label>最大速度（rps）</label>
-                  <input id="tuneMaxSpeed" type="number" value="2.0" step="0.01" />
+            <div class="field mt">
+                <label>协议帮助</label>
+                <div class="tiny">
+                    这里按 TMC 兼容寄存器模型工作：官方寄存器保留真实地址，闭环扩展参数使用 0x100 以上区间，读写与 Klipper
+                    兼容工作流相同。
                 </div>
-                <div class="field mt">
-                  <label>加速度（rps²）</label>
-                  <input id="tuneAccel" type="number" value="4.0" step="0.01" />
-                </div>
-                <div class="field mt">
-                  <label>增益步进</label>
-                  <input id="tuneGainStep" type="number" value="0.05" step="0.01" />
-                </div>
-              </div>
-
-              <div class="card">
-                <div class="field">
-                  <label>整定状态</label>
-                  <select id="tuneState">
-                    <option value="0">未启动</option>
-                    <option value="1">运行中</option>
-                  </select>
-                </div>
-                <div class="field mt">
-                  <label>危险等级</label>
-                  <div class="tiny">高：过大电流 / 高增益 / 高转速 / 长时间振荡</div>
-                </div>
-                <div class="inline mt">
-                  <button id="startTuneBtn" class="warn">开始整定</button>
-                  <button id="applyTuneBtn" class="danger">应用整定结果</button>
-                </div>
-              </div>
             </div>
-          </div>
-        </section>
-      </div>
+
+            <div class="field mt">
+                <label>寄存器地址与含义</label>
+                <div class="tiny" id="registerMap"></div>
+            </div>
+        </aside>
+
+        <div class="config-scroll">
+            <section class="panel">
+                <div class="panel-header">
+                    <h3>驱动参数配置</h3>
+                    <span class="badge warn">协议参数</span>
+                </div>
+                <div class="panel-body">
+                    <div class="grid-2">
+                        <div class="card">
+                            <h3 style="margin-top:0;">电机基础参数</h3>
+                            <div class="field">
+                                <label>微步数</label>
+                                <input id="microsteps" type="number" value="32" min="2" max="256"/>
+                            </div>
+                            <div class="field mt">
+                                <label>插值微步</label>
+                                <input id="interpMicrosteps" type="number" value="256" min="32" max="256"/>
+                            </div>
+                            <div class="field mt">
+                                <label>运行电流（A）</label>
+                                <input id="runCurrent" type="number" value="0.8" min="0" max="3" step="0.01"/>
+                            </div>
+                            <div class="field mt">
+                                <label>保持电流（A）</label>
+                                <input id="holdCurrent" type="number" value="0.2" min="0" max="3" step="0.01"/>
+                            </div>
+                            <div class="field mt">
+                                <label>静音模式</label>
+                                <select id="silentMode">
+                                    <option value="1">启用</option>
+                                    <option value="0">关闭</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <h3 style="margin-top:0;">闭环与速度参数</h3>
+                            <div class="field">
+                                <label>当前位置（编码器）</label>
+                                <input id="encoderPos" type="number" value="0" step="1"/>
+                            </div>
+                            <div class="field mt">
+                                <label>目标速度（rps）</label>
+                                <input id="targetVelocity" type="number" value="1.2" step="0.01"/>
+                            </div>
+                            <div class="field mt">
+                                <label>最大加速度（rps²）</label>
+                                <input id="maxAccel" type="number" value="3.5" step="0.01"/>
+                            </div>
+                            <div class="field mt">
+                                <label>跟随误差阈值</label>
+                                <input id="followError" type="number" value="0.25" step="0.01"/>
+                            </div>
+                            <div class="field mt">
+                                <label>当前闭环使能</label>
+                                <select id="closedLoopEnable">
+                                    <option value="1">开启</option>
+                                    <option value="0">关闭</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <h3>PID 参数</h3>
+                    <span class="badge ok">位置 / 速度环</span>
+                </div>
+                <div class="panel-body">
+                    <div class="grid-2">
+                        <div class="card">
+                            <h3 style="margin-top:0;">位置 PID</h3>
+                            <div class="field">
+                                <label>Kp</label>
+                                <input id="posKp" type="number" value="1.0" step="0.01"/>
+                            </div>
+                            <div class="field mt">
+                                <label>Ki</label>
+                                <input id="posKi" type="number" value="0.04" step="0.01"/>
+                            </div>
+                            <div class="field mt">
+                                <label>Kd</label>
+                                <input id="posKd" type="number" value="0.02" step="0.01"/>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <h3 style="margin-top:0;">速度 PID</h3>
+                            <div class="field">
+                                <label>Kp</label>
+                                <input id="velKp" type="number" value="0.7" step="0.01"/>
+                            </div>
+                            <div class="field mt">
+                                <label>Ki</label>
+                                <input id="velKi" type="number" value="0.06" step="0.01"/>
+                            </div>
+                            <div class="field mt">
+                                <label>Kd</label>
+                                <input id="velKd" type="number" value="0.01" step="0.01"/>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <h3>自动整定</h3>
+                    <span class="badge danger">危险参数</span>
+                </div>
+                <div class="panel-body">
+                    <div class="danger-box">
+                        <strong>警告：</strong>
+                        自动整定会提高电机动态响应和输出电流，若增益过大或转速过高，可能导致振荡、发热、编码器丢步，甚至导致机械结构损坏。请在低负载状态下使用，且先确认机械固定可靠。
+                    </div>
+
+                    <div class="grid-2">
+                        <div class="card">
+                            <div class="field">
+                                <label>最大速度（rps）</label>
+                                <input id="tuneMaxSpeed" type="number" value="2.0" step="0.01"/>
+                            </div>
+                            <div class="field mt">
+                                <label>加速度（rps²）</label>
+                                <input id="tuneAccel" type="number" value="4.0" step="0.01"/>
+                            </div>
+                            <div class="field mt">
+                                <label>增益步进</label>
+                                <input id="tuneGainStep" type="number" value="0.05" step="0.01"/>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <div class="field">
+                                <label>整定状态</label>
+                                <select id="tuneState">
+                                    <option value="0">未启动</option>
+                                    <option value="1">运行中</option>
+                                </select>
+                            </div>
+                            <div class="field mt">
+                                <label>危险等级</label>
+                                <div class="tiny">高：过大电流 / 高增益 / 高转速 / 长时间振荡</div>
+                            </div>
+                            <div class="inline mt">
+                                <button id="startTuneBtn" class="warn">开始整定</button>
+                                <button id="applyTuneBtn" class="danger">应用整定结果</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
     </div>
 
-  <script>
-    const logArea = document.getElementById('logArea');
-    const connBadge = document.getElementById('connBadge');
-    const protoBadge = document.getElementById('protoBadge');
-    const faultBadge = document.getElementById('faultBadge');
+    <script>
+        const logArea = document.getElementById('logArea');
+        const connBadge = document.getElementById('connBadge');
+        const protoBadge = document.getElementById('protoBadge');
+        const faultBadge = document.getElementById('faultBadge');
 
-    const state = {
-      connected: false,
-      port: null,
-      reader: null,
-      writer: null,
-      currentAngle: 0,
-      targetAngle: 0,
-      targetPosition: 0,
-      speed: 0,
-      accel: 0,
-      currentA: 0,
-      dragging: false,
-      encoderFault: false,
-      magneticFault: false,
-      outputStopped: false,
-      faultSummary: '正常',
-      phaseACurrentA: 0,
-      phaseBCurrentA: 0,
-      posLoopHz: 0,
-      velLoopHz: 0,
-      curLoopHz: 0
-      ,encoderRaw: 0
-      ,encoderAngleDeg: 0
-      ,magneticHigh: false
-      ,magneticLow: false
-      ,actualPosition: 0
-      ,lastEncoderLogAt: 0
-      ,rxBuffer: new Uint8Array(0)
-      ,motionSpeedRpm: 0
-      ,motionPositionDeg: 0
-      ,waveHistory: []
-      ,wavePaused: false
-      ,wavePausedAt: 0
-      ,motionWaveTimer: null
-      ,lastWaveStamp: 0
-    };
+        const state = {
+            connected: false,
+            port: null,
+            reader: null,
+            writer: null,
+            currentAngle: 0,
+            targetAngle: 0,
+            targetPosition: 0,
+            speed: 0,
+            accel: 0,
+            currentA: 0,
+            dragging: false,
+            encoderFault: false,
+            magneticFault: false,
+            outputStopped: false,
+            faultSummary: '正常',
+            phaseACurrentA: 0,
+            phaseBCurrentA: 0,
+            posLoopHz: 0,
+            velLoopHz: 0,
+            curLoopHz: 0
+            , encoderRaw: 0
+            , encoderAngleDeg: 0
+            , magneticHigh: false
+            , magneticLow: false
+            , actualPosition: 0
+            , lastEncoderLogAt: 0
+            , rxBuffer: new Uint8Array(0)
+            , motionSpeedRpm: 0
+            , motionPositionDeg: 0
+            , waveHistory: []
+            , wavePaused: false
+            , wavePausedAt: 0
+            , motionWaveTimer: null
+            , lastWaveStamp: 0
+        };
 
-    const OFFICIAL_REGS = {
-      GCONF: 0x00,
-      GSTAT: 0x01,
-      IOUT: 0x06,
-      DRV_CONF: 0x0A,
-      IHOLD_IRUN: 0x10,
-      TPOWERDOWN: 0x11,
-      TSTEP: 0x12,
-      TPWMTHRS: 0x13,
-      TCOOLTHRS: 0x14,
-      THIGH: 0x15,
-      MSCNT: 0x6A,
-      MSCURACT: 0x6B,
-      CHOPCONF: 0x6C,
-      COOLCONF: 0x6D,
-      DCCTRL: 0x6E,
-      DRV_STATUS: 0x6F,
-      PWMCONF: 0x70,
-      PWMSCALE: 0x71,
-      ENCM_CTRL: 0x72
-    };
+        const OFFICIAL_REGS = {
+            GCONF: 0x00,
+            GSTAT: 0x01,
+            IOUT: 0x06,
+            DRV_CONF: 0x0A,
+            IHOLD_IRUN: 0x10,
+            TPOWERDOWN: 0x11,
+            TSTEP: 0x12,
+            TPWMTHRS: 0x13,
+            TCOOLTHRS: 0x14,
+            THIGH: 0x15,
+            MSCNT: 0x6A,
+            MSCURACT: 0x6B,
+            CHOPCONF: 0x6C,
+            COOLCONF: 0x6D,
+            DCCTRL: 0x6E,
+            DRV_STATUS: 0x6F,
+            PWMCONF: 0x70,
+            PWMSCALE: 0x71,
+            ENCM_CTRL: 0x72
+        };
 
-    const CUSTOM_REGS = {
-      MICROSTEPS: 0x100,
-      INTERPOLATION: 0x101,
-      RUN_CURRENT_A: 0x102,
-      HOLD_CURRENT_A: 0x103,
-      HOLD_ENABLED: 0x104,
-      SILENT_MODE: 0x105,
-      SENSE_RESISTOR: 0x106,
-      CLOSED_LOOP_ENABLE: 0x107
-      ,FAULT_STATUS: 0x108
-      ,ENCODER_FAULT: 0x109
-      ,MAGNETIC_FAULT: 0x10A
-      ,OUTPUT_STOP: 0x10B
-      ,PHASE_A_CURRENT_MA: 0x10C
-      ,PHASE_B_CURRENT_MA: 0x10D
-      ,POSITION_LOOP_HZ: 0x10E
-      ,VELOCITY_LOOP_HZ: 0x10F
-      ,CURRENT_LOOP_HZ: 0x110
-      ,LAST_FAULT: 0x111
-      ,TARGET_POSITION: 0x112
-      ,ACTUAL_POSITION: 0x113
-      ,FOLLOW_ERROR: 0x114
-      ,ENCODER_RAW: 0x115
-      ,ENCODER_ANGLE_MDEG: 0x116
-      ,MAGNETIC_HIGH: 0x117
-      ,MAGNETIC_LOW: 0x118
-      ,ENCODER_ZERO: 0x119
-    };
+        const CUSTOM_REGS = {
+            MICROSTEPS: 0x100,
+            INTERPOLATION: 0x101,
+            RUN_CURRENT_A: 0x102,
+            HOLD_CURRENT_A: 0x103,
+            HOLD_ENABLED: 0x104,
+            SILENT_MODE: 0x105,
+            SENSE_RESISTOR: 0x106,
+            CLOSED_LOOP_ENABLE: 0x107
+            , FAULT_STATUS: 0x108
+            , ENCODER_FAULT: 0x109
+            , MAGNETIC_FAULT: 0x10A
+            , OUTPUT_STOP: 0x10B
+            , PHASE_A_CURRENT_MA: 0x10C
+            , PHASE_B_CURRENT_MA: 0x10D
+            , POSITION_LOOP_HZ: 0x10E
+            , VELOCITY_LOOP_HZ: 0x10F
+            , CURRENT_LOOP_HZ: 0x110
+            , LAST_FAULT: 0x111
+            , TARGET_POSITION: 0x112
+            , ACTUAL_POSITION: 0x113
+            , FOLLOW_ERROR: 0x114
+            , ENCODER_RAW: 0x115
+            , ENCODER_ANGLE_MDEG: 0x116
+            , MAGNETIC_HIGH: 0x117
+            , MAGNETIC_LOW: 0x118
+            , ENCODER_ZERO: 0x119
+        };
 
-    const REGISTER_DESCRIPTIONS = new Map([
-      [OFFICIAL_REGS.GCONF, ['0x0000', 'GCONF', 'TMC 全局配置 / 单线 UART 选择']],
-      [OFFICIAL_REGS.GSTAT, ['0x0001', 'GSTAT', 'TMC 状态清除寄存器']],
-      [OFFICIAL_REGS.DRV_CONF, ['0x000A', 'DRV_CONF', '驱动器模式配置 / 静音模式']],
-      [OFFICIAL_REGS.IHOLD_IRUN, ['0x0010', 'IHOLD_IRUN', '保持电流与运行电流']],
-      [OFFICIAL_REGS.TSTEP, ['0x0012', 'TSTEP', '步进周期']],
-      [OFFICIAL_REGS.CHOPCONF, ['0x006C', 'CHOPCONF', '斩波与微步配置']],
-      [OFFICIAL_REGS.DRV_STATUS, ['0x006F', 'DRV_STATUS', '驱动状态']],
-      [CUSTOM_REGS.MICROSTEPS, ['0x0100', 'MICROSTEPS', '微步数']],
-      [CUSTOM_REGS.INTERPOLATION, ['0x0101', 'INTERPOLATION', '插值微步数']],
-      [CUSTOM_REGS.RUN_CURRENT_A, ['0x0102', 'RUN_CURRENT_A', '运行电流，单位 A × 1000']],
-      [CUSTOM_REGS.HOLD_CURRENT_A, ['0x0103', 'HOLD_CURRENT_A', '保持电流，单位 A × 1000']],
-      [CUSTOM_REGS.CLOSED_LOOP_ENABLE, ['0x0107', 'CLOSED_LOOP_ENABLE', '闭环使能']],
-      [CUSTOM_REGS.FAULT_STATUS, ['0x0108', 'FAULT_STATUS', '故障位图：bit0 编码器，bit1 磁场，bit2 停输出']],
-      [CUSTOM_REGS.ENCODER_FAULT, ['0x0109', 'ENCODER_FAULT', '编码器故障']],
-      [CUSTOM_REGS.MAGNETIC_FAULT, ['0x010A', 'MAGNETIC_FAULT', '磁场报警']],
-      [CUSTOM_REGS.OUTPUT_STOP, ['0x010B', 'OUTPUT_STOP', '输出已停止']],
-      [CUSTOM_REGS.PHASE_A_CURRENT_MA, ['0x010C', 'PHASE_A_CURRENT', 'A 相电流，单位 mA']],
-      [CUSTOM_REGS.PHASE_B_CURRENT_MA, ['0x010D', 'PHASE_B_CURRENT', 'B 相电流，单位 mA']],
-      [CUSTOM_REGS.POSITION_LOOP_HZ, ['0x010E', 'POSITION_LOOP_HZ', '位置环频率，单位 Hz']],
-      [CUSTOM_REGS.VELOCITY_LOOP_HZ, ['0x010F', 'VELOCITY_LOOP_HZ', '速度环频率，单位 Hz']],
-      [CUSTOM_REGS.CURRENT_LOOP_HZ, ['0x0110', 'CURRENT_LOOP_HZ', '电流环频率，单位 Hz']],
-      [CUSTOM_REGS.LAST_FAULT, ['0x0111', 'LAST_FAULT', '最近一次故障位图']],
-      [CUSTOM_REGS.TARGET_POSITION, ['0x0112', 'TARGET_POSITION', '目标位置，单位闭环步数']],
-      [CUSTOM_REGS.ACTUAL_POSITION, ['0x0113', 'ACTUAL_POSITION', '当前位置，单位闭环步数']],
-      [CUSTOM_REGS.FOLLOW_ERROR, ['0x0114', 'FOLLOW_ERROR', '跟随误差，单位闭环步数']]
-      ,[CUSTOM_REGS.ENCODER_RAW, ['0x0115', 'ENCODER_RAW', 'KTH7823 原始角度，0 至 65535']]
-      ,[CUSTOM_REGS.ENCODER_ANGLE_MDEG, ['0x0116', 'ENCODER_ANGLE', '磁编码器角度，单位 0.001°']]
-      ,[CUSTOM_REGS.MAGNETIC_HIGH, ['0x0117', 'MAGNETIC_HIGH', 'MGH 磁场过高输入']]
-      ,[CUSTOM_REGS.MAGNETIC_LOW, ['0x0118', 'MAGNETIC_LOW', 'MGL 磁场过低输入']]
-      ,[CUSTOM_REGS.ENCODER_ZERO, ['0x0119', 'ENCODER_ZERO', '编码器启动零点，原始角度值']]
-      ,[0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
-      ,[0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
-      ,[0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
-      ,[0x11D, ['0x011D', 'PULSE_COUNT', '测速脉冲总数']]
-      ,[0x11E, ['0x011E', 'MOTION_MODE', '运动模式：0位置正转 1位置反转 2速度正转 3速度反转 4正转归零 5反转归零']]
-      ,[0x11F, ['0x011F', 'MOTION_CMD', '运动命令：0停止 1启动']]
-      ,[0x120, ['0x0120', 'SPEED_RPM', '当前测速转速，单位 RPM']]
-      ,[0x121, ['0x0121', 'POSITION_DEG', '当前位置，单位 0.001°']]
-      ,[0x122, ['0x0122', 'WAVE_WINDOW_MS', '波形窗口长度，单位 ms']]
-      ,[0x123, ['0x0123', 'STEP_PULSE_WIDTH_NS', 'STEP 高电平脉宽，单位 ns']]
-      ,[0x124, ['0x0124', 'MOTOR_ENABLE', '电机使能，EN 输出低电平']]
-      ,[0x125, ['0x0125', 'MOTOR_DISABLE', '电机失能，EN 输出高电平']]
-      ,[0x126, ['0x0126', 'SINGLE_FORWARD_STEP', 'DIR 高电平并输出单个 STEP']]
-    ]);
+        const REGISTER_DESCRIPTIONS = new Map([
+            [OFFICIAL_REGS.GCONF, ['0x0000', 'GCONF', 'TMC 全局配置 / 单线 UART 选择']],
+            [OFFICIAL_REGS.GSTAT, ['0x0001', 'GSTAT', 'TMC 状态清除寄存器']],
+            [OFFICIAL_REGS.DRV_CONF, ['0x000A', 'DRV_CONF', '驱动器模式配置 / 静音模式']],
+            [OFFICIAL_REGS.IHOLD_IRUN, ['0x0010', 'IHOLD_IRUN', '保持电流与运行电流']],
+            [OFFICIAL_REGS.TSTEP, ['0x0012', 'TSTEP', '步进周期']],
+            [OFFICIAL_REGS.CHOPCONF, ['0x006C', 'CHOPCONF', '斩波与微步配置']],
+            [OFFICIAL_REGS.DRV_STATUS, ['0x006F', 'DRV_STATUS', '驱动状态']],
+            [CUSTOM_REGS.MICROSTEPS, ['0x0100', 'MICROSTEPS', '微步数']],
+            [CUSTOM_REGS.INTERPOLATION, ['0x0101', 'INTERPOLATION', '插值微步数']],
+            [CUSTOM_REGS.RUN_CURRENT_A, ['0x0102', 'RUN_CURRENT_A', '运行电流，单位 A × 1000']],
+            [CUSTOM_REGS.HOLD_CURRENT_A, ['0x0103', 'HOLD_CURRENT_A', '保持电流，单位 A × 1000']],
+            [CUSTOM_REGS.CLOSED_LOOP_ENABLE, ['0x0107', 'CLOSED_LOOP_ENABLE', '闭环使能']],
+            [CUSTOM_REGS.FAULT_STATUS, ['0x0108', 'FAULT_STATUS', '故障位图：bit0 编码器，bit1 磁场，bit2 停输出']],
+            [CUSTOM_REGS.ENCODER_FAULT, ['0x0109', 'ENCODER_FAULT', '编码器故障']],
+            [CUSTOM_REGS.MAGNETIC_FAULT, ['0x010A', 'MAGNETIC_FAULT', '磁场报警']],
+            [CUSTOM_REGS.OUTPUT_STOP, ['0x010B', 'OUTPUT_STOP', '输出已停止']],
+            [CUSTOM_REGS.PHASE_A_CURRENT_MA, ['0x010C', 'PHASE_A_CURRENT', 'A 相电流，单位 mA']],
+            [CUSTOM_REGS.PHASE_B_CURRENT_MA, ['0x010D', 'PHASE_B_CURRENT', 'B 相电流，单位 mA']],
+            [CUSTOM_REGS.POSITION_LOOP_HZ, ['0x010E', 'POSITION_LOOP_HZ', '位置环频率，单位 Hz']],
+            [CUSTOM_REGS.VELOCITY_LOOP_HZ, ['0x010F', 'VELOCITY_LOOP_HZ', '速度环频率，单位 Hz']],
+            [CUSTOM_REGS.CURRENT_LOOP_HZ, ['0x0110', 'CURRENT_LOOP_HZ', '电流环频率，单位 Hz']],
+            [CUSTOM_REGS.LAST_FAULT, ['0x0111', 'LAST_FAULT', '最近一次故障位图']],
+            [CUSTOM_REGS.TARGET_POSITION, ['0x0112', 'TARGET_POSITION', '目标位置，单位闭环步数']],
+            [CUSTOM_REGS.ACTUAL_POSITION, ['0x0113', 'ACTUAL_POSITION', '当前位置，单位闭环步数']],
+            [CUSTOM_REGS.FOLLOW_ERROR, ['0x0114', 'FOLLOW_ERROR', '跟随误差，单位闭环步数']]
+            , [CUSTOM_REGS.ENCODER_RAW, ['0x0115', 'ENCODER_RAW', 'KTH7823 原始角度，0 至 65535']]
+            , [CUSTOM_REGS.ENCODER_ANGLE_MDEG, ['0x0116', 'ENCODER_ANGLE', '磁编码器角度，单位 0.001°']]
+            , [CUSTOM_REGS.MAGNETIC_HIGH, ['0x0117', 'MAGNETIC_HIGH', 'MGH 磁场过高输入']]
+            , [CUSTOM_REGS.MAGNETIC_LOW, ['0x0118', 'MAGNETIC_LOW', 'MGL 磁场过低输入']]
+            , [CUSTOM_REGS.ENCODER_ZERO, ['0x0119', 'ENCODER_ZERO', '编码器启动零点，原始角度值']]
+            , [0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
+            , [0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
+            , [0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
+            , [0x11D, ['0x011D', 'PULSE_COUNT', '测速脉冲总数']]
+            , [0x11E, ['0x011E', 'MOTION_MODE', '运动模式：0位置正转 1位置反转 2速度正转 3速度反转 4正转归零 5反转归零']]
+            , [0x11F, ['0x011F', 'MOTION_CMD', '运动命令：0停止 1启动']]
+            , [0x120, ['0x0120', 'SPEED_RPM', '当前测速转速，单位 RPM']]
+            , [0x121, ['0x0121', 'POSITION_DEG', '当前位置，单位 0.001°']]
+            , [0x122, ['0x0122', 'WAVE_WINDOW_MS', '波形窗口长度，单位 ms']]
+            , [0x123, ['0x0123', 'STEP_PULSE_WIDTH_NS', 'STEP 高电平脉宽，单位 ns']]
+            , [0x124, ['0x0124', 'MOTOR_ENABLE', '电机使能，EN 输出低电平']]
+            , [0x125, ['0x0125', 'MOTOR_DISABLE', '电机失能，EN 输出高电平']]
+            , [0x126, ['0x0126', 'SINGLE_FORWARD_STEP', 'DIR 高电平并输出单个 STEP']]
+        ]);
 
-    function log(message) {
-      const line = document.createElement('p');
-      line.className = 'log-line';
-      line.textContent = message;
-      logArea.appendChild(line);
-      while (logArea.children.length > 200) {
-        logArea.removeChild(logArea.firstElementChild);
-      }
-      logArea.scrollTop = logArea.scrollHeight;
-    }
-
-    function setConnBadge(status, isOk = true) {
-      connBadge.textContent = status;
-      connBadge.className = 'badge ' + (isOk ? 'ok' : 'warn');
-      connBadge.style.setProperty('border-color', isOk ? 'rgba(34,197,94,0.3)' : 'rgba(245,158,11,0.3)');
-    }
-
-    function updateFaultStatus() {
-      const hasFault = state.encoderFault || state.magneticFault || state.outputStopped;
-      const summary = state.encoderFault ? '编码器读取失败' : state.magneticFault ? '磁场报警' : state.outputStopped ? '已停止输出' : '正常';
-      state.faultSummary = summary;
-
-      faultBadge.innerHTML = `<span class="led ${hasFault ? (state.encoderFault || state.magneticFault ? 'warn' : 'danger') : ''}"></span> ${summary}`;
-      faultBadge.className = 'badge ' + (hasFault ? (state.encoderFault || state.magneticFault ? 'warn' : 'danger') : 'ok');
-      document.getElementById('faultSummaryValue').textContent = summary;
-      if (hasFault) {
-        log('[WARN] 故障状态：' + summary);
-      }
-    }
-
-    function updateTelemetryDisplay() {
-      document.getElementById('phaseACurrentValue').textContent = `${state.phaseACurrentA.toFixed(2)} A`;
-      document.getElementById('phaseBCurrentValue').textContent = `${state.phaseBCurrentA.toFixed(2)} A`;
-      document.getElementById('posLoopRateValue').textContent = `${state.posLoopHz} Hz`;
-      document.getElementById('velLoopRateValue').textContent = `${state.velLoopHz} Hz`;
-      document.getElementById('curLoopRateValue').textContent = `${state.curLoopHz} Hz`;
-      document.getElementById('faultSummaryValue').textContent = state.faultSummary;
-      document.getElementById('encoderAngleValue').textContent = `${state.encoderAngleDeg.toFixed(2)}°`;
-      document.getElementById('encoderRawValue').textContent = `0x${state.encoderRaw.toString(16).padStart(4, '0').toUpperCase()}`;
-      document.getElementById('magneticLevelValue').textContent = `${state.magneticHigh ? '报警' : '正常'} / ${state.magneticLow ? '报警' : '正常'}`;
-      document.getElementById('speedValue').textContent = Number(state.motionSpeedRpm || 0).toFixed(2);
-      document.getElementById('accelValue').textContent = (state.accel || 0).toFixed(2);
-      document.getElementById('currentValue').textContent = (state.currentA || 0).toFixed(2);
-    }
-
-    function renderRegisterMap() {
-      const rows = [...REGISTER_DESCRIPTIONS.values()].map(([address, name, description]) =>
-        `<div>${address}　<strong>${name}</strong>　${description}</div>`).join('');
-      document.getElementById('registerMap').innerHTML = rows;
-    }
-
-    function clamp(value, min, max) {
-      return Math.min(max, Math.max(min, value));
-    }
-
-    function normalizeAngle(value) {
-      let v = value;
-      while (v > 180) v -= 360;
-      while (v < -180) v += 360;
-      return v;
-    }
-
-    function crc8(data) {
-      let crc = 0x00;
-      for (let i = 0; i < data.length; i++) {
-        crc ^= data[i];
-        for (let bit = 0; bit < 8; bit++) {
-          if ((crc & 0x80) !== 0) {
-            crc = (crc << 1) ^ 0x07;
-          } else {
-            crc = crc << 1;
-          }
-        }
-      }
-      return crc & 0xFF;
-    }
-
-    function buildFrame(cmd, reg, value) {
-      const regHi = (reg >> 8) & 0xFF;
-      const regLo = reg & 0xFF;
-      const data = new Uint8Array([
-        0x55, 0xAA, cmd,
-        regHi, regLo,
-        (value >> 24) & 0xFF,
-        (value >> 16) & 0xFF,
-        (value >> 8) & 0xFF,
-        value & 0xFF,
-        0x00
-      ]);
-      data[data.length - 1] = crc8(data.slice(0, -1));
-      return data;
-    }
-
-    function parseFrame(raw) {
-      if (!raw || raw.length < 10) return null;
-      const arr = new Uint8Array(raw);
-      if (arr[0] !== 0x55 || arr[1] !== 0xAA || crc8(arr.slice(0, 9)) !== arr[9]) return null;
-      const cmd = arr[2];
-      const reg = (arr[3] << 8) | arr[4];
-      const value = (
-        (arr[5] << 24) |
-        (arr[6] << 16) |
-        (arr[7] << 8) |
-        arr[8]
-      ) >>> 0;
-      return { cmd, reg, value };
-    }
-
-    function appendRxBytes(value) {
-      const incoming = new Uint8Array(value);
-      const merged = new Uint8Array(state.rxBuffer.length + incoming.length);
-      merged.set(state.rxBuffer);
-      merged.set(incoming, state.rxBuffer.length);
-      state.rxBuffer = merged;
-
-      while (state.rxBuffer.length >= 10) {
-        let start = 0;
-        while (start + 1 < state.rxBuffer.length &&
-               (state.rxBuffer[start] !== 0x55 || state.rxBuffer[start + 1] !== 0xAA)) start++;
-        if (start > 0) state.rxBuffer = state.rxBuffer.slice(start);
-        if (state.rxBuffer.length < 10) return;
-        const frame = parseFrame(state.rxBuffer.slice(0, 10));
-        if (!frame) {
-          state.rxBuffer = state.rxBuffer.slice(1);
-          continue;
-        }
-        state.rxBuffer = state.rxBuffer.slice(10);
-        handleIncomingFrame(frame);
-      }
-    }
-
-    function handleIncomingFrame(frame) {
-      const description = REGISTER_DESCRIPTIONS.get(frame.reg);
-      const name = description ? description[1] : 'UNKNOWN';
-      const isTelemetry = frame.cmd === 0x10;
-      const diagnosticRegister = frame.reg === CUSTOM_REGS.ENCODER_RAW ||
-        frame.reg === CUSTOM_REGS.ENCODER_ANGLE_MDEG ||
-        frame.reg === CUSTOM_REGS.MAGNETIC_HIGH ||
-        frame.reg === CUSTOM_REGS.MAGNETIC_LOW;
-      if (!isTelemetry || !diagnosticRegister) {
-        log(`[RX] ${description ? description[0] : '0x' + frame.reg.toString(16).padStart(4, '0')} ${name} = ${frame.value}`);
-      }
-
-      if (frame.reg === CUSTOM_REGS.PHASE_A_CURRENT_MA) state.phaseACurrentA = frame.value / 1000;
-      if (frame.reg === CUSTOM_REGS.PHASE_B_CURRENT_MA) state.phaseBCurrentA = frame.value / 1000;
-      if (frame.reg === CUSTOM_REGS.POSITION_LOOP_HZ) state.posLoopHz = frame.value;
-      if (frame.reg === CUSTOM_REGS.VELOCITY_LOOP_HZ) state.velLoopHz = frame.value;
-      if (frame.reg === CUSTOM_REGS.CURRENT_LOOP_HZ) state.curLoopHz = frame.value;
-      if (frame.reg === CUSTOM_REGS.ENCODER_FAULT) state.encoderFault = frame.value !== 0;
-      if (frame.reg === CUSTOM_REGS.MAGNETIC_FAULT) state.magneticFault = frame.value !== 0;
-      if (frame.reg === CUSTOM_REGS.OUTPUT_STOP) state.outputStopped = frame.value !== 0;
-      if (frame.reg === CUSTOM_REGS.ENCODER_RAW) state.encoderRaw = frame.value;
-      if (frame.reg === CUSTOM_REGS.ENCODER_ANGLE_MDEG) {
-        state.encoderAngleDeg = (frame.value | 0) / 1000;
-        setCurrentAngle(state.encoderAngleDeg);
-      }
-      if (frame.reg === CUSTOM_REGS.MAGNETIC_HIGH) state.magneticHigh = frame.value !== 0;
-      if (frame.reg === CUSTOM_REGS.MAGNETIC_LOW) state.magneticLow = frame.value !== 0;
-      if (frame.reg === CUSTOM_REGS.ACTUAL_POSITION) {
-        state.actualPosition = frame.value | 0;
-      }
-      updateFaultStatus();
-      updateTelemetryDisplay();
-
-      if (isTelemetry && frame.reg === CUSTOM_REGS.MAGNETIC_LOW) {
-        const now = performance.now();
-        if (!state.lastEncoderLogAt || now - state.lastEncoderLogAt >= 500) {
-          log(`[KTH7823] raw=0x${state.encoderRaw.toString(16).padStart(4, '0').toUpperCase()} angle=${state.encoderAngleDeg.toFixed(3)}° MGH=${state.magneticHigh ? 1 : 0} MGL=${state.magneticLow ? 1 : 0}`);
-          state.lastEncoderLogAt = now;
-        }
-      }
-    }
-
-    async function readRegister(reg) {
-      if (!state.connected || !state.writer) {
-        log('[WARN] 尚未连接串口，无法读取寄存器');
-        return null;
-      }
-      const frame = buildFrame(0x01, reg, 0);
-      await state.writer.write(frame);
-      return frame;
-    }
-
-    async function writeRegister(reg, value) {
-      if (!state.connected || !state.writer) {
-        log('[WARN] 尚未连接串口，无法写入寄存器');
-        return;
-      }
-      const frame = buildFrame(0x02, reg, value >>> 0);
-      await state.writer.write(frame);
-      log(`[TX] reg=0x${reg.toString(16).padStart(4, '0')} value=${value}`);
-    }
-
-    async function connectSerial() {
-      try {
-        if (!('serial' in navigator)) {
-          log('[WARN] 当前浏览器不支持 Web Serial API，请使用 Chrome / Edge');
-          return;
+        function log(message) {
+            const line = document.createElement('p');
+            line.className = 'log-line';
+            line.textContent = message;
+            logArea.appendChild(line);
+            while (logArea.children.length > 200) {
+                logArea.removeChild(logArea.firstElementChild);
+            }
+            logArea.scrollTop = logArea.scrollHeight;
         }
 
-        const portObj = await navigator.serial.requestPort();
-        const baud = Number(document.getElementById('baudRate').value || 115200);
-        await portObj.open({ baudRate: baud });
-
-        state.port = portObj;
-        state.connected = true;
-        state.reader = portObj.readable.getReader();
-        state.writer = portObj.writable.getWriter();
-
-        setConnBadge('已连接', true);
-        protoBadge.textContent = 'TMC 兼容';
-        log('[INFO] 串口已连接，开始监听返回数据');
-
-        readLoop();
-      } catch (err) {
-        log('[ERROR] 串口连接失败：' + (err && err.message ? err.message : String(err)));
-        setConnBadge('未连接', false);
-      }
-    }
-
-    async function readLoop() {
-      if (!state.reader) return;
-      try {
-        while (true) {
-          const { value, done } = await state.reader.read();
-          if (done) break;
-          if (!value || value.length === 0) continue;
-          appendRxBytes(value);
+        function setConnBadge(status, isOk = true) {
+            connBadge.textContent = status;
+            connBadge.className = 'badge ' + (isOk ? 'ok' : 'warn');
+            connBadge.style.setProperty('border-color', isOk ? 'rgba(34,197,94,0.3)' : 'rgba(245,158,11,0.3)');
         }
-      } catch (err) {
-        log('[ERROR] 串口读取出现错误：' + err.message);
-        setConnBadge('未连接', false);
-      }
-    }
 
-    function updateDialVisual() {
-      const pointerGroup = document.getElementById('dialPointerGroup');
-      const valueText = document.getElementById('posValue');
-      const currentPosDisplay = document.getElementById('currentPosDisplay');
-      const targetPosReadout = document.getElementById('targetPosReadout');
-      const currentPosReadout = document.getElementById('currentPosReadout');
+        function updateFaultStatus() {
+            const hasFault = state.encoderFault || state.magneticFault || state.outputStopped;
+            const summary = state.encoderFault ? '编码器读取失败' : state.magneticFault ? '磁场报警' : state.outputStopped ? '已停止输出' : '正常';
+            state.faultSummary = summary;
 
-      const displayAngle = state.targetAngle;
-      pointerGroup.setAttribute('transform', `rotate(${displayAngle} 50 50)`);
-      valueText.textContent = `${Math.round(displayAngle)}°`;
-      currentPosDisplay.value = `${Math.round(state.currentAngle)}°`;
-      currentPosReadout.textContent = `${Math.round(state.currentAngle)}°`;
-      targetPosReadout.textContent = `${Math.round(displayAngle)}°`;
-    }
-
-    function setCurrentAngle(angle) {
-      state.currentAngle = normalizeAngle(angle);
-      updateDialVisual();
-    }
-
-    function setTargetAngle(angle) {
-      state.targetAngle = normalizeAngle(angle);
-      document.getElementById('targetPosInput').value = Math.round(state.targetAngle);
-      updateDialVisual();
-    }
-
-    function bindDialDrag() {
-      const dial = document.getElementById('dial');
-      let dragging = false;
-      let lastAngle = 0;
-
-      function normalizeToAngle(clientX, clientY) {
-        const rect = dial.getBoundingClientRect();
-        const cx = rect.left + rect.width / 2;
-        const cy = rect.top + rect.height / 2;
-        const dx = clientX - cx;
-        const dy = clientY - cy;
-        let rad = Math.atan2(dy, dx);
-        let deg = (rad * 180 / Math.PI) + 90;
-        if (deg < -180) deg += 360;
-        if (deg > 180) deg -= 360;
-        return deg;
-      }
-
-      dial.addEventListener('pointerdown', (e) => {
-        dragging = true;
-        dial.setPointerCapture(e.pointerId);
-        lastAngle = normalizeToAngle(e.clientX, e.clientY);
-        state.dragging = true;
-      });
-
-      dial.addEventListener('pointermove', (e) => {
-        if (!dragging) return;
-        const angle = normalizeToAngle(e.clientX, e.clientY);
-        let delta = angle - lastAngle;
-        if (delta > 180) delta -= 360;
-        if (delta < -180) delta += 360;
-        const nextTarget = normalizeAngle(state.targetAngle + delta);
-        state.targetAngle = nextTarget;
-        document.getElementById('targetPosInput').value = Math.round(nextTarget);
-        updateDialVisual();
-        lastAngle = angle;
-      });
-
-      dial.addEventListener('pointerup', () => {
-        if (dragging) {
-          dragging = false;
-          state.dragging = false;
-          sendTargetPosition();
+            faultBadge.innerHTML = `<span class="led ${hasFault ? (state.encoderFault || state.magneticFault ? 'warn' : 'danger') : ''}"></span> ${summary}`;
+            faultBadge.className = 'badge ' + (hasFault ? (state.encoderFault || state.magneticFault ? 'warn' : 'danger') : 'ok');
+            document.getElementById('faultSummaryValue').textContent = summary;
+            if (hasFault) {
+                log('[WARN] 故障状态：' + summary);
+            }
         }
-      });
 
-      dial.addEventListener('pointerleave', () => {
-        if (dragging) {
-          dragging = false;
-          state.dragging = false;
-          sendTargetPosition();
+        function updateTelemetryDisplay() {
+            document.getElementById('phaseACurrentValue').textContent = `${state.phaseACurrentA.toFixed(2)} A`;
+            document.getElementById('phaseBCurrentValue').textContent = `${state.phaseBCurrentA.toFixed(2)} A`;
+            document.getElementById('posLoopRateValue').textContent = `${state.posLoopHz} Hz`;
+            document.getElementById('velLoopRateValue').textContent = `${state.velLoopHz} Hz`;
+            document.getElementById('curLoopRateValue').textContent = `${state.curLoopHz} Hz`;
+            document.getElementById('faultSummaryValue').textContent = state.faultSummary;
+            document.getElementById('encoderAngleValue').textContent = `${state.encoderAngleDeg.toFixed(2)}°`;
+            document.getElementById('encoderRawValue').textContent = `0x${state.encoderRaw.toString(16).padStart(4, '0').toUpperCase()}`;
+            document.getElementById('magneticLevelValue').textContent = `${state.magneticHigh ? '报警' : '正常'} / ${state.magneticLow ? '报警' : '正常'}`;
+            document.getElementById('speedValue').textContent = Number(state.motionSpeedRpm || 0).toFixed(2);
+            document.getElementById('accelValue').textContent = (state.accel || 0).toFixed(2);
+            document.getElementById('currentValue').textContent = (state.currentA || 0).toFixed(2);
         }
-      });
-    }
 
-    async function sendTargetPosition() {
-      const target = Number(document.getElementById('targetPosInput').value || 0);
-      setTargetAngle(target);
-      state.targetPosition = target;
-      log('[INFO] 发送目标位置：' + target + '°');
-      if (state.connected) {
-        await writeRegister(CUSTOM_REGS.TARGET_POSITION, Math.round(target));
-      }
-    }
-
-    async function applyAllConfig() {
-      const config = {
-        microsteps: Number(document.getElementById('microsteps').value || 32),
-        interpMicrosteps: Number(document.getElementById('interpMicrosteps').value || 256),
-        runCurrent: Number(document.getElementById('runCurrent').value || 0.8),
-        holdCurrent: Number(document.getElementById('holdCurrent').value || 0.2),
-        silent: Number(document.getElementById('silentMode').value || 1),
-        posKp: Number(document.getElementById('posKp').value || 1.0),
-        posKi: Number(document.getElementById('posKi').value || 0.04),
-        posKd: Number(document.getElementById('posKd').value || 0.02),
-        velKp: Number(document.getElementById('velKp').value || 0.7),
-        velKi: Number(document.getElementById('velKi').value || 0.06),
-        velKd: Number(document.getElementById('velKd').value || 0.01),
-        enabled: Number(document.getElementById('closedLoopEnable').value || 1)
-      };
-
-      state.phaseACurrentA = Number(document.getElementById('phaseACurrentValue').textContent.replace(/[^0-9.]/g, '')) || 0;
-      state.phaseBCurrentA = Number(document.getElementById('phaseBCurrentValue').textContent.replace(/[^0-9.]/g, '')) || 0;
-      if (state.connected) {
-        await writeRegister(CUSTOM_REGS.MICROSTEPS, config.microsteps);
-        await writeRegister(CUSTOM_REGS.INTERPOLATION, config.interpMicrosteps);
-        await writeRegister(CUSTOM_REGS.RUN_CURRENT_A, Math.round(config.runCurrent * 1000));
-        await writeRegister(CUSTOM_REGS.HOLD_CURRENT_A, Math.round(config.holdCurrent * 1000));
-        await writeRegister(CUSTOM_REGS.SILENT_MODE, config.silent);
-        await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, config.enabled);
-      }
-      log('[INFO] 应用闭环配置：' + JSON.stringify(config));
-    }
-
-    function readAllConfig() {
-      log('[INFO] 发送读取全部参数请求');
-      const regs = [
-        OFFICIAL_REGS.IHOLD_IRUN,
-        OFFICIAL_REGS.CHOPCONF,
-        OFFICIAL_REGS.GCONF,
-        OFFICIAL_REGS.DRV_CONF,
-        OFFICIAL_REGS.TSTEP,
-        OFFICIAL_REGS.DRV_STATUS,
-        CUSTOM_REGS.RUN_CURRENT_A,
-        CUSTOM_REGS.HOLD_CURRENT_A,
-        CUSTOM_REGS.CLOSED_LOOP_ENABLE,
-        CUSTOM_REGS.ENCODER_RAW,
-        CUSTOM_REGS.ENCODER_ANGLE_MDEG,
-        CUSTOM_REGS.MAGNETIC_HIGH,
-        CUSTOM_REGS.MAGNETIC_LOW,
-        CUSTOM_REGS.ENCODER_ZERO
-      ];
-      regs.forEach(async (reg) => {
-        await readRegister(reg);
-      });
-    }
-
-    async function stopMotor() {
-      log('[WARN] 发送停止命令，建议先关闭闭环并切断输出');
-      if (state.connected) {
-        await writeRegister(0x107, 0);
-      }
-    }
-
-    async function zeroEncoder() {
-      state.currentAngle = 0;
-      state.targetAngle = 0;
-      updateDialVisual();
-      log('[INFO] 已归零当前位置');
-      if (state.connected) {
-        await writeRegister(0x107, 0);
-      }
-    }
-
-    function startAutoTune() {
-      const maxSpeed = Number(document.getElementById('tuneMaxSpeed').value || 2.0);
-      const accel = Number(document.getElementById('tuneAccel').value || 4.0);
-      const step = Number(document.getElementById('tuneGainStep').value || 0.05);
-      log('[WARN] 自动整定开始：速度=' + maxSpeed + ' rps， 加速度=' + accel + ' rps²，增益步进=' + step);
-      document.getElementById('tuneState').value = '1';
-    }
-
-    function buildRpmOptions(selectId, minValue, maxValue, stepValue, offset) {
-      const select = document.getElementById(selectId);
-      const options = [];
-      for (let value = minValue; value <= maxValue; value += stepValue) {
-        if (value <= 1000) {
-          if (value < 25) continue;
-          options.push(value);
-        } else if (value === 1000 || value > 1000) {
-          options.push(value);
+        function renderRegisterMap() {
+            const rows = [...REGISTER_DESCRIPTIONS.values()].map(([address, name, description]) =>
+                `<div>${address}　<strong>${name}</strong>　${description}</div>`).join('');
+            document.getElementById('registerMap').innerHTML = rows;
         }
-      }
-      if (offset !== undefined) {
-        const fallback = options.includes(offset) ? offset : options[0];
-        select.innerHTML = options.map((value) => `<option value="${value}">${value}</option>`).join('');
-        select.value = String(fallback);
-      } else {
-        select.innerHTML = options.map((value) => `<option value="${value}">${value}</option>`).join('');
-      }
-    }
 
-    function buildMotionControlOptions() {
-      const startSelect = document.getElementById('startRpmSelect');
-      const maxSelect = document.getElementById('maxRpmSelect');
-      const accelSelect = document.getElementById('accelRpmSelect');
+        function clamp(value, min, max) {
+            return Math.min(max, Math.max(min, value));
+        }
 
-      const startValues = [];
-      for (let v = 0; v <= 600; v += 60) {
-        startValues.push(v);
-      }
-      startSelect.innerHTML = startValues.map((v) => `<option value="${v}">${v}</option>`).join('');
-      startSelect.value = '120';
+        function normalizeAngle(value) {
+            let v = value;
+            while (v > 180) v -= 360;
+            while (v < -180) v += 360;
+            return v;
+        }
 
-      const maxValues = [];
-      for (let v = 25; v <= 1000; v += 75) {
-        maxValues.push(v);
-      }
-      for (let v = 1000; v <= 10000; v += 1000) {
-        maxValues.push(v);
-      }
-      const maxUnique = [...new Set(maxValues.filter((v) => v >= 25 && v <= 10000))];
-      maxSelect.innerHTML = maxUnique.map((v) => `<option value="${v}">${v}</option>`).join('');
-      maxSelect.value = '1000';
+        function crc8(data) {
+            let crc = 0x00;
+            for (let i = 0; i < data.length; i++) {
+                crc ^= data[i];
+                for (let bit = 0; bit < 8; bit++) {
+                    if ((crc & 0x80) !== 0) {
+                        crc = (crc << 1) ^ 0x07;
+                    } else {
+                        crc = crc << 1;
+                    }
+                }
+            }
+            return crc & 0xFF;
+        }
 
-      const accelValues = [];
-      for (let v = 300; v <= 2400; v += 300) {
-        accelValues.push(v);
-      }
-      accelSelect.innerHTML = accelValues.map((v) => `<option value="${v}">${v}</option>`).join('');
-      accelSelect.value = '600';
-    }
+        function buildFrame(cmd, reg, value) {
+            const regHi = (reg >> 8) & 0xFF;
+            const regLo = reg & 0xFF;
+            const data = new Uint8Array([
+                0x55, 0xAA, cmd,
+                regHi, regLo,
+                (value >> 24) & 0xFF,
+                (value >> 16) & 0xFF,
+                (value >> 8) & 0xFF,
+                value & 0xFF,
+                0x00
+            ]);
+            data[data.length - 1] = crc8(data.slice(0, -1));
+            return data;
+        }
 
-    function getEffectivePulseCount() {
-      return Number(document.getElementById('pulseCountInput').value || 51200);
-    }
-    function updateMotionDurationEstimate() {
-      const pulseCount = Math.max(2, getEffectivePulseCount());
-      const startRpm = Number(document.getElementById('startRpmSelect').value || 0);
-      const maxRpm = Number(document.getElementById('maxRpmSelect').value || 0);
-      const accelRpm = Number(document.getElementById('accelRpmSelect').value || 0);
-      const stepsPerRevolution = 51200;
-      const accelSeconds = accelRpm > 0 && maxRpm > startRpm ? (maxRpm - startRpm) / accelRpm : 0;
-      const accelPulses = ((startRpm + maxRpm) * 0.5) * accelSeconds / 60 * stepsPerRevolution;
-      const physicalSeconds = accelPulses < pulseCount && maxRpm > 0
-        ? accelSeconds + (pulseCount - accelPulses) / (maxRpm / 60 * stepsPerRevolution)
-        : pulseCount / Math.max(1, startRpm / 60 * stepsPerRevolution);
-      document.getElementById('motionDurationEstimate').textContent =
-        `脉冲数：${pulseCount}，理论时间（固定 256 细分，${maxRpm} RPM）：约 ${physicalSeconds.toFixed(1)} s；STEP 基准：${stepsPerRevolution} 个/圈`;
-    }
-  updateMotionDurationEstimate();
+        function parseFrame(raw) {
+            if (!raw || raw.length < 10) return null;
+            const arr = new Uint8Array(raw);
+            if (arr[0] !== 0x55 || arr[1] !== 0xAA || crc8(arr.slice(0, 9)) !== arr[9]) return null;
+            const cmd = arr[2];
+            const reg = (arr[3] << 8) | arr[4];
+            const value = (
+                (arr[5] << 24) |
+                (arr[6] << 16) |
+                (arr[7] << 8) |
+                arr[8]
+            ) >>> 0;
+            return {cmd, reg, value};
+        }
 
-    function pushWaveSample() {
-      if (state.wavePaused) return;
-      const now = performance.now();
-      const sample = {
-        t: now,
-        rpm: Number(state.motionSpeedRpm || 0),
-        pos: Number(state.motionPositionDeg || 0)
-      };
-      state.waveHistory.push(sample);
-      const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
-      const cutoff = now - windowMs;
-      state.waveHistory = state.waveHistory.filter((entry) => entry.t >= cutoff);
-      if (state.waveHistory.length > 2000) {
-        state.waveHistory = state.waveHistory.slice(-2000);
-      }
-    }
+        function appendRxBytes(value) {
+            const incoming = new Uint8Array(value);
+            const merged = new Uint8Array(state.rxBuffer.length + incoming.length);
+            merged.set(state.rxBuffer);
+            merged.set(incoming, state.rxBuffer.length);
+            state.rxBuffer = merged;
 
-    function drawWaveform() {
-      const canvas = document.getElementById('motionWaveCanvas');
-      const ctx = canvas.getContext('2d');
-      const width = canvas.width;
-      const height = canvas.height;
-      const leftPad = 48;
-      const rightPad = 52;
-      const plotLeft = leftPad;
-      const plotRight = width - rightPad;
-      const plotTop = 18;
-      const plotBottom = height - 24;
-      const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
-      const now = state.wavePaused ? state.wavePausedAt : performance.now();
+            while (state.rxBuffer.length >= 10) {
+                let start = 0;
+                while (start + 1 < state.rxBuffer.length &&
+                (state.rxBuffer[start] !== 0x55 || state.rxBuffer[start + 1] !== 0xAA)) start++;
+                if (start > 0) state.rxBuffer = state.rxBuffer.slice(start);
+                if (state.rxBuffer.length < 10) return;
+                const frame = parseFrame(state.rxBuffer.slice(0, 10));
+                if (!frame) {
+                    state.rxBuffer = state.rxBuffer.slice(1);
+                    continue;
+                }
+                state.rxBuffer = state.rxBuffer.slice(10);
+                handleIncomingFrame(frame);
+            }
+        }
 
-      ctx.clearRect(0, 0, width, height);
-      ctx.fillStyle = 'rgba(2,6,23,0.82)';
-      ctx.fillRect(0, 0, width, height);
+        function handleIncomingFrame(frame) {
+            const description = REGISTER_DESCRIPTIONS.get(frame.reg);
+            const name = description ? description[1] : 'UNKNOWN';
+            const isTelemetry = frame.cmd === 0x10;
+            const diagnosticRegister = frame.reg === CUSTOM_REGS.ENCODER_RAW ||
+                frame.reg === CUSTOM_REGS.ENCODER_ANGLE_MDEG ||
+                frame.reg === CUSTOM_REGS.MAGNETIC_HIGH ||
+                frame.reg === CUSTOM_REGS.MAGNETIC_LOW;
+            if (!isTelemetry || !diagnosticRegister) {
+                log(`[RX] ${description ? description[0] : '0x' + frame.reg.toString(16).padStart(4, '0')} ${name} = ${frame.value}`);
+            }
 
-      ctx.strokeStyle = 'rgba(148,163,184,0.24)';
-      ctx.lineWidth = 1;
-      const gridCount = Math.floor(windowMs / 50);
-      for (let i = 0; i <= gridCount; i++) {
-        const x = plotLeft + ((plotRight - plotLeft) * i) / gridCount;
-        ctx.beginPath();
-        ctx.moveTo(x, plotTop);
-        ctx.lineTo(x, plotBottom);
-        ctx.stroke();
-      }
-      for (let i = 0; i <= 4; i++) {
-        const y = plotTop + ((plotBottom - plotTop) / 4) * i;
-        ctx.beginPath();
-        ctx.moveTo(plotLeft, y);
-        ctx.lineTo(plotRight, y);
-        ctx.stroke();
-      }
+            if (frame.reg === CUSTOM_REGS.PHASE_A_CURRENT_MA) state.phaseACurrentA = frame.value / 1000;
+            if (frame.reg === CUSTOM_REGS.PHASE_B_CURRENT_MA) state.phaseBCurrentA = frame.value / 1000;
+            if (frame.reg === CUSTOM_REGS.POSITION_LOOP_HZ) state.posLoopHz = frame.value;
+            if (frame.reg === CUSTOM_REGS.VELOCITY_LOOP_HZ) state.velLoopHz = frame.value;
+            if (frame.reg === CUSTOM_REGS.CURRENT_LOOP_HZ) state.curLoopHz = frame.value;
+            if (frame.reg === CUSTOM_REGS.ENCODER_FAULT) state.encoderFault = frame.value !== 0;
+            if (frame.reg === CUSTOM_REGS.MAGNETIC_FAULT) state.magneticFault = frame.value !== 0;
+            if (frame.reg === CUSTOM_REGS.OUTPUT_STOP) state.outputStopped = frame.value !== 0;
+            if (frame.reg === CUSTOM_REGS.ENCODER_RAW) state.encoderRaw = frame.value;
+            if (frame.reg === CUSTOM_REGS.ENCODER_ANGLE_MDEG) {
+                state.encoderAngleDeg = (frame.value | 0) / 1000;
+                setCurrentAngle(state.encoderAngleDeg);
+            }
+            if (frame.reg === CUSTOM_REGS.MAGNETIC_HIGH) state.magneticHigh = frame.value !== 0;
+            if (frame.reg === CUSTOM_REGS.MAGNETIC_LOW) state.magneticLow = frame.value !== 0;
+            if (frame.reg === CUSTOM_REGS.ACTUAL_POSITION) {
+                state.actualPosition = frame.value | 0;
+            }
+            updateFaultStatus();
+            updateTelemetryDisplay();
 
-      const speedLine = (rpm) => {
-        return plotBottom - ((rpm + 3000) / 6000) * (plotBottom - plotTop);
-      };
-      const posLine = (deg) => {
-        return plotBottom - ((deg + 20) / 40) * (plotBottom - plotTop);
-      };
+            if (isTelemetry && frame.reg === CUSTOM_REGS.MAGNETIC_LOW) {
+                const now = performance.now();
+                if (!state.lastEncoderLogAt || now - state.lastEncoderLogAt >= 500) {
+                    log(`[KTH7823] raw=0x${state.encoderRaw.toString(16).padStart(4, '0').toUpperCase()} angle=${state.encoderAngleDeg.toFixed(3)}° MGH=${state.magneticHigh ? 1 : 0} MGL=${state.magneticLow ? 1 : 0}`);
+                    state.lastEncoderLogAt = now;
+                }
+            }
+        }
 
-      ctx.strokeStyle = 'rgba(56,189,248,0.7)';
-      ctx.fillStyle = '#e2e8f0';
-      ctx.font = '12px sans-serif';
-      ctx.fillText('RPM', 10, 14);
-      ctx.fillText('位置°', width - 48, 14);
-      ctx.fillText('3000', 4, plotTop + 4);
-      ctx.fillText('0', 18, plotBottom - 2);
-      ctx.fillText('-3000', 2, plotBottom + 14);
-      ctx.fillText('20°', width - 42, plotTop + 4);
-      ctx.fillText('0°', width - 34, plotBottom - 2);
-      ctx.fillText('-20°', width - 42, plotBottom + 14);
+        async function readRegister(reg) {
+            if (!state.connected || !state.writer) {
+                log('[WARN] 尚未连接串口，无法读取寄存器');
+                return null;
+            }
+            const frame = buildFrame(0x01, reg, 0);
+            await state.writer.write(frame);
+            return frame;
+        }
 
-      ctx.strokeStyle = '#38bdf8';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(plotLeft + 8, plotTop + 12);
-      ctx.lineTo(plotLeft + 28, plotTop + 12);
-      ctx.stroke();
-      ctx.fillStyle = '#38bdf8';
-      ctx.fillText('编码器速度 RPM', plotLeft + 34, plotTop + 16);
-      ctx.strokeStyle = '#22c55e';
-      ctx.beginPath();
-      ctx.moveTo(plotLeft + 170, plotTop + 12);
-      ctx.lineTo(plotLeft + 190, plotTop + 12);
-      ctx.stroke();
-      ctx.fillStyle = '#22c55e';
-      ctx.fillText('编码器位置 °', plotLeft + 196, plotTop + 16);
+        async function writeRegister(reg, value) {
+            if (!state.connected || !state.writer) {
+                log('[WARN] 尚未连接串口，无法写入寄存器');
+                return;
+            }
+            const frame = buildFrame(0x02, reg, value >>> 0);
+            await state.writer.write(frame);
+            log(`[TX] reg=0x${reg.toString(16).padStart(4, '0')} value=${value}`);
+        }
 
-      ctx.beginPath();
-      ctx.moveTo(plotLeft, plotTop);
-      ctx.lineTo(plotLeft, plotBottom);
-      ctx.lineTo(plotRight, plotBottom);
-      ctx.stroke();
+        async function connectSerial() {
+            try {
+                if (!('serial' in navigator)) {
+                    log('[WARN] 当前浏览器不支持 Web Serial API，请使用 Chrome / Edge');
+                    return;
+                }
 
-      const points = state.waveHistory.length ? state.waveHistory : [{ t: now - windowMs, rpm: 0, pos: 0 }];
-      const filtered = points.filter((entry) => now - entry.t <= windowMs);
-      if (filtered.length > 1) {
-        ctx.beginPath();
-        filtered.forEach((entry, i) => {
-          const x = plotLeft + ((now - entry.t) / windowMs) * (plotRight - plotLeft);
-          const y = speedLine(entry.rpm);
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        });
-        ctx.strokeStyle = '#38bdf8';
-        ctx.lineWidth = 2;
-        ctx.stroke();
+                const portObj = await navigator.serial.requestPort();
+                const baud = Number(document.getElementById('baudRate').value || 115200);
+                await portObj.open({baudRate: baud});
 
-        ctx.beginPath();
-        filtered.forEach((entry, i) => {
-          const x = plotLeft + ((now - entry.t) / windowMs) * (plotRight - plotLeft);
-          const y = posLine(entry.pos);
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        });
-        ctx.strokeStyle = '#22c55e';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
+                state.port = portObj;
+                state.connected = true;
+                state.reader = portObj.readable.getReader();
+                state.writer = portObj.writable.getWriter();
 
-      ctx.fillStyle = 'rgba(148,163,184,0.75)';
-      ctx.fillText('2 s / 50 ms grid', plotRight - 92, height - 6);
-    }
+                setConnBadge('已连接', true);
+                protoBadge.textContent = 'TMC 兼容';
+                log('[INFO] 串口已连接，开始监听返回数据');
 
-    async function startMotionTest() {
-      const startRpm = Number(document.getElementById('startRpmSelect').value || 120);
-      const maxRpm = Number(document.getElementById('maxRpmSelect').value || 1000);
-      const accelRpm = Number(document.getElementById('accelRpmSelect').value || 600);
-      const motionMode = Number(document.getElementById('motionModeSelect').value || 0);
-      const pulseCount = Math.max(2, Math.round(getEffectivePulseCount()));
-      const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
-      const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 2), 100, 20000);
-      document.getElementById('waveWindowMsInput').value = String(windowMs);
-      document.getElementById('stepPulseWidthNsInput').value = String(stepPulseWidthNs);
+                readLoop();
+            } catch (err) {
+                log('[ERROR] 串口连接失败：' + (err && err.message ? err.message : String(err)));
+                setConnBadge('未连接', false);
+            }
+        }
 
-      if (state.connected) {
-        await writeRegister(0x11A, startRpm);
-        await writeRegister(0x11B, maxRpm);
-        await writeRegister(0x11C, accelRpm);
-        await writeRegister(0x11D, pulseCount);
-        await writeRegister(0x11E, motionMode);
-        await writeRegister(0x11F, 1);
-        await writeRegister(0x122, windowMs);
-        await writeRegister(0x123, stepPulseWidthNs);
-      }
+        async function readLoop() {
+            if (!state.reader) return;
+            try {
+                while (true) {
+                    const {value, done} = await state.reader.read();
+                    if (done) break;
+                    if (!value || value.length === 0) continue;
+                    appendRxBytes(value);
+                }
+            } catch (err) {
+                log('[ERROR] 串口读取出现错误：' + err.message);
+                setConnBadge('未连接', false);
+            }
+        }
 
-      state.motionSpeedRpm = 0;
-      state.waveHistory = [];
-      log(`[INFO] 发送测速控制：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms step=${stepPulseWidthNs}ns`);
-    }
+        function updateDialVisual() {
+            const pointerGroup = document.getElementById('dialPointerGroup');
+            const valueText = document.getElementById('posValue');
+            const currentPosDisplay = document.getElementById('currentPosDisplay');
+            const targetPosReadout = document.getElementById('targetPosReadout');
+            const currentPosReadout = document.getElementById('currentPosReadout');
 
-    async function stopMotionTest() {
-      if (state.connected) {
-        await writeRegister(0x11F, 0);
-      }
-      state.motionSpeedRpm = 0;
-      log('[WARN] 发送停止测速命令');
-    }
+            const displayAngle = state.targetAngle;
+            pointerGroup.setAttribute('transform', `rotate(${displayAngle} 50 50)`);
+            valueText.textContent = `${Math.round(displayAngle)}°`;
+            currentPosDisplay.value = `${Math.round(state.currentAngle)}°`;
+            currentPosReadout.textContent = `${Math.round(state.currentAngle)}°`;
+            targetPosReadout.textContent = `${Math.round(displayAngle)}°`;
+        }
 
-    async function sendManualMotionCommand(reg, message) {
-      if (!state.connected) {
-        log('[WARN] 尚未连接串口，无法发送电机测试命令');
-        return;
-      }
-      await writeRegister(reg, 1);
-      log('[INFO] ' + message);
-    }
+        function setCurrentAngle(angle) {
+            state.currentAngle = normalizeAngle(angle);
+            updateDialVisual();
+        }
 
-    function toggleWavePause() {
-      if (!state.wavePaused) {
-        state.wavePaused = true;
-        state.wavePausedAt = performance.now();
-      } else {
-        const resumeAt = performance.now();
-        const elapsed = resumeAt - state.wavePausedAt;
-        state.waveHistory = state.waveHistory.map((entry) => ({ ...entry, t: entry.t + elapsed }));
-        state.wavePaused = false;
-        state.wavePausedAt = 0;
-      }
-      const btn = document.getElementById('pauseWaveBtn');
-      btn.textContent = state.wavePaused ? '继续查看' : '暂停查看';
-      log(`[INFO] 波形${state.wavePaused ? '已暂停' : '已恢复'}`);
-    }
+        function setTargetAngle(angle) {
+            state.targetAngle = normalizeAngle(angle);
+            document.getElementById('targetPosInput').value = Math.round(state.targetAngle);
+            updateDialVisual();
+        }
 
-    function bindControls() {
-      document.getElementById('connectBtn').addEventListener('click', connectSerial);
-      document.getElementById('readAllBtn').addEventListener('click', readAllConfig);
-      document.getElementById('writeAllBtn').addEventListener('click', applyAllConfig);
-      document.getElementById('sendTargetBtn').addEventListener('click', sendTargetPosition);
-      document.getElementById('zeroBtn').addEventListener('click', zeroEncoder);
-      document.getElementById('stopBtn').addEventListener('click', stopMotor);
-      document.getElementById('startMotionBtn').addEventListener('click', startMotionTest);
-      document.getElementById('stopMotionBtn').addEventListener('click', stopMotionTest);
-      document.getElementById('motorEnableBtn').addEventListener('click', () => sendManualMotionCommand(0x124, '电机使能：EN=0'));
-      document.getElementById('motorDisableBtn').addEventListener('click', () => sendManualMotionCommand(0x125, '电机失能：EN=1'));
-      document.getElementById('singleStepBtn').addEventListener('click', async () => {
-          // 从页面下拉框读取参数
-          const startRpm = Number(document.getElementById('startRpmSelect').value);
-          const maxRpm = Number(document.getElementById('maxRpmSelect').value);
-          const accelRpm = Number(document.getElementById('accelRpmSelect').value);
-          const motionMode = Number(document.getElementById('motionModeSelect').value);
+        function bindDialDrag() {
+            const dial = document.getElementById('dial');
+            let dragging = false;
+            let lastAngle = 0;
 
-          // 下发运动相关参数寄存器
-          await writeRegister(0x11A, startRpm);
-          await writeRegister(0x11B, maxRpm);
-          await writeRegister(0x11C, accelRpm);
-          await writeRegister(0x11E, motionMode);
+            function normalizeToAngle(clientX, clientY) {
+                const rect = dial.getBoundingClientRect();
+                const cx = rect.left + rect.width / 2;
+                const cy = rect.top + rect.height / 2;
+                const dx = clientX - cx;
+                const dy = clientY - cy;
+                let rad = Math.atan2(dy, dx);
+                let deg = (rad * 180 / Math.PI) + 90;
+                if (deg < -180) deg += 360;
+                if (deg > 180) deg -= 360;
+                return deg;
+            }
 
-          // 再触发单步正向脉冲命令寄存器
-          await sendManualMotionCommand(0x126, '单个正向 STEP：DIR=1（已同步速度/加速度参数）');
-      });
-      document.getElementById('pauseWaveBtn').addEventListener('click', toggleWavePause);
-            ['startRpmSelect', 'maxRpmSelect', 'accelRpmSelect', 'pulseCountInput', 'microsteps'].forEach((id) => {
-              document.getElementById(id).addEventListener('change', updateMotionDurationEstimate);
+            dial.addEventListener('pointerdown', (e) => {
+                dragging = true;
+                dial.setPointerCapture(e.pointerId);
+                lastAngle = normalizeToAngle(e.clientX, e.clientY);
+                state.dragging = true;
             });
-      document.getElementById('tuneBtn').addEventListener('click', startAutoTune);
-      document.getElementById('startTuneBtn').addEventListener('click', startAutoTune);
-      document.getElementById('applyTuneBtn').addEventListener('click', function () {
-        log('[INFO] 已应用整定结果到 PID 参数');
-      });
-      document.getElementById('waveWindowMsInput').addEventListener('change', function () {
-        const value = clamp(Number(this.value || 2000), 2000, 2000);
-        this.value = String(value);
-        if (state.connected) {
-          writeRegister(0x122, value);
+
+            dial.addEventListener('pointermove', (e) => {
+                if (!dragging) return;
+                const angle = normalizeToAngle(e.clientX, e.clientY);
+                let delta = angle - lastAngle;
+                if (delta > 180) delta -= 360;
+                if (delta < -180) delta += 360;
+                const nextTarget = normalizeAngle(state.targetAngle + delta);
+                state.targetAngle = nextTarget;
+                document.getElementById('targetPosInput').value = Math.round(nextTarget);
+                updateDialVisual();
+                lastAngle = angle;
+            });
+
+            dial.addEventListener('pointerup', () => {
+                if (dragging) {
+                    dragging = false;
+                    state.dragging = false;
+                    sendTargetPosition();
+                }
+            });
+
+            dial.addEventListener('pointerleave', () => {
+                if (dragging) {
+                    dragging = false;
+                    state.dragging = false;
+                    sendTargetPosition();
+                }
+            });
         }
-      });
 
-      document.getElementById('targetPosInput').addEventListener('change', function () {
-        state.targetAngle = Number(this.value || 0);
+        async function sendTargetPosition() {
+            const target = Number(document.getElementById('targetPosInput').value || 0);
+            setTargetAngle(target);
+            state.targetPosition = target;
+            log('[INFO] 发送目标位置：' + target + '°');
+            if (state.connected) {
+                await writeRegister(CUSTOM_REGS.TARGET_POSITION, Math.round(target));
+            }
+        }
+
+        async function applyAllConfig() {
+            const config = {
+                microsteps: Number(document.getElementById('microsteps').value || 32),
+                interpMicrosteps: Number(document.getElementById('interpMicrosteps').value || 256),
+                runCurrent: Number(document.getElementById('runCurrent').value || 0.8),
+                holdCurrent: Number(document.getElementById('holdCurrent').value || 0.2),
+                silent: Number(document.getElementById('silentMode').value || 1),
+                posKp: Number(document.getElementById('posKp').value || 1.0),
+                posKi: Number(document.getElementById('posKi').value || 0.04),
+                posKd: Number(document.getElementById('posKd').value || 0.02),
+                velKp: Number(document.getElementById('velKp').value || 0.7),
+                velKi: Number(document.getElementById('velKi').value || 0.06),
+                velKd: Number(document.getElementById('velKd').value || 0.01),
+                enabled: Number(document.getElementById('closedLoopEnable').value || 1)
+            };
+
+            state.phaseACurrentA = Number(document.getElementById('phaseACurrentValue').textContent.replace(/[^0-9.]/g, '')) || 0;
+            state.phaseBCurrentA = Number(document.getElementById('phaseBCurrentValue').textContent.replace(/[^0-9.]/g, '')) || 0;
+            if (state.connected) {
+                await writeRegister(CUSTOM_REGS.MICROSTEPS, config.microsteps);
+                await writeRegister(CUSTOM_REGS.INTERPOLATION, config.interpMicrosteps);
+                await writeRegister(CUSTOM_REGS.RUN_CURRENT_A, Math.round(config.runCurrent * 1000));
+                await writeRegister(CUSTOM_REGS.HOLD_CURRENT_A, Math.round(config.holdCurrent * 1000));
+                await writeRegister(CUSTOM_REGS.SILENT_MODE, config.silent);
+                await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, config.enabled);
+            }
+            log('[INFO] 应用闭环配置：' + JSON.stringify(config));
+        }
+
+        function readAllConfig() {
+            log('[INFO] 发送读取全部参数请求');
+            const regs = [
+                OFFICIAL_REGS.IHOLD_IRUN,
+                OFFICIAL_REGS.CHOPCONF,
+                OFFICIAL_REGS.GCONF,
+                OFFICIAL_REGS.DRV_CONF,
+                OFFICIAL_REGS.TSTEP,
+                OFFICIAL_REGS.DRV_STATUS,
+                CUSTOM_REGS.RUN_CURRENT_A,
+                CUSTOM_REGS.HOLD_CURRENT_A,
+                CUSTOM_REGS.CLOSED_LOOP_ENABLE,
+                CUSTOM_REGS.ENCODER_RAW,
+                CUSTOM_REGS.ENCODER_ANGLE_MDEG,
+                CUSTOM_REGS.MAGNETIC_HIGH,
+                CUSTOM_REGS.MAGNETIC_LOW,
+                CUSTOM_REGS.ENCODER_ZERO
+            ];
+            regs.forEach(async (reg) => {
+                await readRegister(reg);
+            });
+        }
+
+        async function stopMotor() {
+            log('[WARN] 发送停止命令，建议先关闭闭环并切断输出');
+            if (state.connected) {
+                await writeRegister(0x107, 0);
+            }
+        }
+
+        async function zeroEncoder() {
+            state.currentAngle = 0;
+            state.targetAngle = 0;
+            updateDialVisual();
+            log('[INFO] 已归零当前位置');
+            if (state.connected) {
+                await writeRegister(0x107, 0);
+            }
+        }
+
+        function startAutoTune() {
+            const maxSpeed = Number(document.getElementById('tuneMaxSpeed').value || 2.0);
+            const accel = Number(document.getElementById('tuneAccel').value || 4.0);
+            const step = Number(document.getElementById('tuneGainStep').value || 0.05);
+            log('[WARN] 自动整定开始：速度=' + maxSpeed + ' rps， 加速度=' + accel + ' rps²，增益步进=' + step);
+            document.getElementById('tuneState').value = '1';
+        }
+
+        function buildRpmOptions(selectId, minValue, maxValue, stepValue, offset) {
+            const select = document.getElementById(selectId);
+            const options = [];
+            for (let value = minValue; value <= maxValue; value += stepValue) {
+                if (value <= 1000) {
+                    if (value < 25) continue;
+                    options.push(value);
+                } else if (value === 1000 || value > 1000) {
+                    options.push(value);
+                }
+            }
+            if (offset !== undefined) {
+                const fallback = options.includes(offset) ? offset : options[0];
+                select.innerHTML = options.map((value) => `<option value="${value}">${value}</option>`).join('');
+                select.value = String(fallback);
+            } else {
+                select.innerHTML = options.map((value) => `<option value="${value}">${value}</option>`).join('');
+            }
+        }
+
+        function buildMotionControlOptions() {
+            const startSelect = document.getElementById('startRpmSelect');
+            const maxSelect = document.getElementById('maxRpmSelect');
+            const accelSelect = document.getElementById('accelRpmSelect');
+
+            const startValues = [];
+            for (let v = 0; v <= 600; v += 60) {
+                startValues.push(v);
+            }
+            startSelect.innerHTML = startValues.map((v) => `<option value="${v}">${v}</option>`).join('');
+            startSelect.value = '120';
+
+            const maxValues = [];
+            for (let v = 25; v <= 1000; v += 75) {
+                maxValues.push(v);
+            }
+            for (let v = 1000; v <= 10000; v += 1000) {
+                maxValues.push(v);
+            }
+            const maxUnique = [...new Set(maxValues.filter((v) => v >= 25 && v <= 10000))];
+            maxSelect.innerHTML = maxUnique.map((v) => `<option value="${v}">${v}</option>`).join('');
+            maxSelect.value = '1000';
+
+            const accelValues = [];
+            for (let v = 300; v <= 2400; v += 300) {
+                accelValues.push(v);
+            }
+            accelSelect.innerHTML = accelValues.map((v) => `<option value="${v}">${v}</option>`).join('');
+            accelSelect.value = '600';
+        }
+
+        function getEffectivePulseCount() {
+            return Number(document.getElementById('pulseCountInput').value || 51200);
+        }
+
+        function updateMotionDurationEstimate() {
+            const pulseCount = Math.max(2, getEffectivePulseCount());
+            const startRpm = Number(document.getElementById('startRpmSelect').value || 0);
+            const maxRpm = Number(document.getElementById('maxRpmSelect').value || 0);
+            const accelRpm = Number(document.getElementById('accelRpmSelect').value || 0);
+            const stepsPerRevolution = 51200;
+            const accelSeconds = accelRpm > 0 && maxRpm > startRpm ? (maxRpm - startRpm) / accelRpm : 0;
+            const accelPulses = ((startRpm + maxRpm) * 0.5) * accelSeconds / 60 * stepsPerRevolution;
+            const physicalSeconds = accelPulses < pulseCount && maxRpm > 0
+                ? accelSeconds + (pulseCount - accelPulses) / (maxRpm / 60 * stepsPerRevolution)
+                : pulseCount / Math.max(1, startRpm / 60 * stepsPerRevolution);
+            document.getElementById('motionDurationEstimate').textContent =
+                `脉冲数：${pulseCount}，理论时间（固定 256 细分，${maxRpm} RPM）：约 ${physicalSeconds.toFixed(1)} s；STEP 基准：${stepsPerRevolution} 个/圈`;
+        }
+
+        updateMotionDurationEstimate();
+
+        function pushWaveSample() {
+            if (state.wavePaused) return;
+            const now = performance.now();
+            const sample = {
+                t: now,
+                rpm: Number(state.motionSpeedRpm || 0),
+                pos: Number(state.motionPositionDeg || 0)
+            };
+            state.waveHistory.push(sample);
+            const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
+            const cutoff = now - windowMs;
+            state.waveHistory = state.waveHistory.filter((entry) => entry.t >= cutoff);
+            if (state.waveHistory.length > 2000) {
+                state.waveHistory = state.waveHistory.slice(-2000);
+            }
+        }
+
+        function drawWaveform() {
+            const canvas = document.getElementById('motionWaveCanvas');
+            const ctx = canvas.getContext('2d');
+            const width = canvas.width;
+            const height = canvas.height;
+            const leftPad = 48;
+            const rightPad = 52;
+            const plotLeft = leftPad;
+            const plotRight = width - rightPad;
+            const plotTop = 18;
+            const plotBottom = height - 24;
+            const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
+            const now = state.wavePaused ? state.wavePausedAt : performance.now();
+
+            ctx.clearRect(0, 0, width, height);
+            ctx.fillStyle = 'rgba(2,6,23,0.82)';
+            ctx.fillRect(0, 0, width, height);
+
+            ctx.strokeStyle = 'rgba(148,163,184,0.24)';
+            ctx.lineWidth = 1;
+            const gridCount = Math.floor(windowMs / 50);
+            for (let i = 0; i <= gridCount; i++) {
+                const x = plotLeft + ((plotRight - plotLeft) * i) / gridCount;
+                ctx.beginPath();
+                ctx.moveTo(x, plotTop);
+                ctx.lineTo(x, plotBottom);
+                ctx.stroke();
+            }
+            for (let i = 0; i <= 4; i++) {
+                const y = plotTop + ((plotBottom - plotTop) / 4) * i;
+                ctx.beginPath();
+                ctx.moveTo(plotLeft, y);
+                ctx.lineTo(plotRight, y);
+                ctx.stroke();
+            }
+
+            const speedLine = (rpm) => {
+                return plotBottom - ((rpm + 3000) / 6000) * (plotBottom - plotTop);
+            };
+            const posLine = (deg) => {
+                return plotBottom - ((deg + 20) / 40) * (plotBottom - plotTop);
+            };
+
+            ctx.strokeStyle = 'rgba(56,189,248,0.7)';
+            ctx.fillStyle = '#e2e8f0';
+            ctx.font = '12px sans-serif';
+            ctx.fillText('RPM', 10, 14);
+            ctx.fillText('位置°', width - 48, 14);
+            ctx.fillText('3000', 4, plotTop + 4);
+            ctx.fillText('0', 18, plotBottom - 2);
+            ctx.fillText('-3000', 2, plotBottom + 14);
+            ctx.fillText('20°', width - 42, plotTop + 4);
+            ctx.fillText('0°', width - 34, plotBottom - 2);
+            ctx.fillText('-20°', width - 42, plotBottom + 14);
+
+            ctx.strokeStyle = '#38bdf8';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(plotLeft + 8, plotTop + 12);
+            ctx.lineTo(plotLeft + 28, plotTop + 12);
+            ctx.stroke();
+            ctx.fillStyle = '#38bdf8';
+            ctx.fillText('编码器速度 RPM', plotLeft + 34, plotTop + 16);
+            ctx.strokeStyle = '#22c55e';
+            ctx.beginPath();
+            ctx.moveTo(plotLeft + 170, plotTop + 12);
+            ctx.lineTo(plotLeft + 190, plotTop + 12);
+            ctx.stroke();
+            ctx.fillStyle = '#22c55e';
+            ctx.fillText('编码器位置 °', plotLeft + 196, plotTop + 16);
+
+            ctx.beginPath();
+            ctx.moveTo(plotLeft, plotTop);
+            ctx.lineTo(plotLeft, plotBottom);
+            ctx.lineTo(plotRight, plotBottom);
+            ctx.stroke();
+
+            const points = state.waveHistory.length ? state.waveHistory : [{t: now - windowMs, rpm: 0, pos: 0}];
+            const filtered = points.filter((entry) => now - entry.t <= windowMs);
+            if (filtered.length > 1) {
+                ctx.beginPath();
+                filtered.forEach((entry, i) => {
+                    const x = plotLeft + ((now - entry.t) / windowMs) * (plotRight - plotLeft);
+                    const y = speedLine(entry.rpm);
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                });
+                ctx.strokeStyle = '#38bdf8';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                ctx.beginPath();
+                filtered.forEach((entry, i) => {
+                    const x = plotLeft + ((now - entry.t) / windowMs) * (plotRight - plotLeft);
+                    const y = posLine(entry.pos);
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                });
+                ctx.strokeStyle = '#22c55e';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = 'rgba(148,163,184,0.75)';
+            ctx.fillText('2 s / 50 ms grid', plotRight - 92, height - 6);
+        }
+
+        async function startMotionTest() {
+            const startRpm = Number(document.getElementById('startRpmSelect').value || 120);
+            const maxRpm = Number(document.getElementById('maxRpmSelect').value || 1000);
+            const accelRpm = Number(document.getElementById('accelRpmSelect').value || 600);
+            const motionMode = Number(document.getElementById('motionModeSelect').value || 0);
+            const pulseCount = Math.max(2, Math.round(getEffectivePulseCount()));
+            const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
+            const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 2), 100, 20000);
+            document.getElementById('waveWindowMsInput').value = String(windowMs);
+            document.getElementById('stepPulseWidthNsInput').value = String(stepPulseWidthNs);
+
+            if (state.connected) {
+                await writeRegister(0x11A, startRpm);
+                await writeRegister(0x11B, maxRpm);
+                await writeRegister(0x11C, accelRpm);
+                await writeRegister(0x11D, pulseCount);
+                await writeRegister(0x11E, motionMode);
+                await writeRegister(0x11F, 1);
+                await writeRegister(0x122, windowMs);
+                await writeRegister(0x123, stepPulseWidthNs);
+            }
+
+            state.motionSpeedRpm = 0;
+            state.waveHistory = [];
+            log(`[INFO] 发送测速控制：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms step=${stepPulseWidthNs}ns`);
+        }
+
+        async function stopMotionTest() {
+            if (state.connected) {
+                await writeRegister(0x11F, 0);
+            }
+            state.motionSpeedRpm = 0;
+            log('[WARN] 发送停止测速命令');
+        }
+
+        async function sendManualMotionCommand(reg, message) {
+            if (!state.connected) {
+                log('[WARN] 尚未连接串口，无法发送电机测试命令');
+                return;
+            }
+            await writeRegister(reg, 1);
+            log('[INFO] ' + message);
+        }
+
+        function toggleWavePause() {
+            if (!state.wavePaused) {
+                state.wavePaused = true;
+                state.wavePausedAt = performance.now();
+            } else {
+                const resumeAt = performance.now();
+                const elapsed = resumeAt - state.wavePausedAt;
+                state.waveHistory = state.waveHistory.map((entry) => ({...entry, t: entry.t + elapsed}));
+                state.wavePaused = false;
+                state.wavePausedAt = 0;
+            }
+            const btn = document.getElementById('pauseWaveBtn');
+            btn.textContent = state.wavePaused ? '继续查看' : '暂停查看';
+            log(`[INFO] 波形${state.wavePaused ? '已暂停' : '已恢复'}`);
+        }
+
+        function bindControls() {
+            document.getElementById('connectBtn').addEventListener('click', connectSerial);
+            document.getElementById('readAllBtn').addEventListener('click', readAllConfig);
+            document.getElementById('writeAllBtn').addEventListener('click', applyAllConfig);
+            document.getElementById('sendTargetBtn').addEventListener('click', sendTargetPosition);
+            document.getElementById('zeroBtn').addEventListener('click', zeroEncoder);
+            document.getElementById('stopBtn').addEventListener('click', stopMotor);
+            document.getElementById('startMotionBtn').addEventListener('click', startMotionTest);
+            document.getElementById('stopMotionBtn').addEventListener('click', stopMotionTest);
+            document.getElementById('motorEnableBtn').addEventListener('click', () => sendManualMotionCommand(0x124, '电机使能：EN=0'));
+            document.getElementById('motorDisableBtn').addEventListener('click', () => sendManualMotionCommand(0x125, '电机失能：EN=1'));
+            document.getElementById('singleStepBtn').addEventListener('click', async () => {
+                // 从页面下拉框读取参数
+                const startRpm = Number(document.getElementById('startRpmSelect').value);
+                const maxRpm = Number(document.getElementById('maxRpmSelect').value);
+                const accelRpm = Number(document.getElementById('accelRpmSelect').value);
+                const motionMode = Number(document.getElementById('motionModeSelect').value);
+
+                // 下发运动相关参数寄存器
+                await writeRegister(0x11A, startRpm);
+                await writeRegister(0x11B, maxRpm);
+                await writeRegister(0x11C, accelRpm);
+                await writeRegister(0x11E, motionMode);
+
+                // 再触发单步正向脉冲命令寄存器
+                await sendManualMotionCommand(0x126, '单个正向 STEP：DIR=1（已同步速度/加速度参数）');
+            });
+            document.getElementById('pauseWaveBtn').addEventListener('click', toggleWavePause);
+            ['startRpmSelect', 'maxRpmSelect', 'accelRpmSelect', 'pulseCountInput', 'microsteps'].forEach((id) => {
+                document.getElementById(id).addEventListener('change', updateMotionDurationEstimate);
+            });
+            document.getElementById('tuneBtn').addEventListener('click', startAutoTune);
+            document.getElementById('startTuneBtn').addEventListener('click', startAutoTune);
+            document.getElementById('applyTuneBtn').addEventListener('click', function () {
+                log('[INFO] 已应用整定结果到 PID 参数');
+            });
+            document.getElementById('waveWindowMsInput').addEventListener('change', function () {
+                const value = clamp(Number(this.value || 2000), 2000, 2000);
+                this.value = String(value);
+                if (state.connected) {
+                    writeRegister(0x122, value);
+                }
+            });
+
+            document.getElementById('targetPosInput').addEventListener('change', function () {
+                state.targetAngle = Number(this.value || 0);
+                updateDialVisual();
+            });
+        }
+
+        function handleCustomTelemetry(frame) {
+            if (frame.reg === 0x120) {
+                state.motionSpeedRpm = frame.value | 0;
+            }
+            if (frame.reg === 0x121) {
+                state.motionPositionDeg = Number((frame.value || 0) / 1000.0);
+            }
+            if (frame.reg === 0x122) {
+                const windowValue = clamp(Number(frame.value || 2000), 2000, 2000);
+                document.getElementById('waveWindowMsInput').value = String(windowValue);
+            }
+        }
+
+        bindDialDrag();
+        bindControls();
+        buildMotionControlOptions();
+        renderRegisterMap();
         updateDialVisual();
-      });
-    }
+        updateFaultStatus();
+        updateTelemetryDisplay();
 
-    function handleCustomTelemetry(frame) {
-      if (frame.reg === 0x120) {
-        state.motionSpeedRpm = frame.value | 0;
-      }
-      if (frame.reg === 0x121) {
-        state.motionPositionDeg = Number((frame.value || 0) / 1000.0);
-      }
-      if (frame.reg === 0x122) {
-        const windowValue = clamp(Number(frame.value || 2000), 2000, 2000);
-        document.getElementById('waveWindowMsInput').value = String(windowValue);
-      }
-    }
+        state.motionWaveTimer = window.setInterval(() => {
+            pushWaveSample();
+            drawWaveform();
+        }, 40);
 
-    bindDialDrag();
-    bindControls();
-    buildMotionControlOptions();
-    renderRegisterMap();
-    updateDialVisual();
-    updateFaultStatus();
-    updateTelemetryDisplay();
+        setInterval(() => {
+            updateTelemetryDisplay();
+        }, 200);
 
-    state.motionWaveTimer = window.setInterval(() => {
-      pushWaveSample();
-      drawWaveform();
-    }, 40);
-
-    setInterval(() => {
-      updateTelemetryDisplay();
-    }, 200);
-
-    const originalHandleIncomingFrame = handleIncomingFrame;
-    handleIncomingFrame = function (frame) {
-      originalHandleIncomingFrame(frame);
-      handleCustomTelemetry(frame);
-    };
-       </script>
+        const originalHandleIncomingFrame = handleIncomingFrame;
+        handleIncomingFrame = function (frame) {
+            originalHandleIncomingFrame(frame);
+            handleCustomTelemetry(frame);
+        };
+    </script>
+<div>
 </body>
 </html>

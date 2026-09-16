@@ -23,7 +23,7 @@
   **************************************************************************
   */
 
- /* define to prevent recursive inclusion -------------------------------------*/
+/* define to prevent recursive inclusion -------------------------------------*/
 #ifndef __CDC_CLASS_H
 #define __CDC_CLASS_H
 
@@ -73,14 +73,14 @@ extern "C" {
   */
 typedef struct
 {
-  uint32_t alt_setting;
-  uint8_t g_rx_buff[USBD_CDC_OUT_MAXPACKET_SIZE];
-  uint8_t g_cmd[USBD_CDC_CMD_MAXPACKET_SIZE];
-  uint8_t g_req;
-  uint16_t g_len, g_rxlen;
-  __IO uint8_t g_tx_completed, g_rx_completed;
-  linecoding_type linecoding;
-}cdc_struct_type;
+    uint32_t alt_setting;
+    uint8_t g_rx_buff[USBD_CDC_OUT_MAXPACKET_SIZE];
+    uint8_t g_cmd[USBD_CDC_CMD_MAXPACKET_SIZE];
+    uint8_t g_req;
+    uint16_t g_len, g_rxlen;
+    __IO uint8_t g_tx_completed, g_rx_completed;
+    linecoding_type linecoding;
+} cdc_struct_type;
 
 
 /**
@@ -91,8 +91,8 @@ typedef struct
   * @{
   */
 extern usbd_class_handler cdc_class_handler;
-uint16_t usb_vcp_get_rxdata(void *udev, uint8_t *recv_data);
-error_status usb_vcp_send_data(void *udev, uint8_t *send_data, uint16_t len);
+uint16_t usb_vcp_get_rxdata(void* udev, uint8_t* recv_data);
+error_status usb_vcp_send_data(void* udev, uint8_t* send_data, uint16_t len);
 
 /**
   * @}

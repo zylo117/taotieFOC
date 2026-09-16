@@ -71,12 +71,12 @@
 #define FREERTOS_CONFIG_H
 
 #ifdef __cplusplus
-    extern "C" {
+extern "C" {
 #endif
 
 #if defined(__ICCARM__) || defined(__CC_ARM) || defined(__GNUC__)
-    #include <stdint.h>
-    #include "system_at32f403a_407.h"
+#include <stdint.h>
+#include "system_at32f403a_407.h"
 #endif
 
 #define configENABLE_FPU 1
@@ -123,10 +123,10 @@ to exclude the API function. */
 #define INCLUDE_xTaskGetCurrentTaskHandle 1
 /* Cortex-M specific definitions. */
 #ifdef __NVIC_PRIO_BITS
-  /* __BVIC_PRIO_BITS will be specified when CMSIS is being used. */
-  #define configPRIO_BITS           __NVIC_PRIO_BITS
+/* __BVIC_PRIO_BITS will be specified when CMSIS is being used. */
+#define configPRIO_BITS           __NVIC_PRIO_BITS
 #else
-  #define configPRIO_BITS           4        /* 15 priority levels */
+#define configPRIO_BITS           4        /* 15 priority levels */
 #endif
 
 /* The lowest interrupt priority that can be used in a call to a "set priority"
@@ -157,7 +157,7 @@ standard names. */
 #define xPortSysTickHandler SysTick_Handler
 
 #ifdef __cplusplus
-    }
+}
 #endif
 
 #endif /* FREERTOS_CONFIG_H */

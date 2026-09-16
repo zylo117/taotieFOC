@@ -2,128 +2,131 @@
 #include "at32f403a_407_board.h"
 
 Tmc5160Driver::Tmc5160Driver()
-  : enabled_(false), direction_(false), config_{32U, 256U, 0.8f, 0.2f, true, true, 0.110f, 0.0f, 115200U, false, false, TMC2209_UART_GPIO, TMC2209_UART_PIN}
+    : enabled_(false), direction_(false),
+      config_{
+          32U, 256U, 0.8f, 0.2f, true, true, 0.110f, 0.0f, 115200U, false, false, TMC2209_UART_GPIO, TMC2209_UART_PIN
+      }
 {
 }
 
 bool Tmc5160Driver::init()
 {
-  stepper_common::stepper_init_step_gpio();
-  return true;
+    stepper_common::stepper_init_step_gpio();
+    return true;
 }
 
-bool Tmc5160Driver::configure(const StepperDriverConfig &config)
+bool Tmc5160Driver::configure(const StepperDriverConfig& config)
 {
-  config_ = config;
-  if (config_.uart_baudrate == 0U)
-  {
-    config_.uart_baudrate = 115200U;
-  }
-  if (config_.sense_resistor_ohm <= 0.0f)
-  {
-    config_.sense_resistor_ohm = 0.110f;
-  }
-  return true;
+    config_ = config;
+    if (config_.uart_baudrate == 0U)
+    {
+        config_.uart_baudrate = 115200U;
+    }
+    if (config_.sense_resistor_ohm <= 0.0f)
+    {
+        config_.sense_resistor_ohm = 0.110f;
+    }
+    return true;
 }
 
-const StepperDriverConfig &Tmc5160Driver::config() const
+const StepperDriverConfig& Tmc5160Driver::config() const
 {
-  return config_;
+    return config_;
 }
 
 bool Tmc5160Driver::writeRegister(uint8_t reg, uint32_t value)
 {
-  (void)reg;
-  (void)value;
-  return true;
+    (void)reg;
+    (void)value;
+    return true;
 }
 
-bool Tmc5160Driver::readRegister(uint8_t reg, uint32_t *value)
+bool Tmc5160Driver::readRegister(uint8_t reg, uint32_t* value)
 {
-  (void)reg;
-  if (value != nullptr)
-  {
-    *value = 0U;
-  }
-  return true;
+    (void)reg;
+    if (value != nullptr)
+    {
+        *value = 0U;
+    }
+    return true;
 }
 
 void Tmc5160Driver::setEnable(bool enable)
 {
-  enabled_ = enable;
-  stepper_common::stepper_write_gpio(EN_OUTPUT_PORT, EN_OUT_PIN, enable ? EN_ACTIVE_LEVEL : !EN_ACTIVE_LEVEL);
+    enabled_ = enable;
+    stepper_common::stepper_write_gpio(EN_OUTPUT_PORT, EN_OUT_PIN, enable ? EN_ACTIVE_LEVEL : !EN_ACTIVE_LEVEL);
 }
 
 void Tmc5160Driver::setDirection(bool direction)
 {
-  direction_ = direction;
-  stepper_common::stepper_write_gpio(DIR_OUTPUT_PORT, DIR_OUT_PIN,
-                                     direction ? DIR_FORWARD_LEVEL : !DIR_FORWARD_LEVEL);
+    direction_ = direction;
+    stepper_common::stepper_write_gpio(DIR_OUTPUT_PORT, DIR_OUT_PIN,
+                                       direction ? DIR_FORWARD_LEVEL : !DIR_FORWARD_LEVEL);
 }
 
 void Tmc5160Driver::sendStepPulse(uint64_t width_ns)
 {
-  stepper_common::stepper_write_gpio_high(STEP_OUTPUT_PORT, STEP_OUT_PIN);
-  delay_ns(width_ns);
-  stepper_common::stepper_write_gpio_low(STEP_OUTPUT_PORT, STEP_OUT_PIN);
-  delay_ns(width_ns);
+    stepper_common::stepper_write_gpio_high(STEP_OUTPUT_PORT, STEP_OUT_PIN);
+    delay_ns(width_ns);
+    stepper_common::stepper_write_gpio_low(STEP_OUTPUT_PORT, STEP_OUT_PIN);
+    delay_ns(width_ns);
 }
 
 void Tmc5160Driver::setStepState(bool state)
 {
-  stepper_common::stepper_write_gpio(STEP_OUTPUT_PORT, STEP_OUT_PIN, state);
+    stepper_common::stepper_write_gpio(STEP_OUTPUT_PORT, STEP_OUT_PIN, state);
 }
 
 bool Tmc5160Driver::setMicrosteps(uint16_t microsteps)
 {
-  config_.microsteps = microsteps == 0U ? 32U : microsteps;
-  return true;
+    config_.microsteps = microsteps == 0U ? 32U : microsteps;
+    return true;
 }
 
 bool Tmc5160Driver::setRunCurrent(float amps)
 {
-  config_.run_current_a = amps;
-  return true;
+    config_.run_current_a = amps;
+    return true;
 }
 
 bool Tmc5160Driver::setHoldCurrent(float amps, bool enabled)
 {
-  config_.hold_current_a = amps;
-  config_.enable_hold_current = enabled;
-  return true;
+    config_.hold_current_a = amps;
+    config_.enable_hold_current = enabled;
+    return true;
 }
 
 bool Tmc5160Driver::setSilentMode(bool enable)
 {
-  config_.silent_mode = enable;
-  return true;
+    config_.silent_mode = enable;
+    return true;
 }
 
 bool Tmc5160Driver::setInterpolation(uint16_t input_microsteps, uint16_t target_microsteps)
 {
-  config_.microsteps = input_microsteps == 0U ? 32U : input_microsteps;
-  config_.interpolation_microsteps = target_microsteps == 0U ? 256U : target_microsteps;
-  return true;
+    config_.microsteps = input_microsteps == 0U ? 32U : input_microsteps;
+    config_.interpolation_microsteps = target_microsteps == 0U ? 256U : target_microsteps;
+    return true;
 }
 
 bool Tmc5160Driver::setSenseResistor(float ohm)
 {
-  if (ohm <= 0.0f)
-  {
-    return false;
-  }
-  config_.sense_resistor_ohm = ohm;
-  return true;
+    if (ohm <= 0.0f)
+    {
+        return false;
+    }
+    config_.sense_resistor_ohm = ohm;
+    return true;
 }
 
-bool Tmc5160Driver::setSingleWireUart(gpio_type *port, uint16_t pin, bool enable)
+bool Tmc5160Driver::setSingleWireUart(gpio_type* port, uint16_t pin, bool enable)
 {
-  if (port == nullptr)
-  {
-    return false;
-  }
-  config_.uart_port = port;
-  config_.uart_pin = pin;
-  config_.use_single_wire_uart = enable;
-  return true;
+    if (port == nullptr)
+    {
+        return false;
+    }
+    config_.uart_port = port;
+    config_.uart_pin = pin;
+    config_.use_single_wire_uart = enable;
+    return true;
 }

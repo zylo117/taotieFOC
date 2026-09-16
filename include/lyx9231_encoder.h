@@ -6,14 +6,14 @@
 class Lyx9231Encoder : public AngleEncoder
 {
 public:
-  Lyx9231Encoder();
-  bool init() override;
-  uint16_t readRawAngle() override;
-  void setZero(uint16_t zero_angle) override;
-  bool calibrate(const EncoderCalibrationConfig &config, EncoderCalibrationResult *result) override;
+    Lyx9231Encoder();
+    bool init() override;
+    uint16_t readRawAngle() override;
+    void setZero(uint16_t zero_angle) override;
+    bool calibrate(const EncoderCalibrationConfig& config, EncoderCalibrationResult* result) override;
 
 private:
-  uint16_t zero_angle_;
+    uint16_t zero_angle_;
 };
 
 #endif

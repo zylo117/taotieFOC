@@ -16,7 +16,7 @@
 static inline uint64_t get_hw_time_ns(void)
 {
     static int dwt_init_done = 0;
-    if(!dwt_init_done)
+    if (!dwt_init_done)
     {
         CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
         DWT->CYCCNT = 0;
@@ -25,18 +25,18 @@ static inline uint64_t get_hw_time_ns(void)
     }
     uint32_t cc = DWT->CYCCNT;
     // ns = cycle * 1000 / (core_freq_MHz)
-    return ( (uint64_t)cc * 1000ULL ) / ( system_core_clock / 1000000ULL );
+    return ((uint64_t)cc * 1000ULL) / (system_core_clock / 1000000ULL);
 }
 
 // 自适应 PID 的基础参数配置。
 // 它描述了在不同速度和加速度区间下，系统对跟随误差的容忍度与增益调整幅度。
 struct PidAutoTuneConfig
 {
-  float min_speed_rps;
-  float max_speed_rps;
-  float acceleration_rps2;
-  float target_follow_error;
-  float gain_step;
+    float min_speed_rps;
+    float max_speed_rps;
+    float acceleration_rps2;
+    float target_follow_error;
+    float gain_step;
 };
 
 // PidController 是一个通用 PID 控制器。
@@ -46,39 +46,39 @@ struct PidAutoTuneConfig
 class PidController
 {
 public:
-  PidController();
+    PidController();
 
-  // 设定比例、积分、微分三个增益参数。
-  void setGains(float kp, float ki, float kd);
+    // 设定比例、积分、微分三个增益参数。
+    void setGains(float kp, float ki, float kd);
 
-  // 计算当前误差下的控制输出。
-  // error：当前误差，dt：控制周期时间
-  float update(float error, float dt);
+    // 计算当前误差下的控制输出。
+    // error：当前误差，dt：控制周期时间
+    float update(float error, float dt);
 
-  // 清零积分项，防止误差长期累积导致超调。
-  void resetIntegral();
+    // 清零积分项，防止误差长期累积导致超调。
+    void resetIntegral();
 
-  // 清零微分项历史值，避免误差突变导致抖动。
-  void resetDeriv();
+    // 清零微分项历史值，避免误差突变导致抖动。
+    void resetDeriv();
 
-  float kp;
-  float ki;
-  float kd;
-  float integral;
-  float last_error;
-  float max_integral;
-  float max_output;
+    float kp;
+    float ki;
+    float kd;
+    float integral;
+    float last_error;
+    float max_integral;
+    float max_output;
 };
 
 // 采样周期统计结构，用于评估控制器循环运行频率。
 struct LoopFrequencyStats
 {
-  uint32_t position_loop_hz;
-  uint32_t velocity_loop_hz;
-  uint32_t current_loop_hz;
-  uint32_t position_samples;
-  uint32_t velocity_samples;
-  uint32_t current_samples;
+    uint32_t position_loop_hz;
+    uint32_t velocity_loop_hz;
+    uint32_t current_loop_hz;
+    uint32_t position_samples;
+    uint32_t velocity_samples;
+    uint32_t current_samples;
 };
 
 // ClosedLoopController 是整个闭环步进控制器的核心。
@@ -90,208 +90,209 @@ struct LoopFrequencyStats
 class ClosedLoopController
 {
 public:
-  enum FaultFlags : uint32_t
-  {
-    FAULT_ENCODER_READ_FAILED = 1UL << 0,
-    FAULT_MAGNETIC_FIELD_ALARM = 1UL << 1,
-    FAULT_OUTPUT_STOPPED = 1UL << 2
-  };
+    enum FaultFlags : uint32_t
+    {
+        FAULT_ENCODER_READ_FAILED = 1UL << 0,
+        FAULT_MAGNETIC_FIELD_ALARM = 1UL << 1,
+        FAULT_OUTPUT_STOPPED = 1UL << 2
+    };
 
-  ClosedLoopController();
+    ClosedLoopController();
 
-  // 绑定驱动器与编码器，并初始化 PID 与零点偏移。
-  void init(StepperDriver *driver, AngleEncoder *encoder);
+    // 绑定驱动器与编码器，并初始化 PID 与零点偏移。
+    void init(StepperDriver* driver, AngleEncoder* encoder);
 
-  // 配置故障响应策略：读编码器失败或磁场报警时是否立即停止输出。
-  void setFaultPolicy(bool stop_on_encoder_fault, bool stop_on_magnetic_fault);
+    // 配置故障响应策略：读编码器失败或磁场报警时是否立即停止输出。
+    void setFaultPolicy(bool stop_on_encoder_fault, bool stop_on_magnetic_fault);
 
-  // 报告编码器读取失败状态，并在设置为失效时执行停输出动作。
-  void reportEncoderFault(bool active);
+    // 报告编码器读取失败状态，并在设置为失效时执行停输出动作。
+    void reportEncoderFault(bool active);
 
-  // 报告磁场过高/过低状态，并在设置为失效时执行停输出动作。
-  void reportMagneticFieldAlarm(bool active);
+    // 报告磁场过高/过低状态，并在设置为失效时执行停输出动作。
+    void reportMagneticFieldAlarm(bool active);
 
-  // 设置 A/B 相电流监控值，供上位机实时显示。
-  void setPhaseCurrentTelemetry(float phase_a_a, float phase_b_a);
+    // 设置 A/B 相电流监控值，供上位机实时显示。
+    void setPhaseCurrentTelemetry(float phase_a_a, float phase_b_a);
 
-  // 将控制器当前故障状态和采样频率同步到协议扩展寄存器表。
-  void syncProtocolTelemetry();
+    // 将控制器当前故障状态和采样频率同步到协议扩展寄存器表。
+    void syncProtocolTelemetry();
 
-  // 绑定协议适配器，允许外部通过 TMC 风格寄存器访问闭环参数。
-  void setProtocol(ClosedLoopDriverProtocol *protocol);
+    // 绑定协议适配器，允许外部通过 TMC 风格寄存器访问闭环参数。
+    void setProtocol(ClosedLoopDriverProtocol* protocol);
 
-  // 对外写入指定寄存器参数。
-  bool writeParameter(uint16_t reg, uint32_t value);
+    // 对外写入指定寄存器参数。
+    bool writeParameter(uint16_t reg, uint32_t value);
 
-  // 对外读取指定寄存器参数。
-  bool readParameter(uint16_t reg, uint32_t *value);
+    // 对外读取指定寄存器参数。
+    bool readParameter(uint16_t reg, uint32_t* value);
 
-  // 读取外部步进方向/使能/步进状态，并同步到闭环控制器状态机。
-  void syncStepDirection();
+    // 读取外部步进方向/使能/步进状态，并同步到闭环控制器状态机。
+    void syncStepDirection();
 
-  // 核心控制循环，负责读取编码器、计算误差、更新两层 PID，并输出修正。
-  void process(uint32_t time_us);
+    // 核心控制循环，负责读取编码器、计算误差、更新两层 PID，并输出修正。
+    void process(uint32_t time_us);
 
-  // 设置目标位置步数。
-  void setTargetStep(int32_t target_step);
+    // 设置目标位置步数。
+    void setTargetStep(int32_t target_step);
 
-  // 设置目标速度（转/秒）。
-  void setTargetVelocity(float rps);
+    // 设置目标速度（转/秒）。
+    void setTargetVelocity(float rps);
 
-  enum MotionMode : uint32_t
-  {
-    MOTION_MODE_POSITION_FORWARD = 0U,
-    MOTION_MODE_POSITION_REVERSE = 1U,
-    MOTION_MODE_VELOCITY_FORWARD = 2U,
-    MOTION_MODE_VELOCITY_REVERSE = 3U,
-    MOTION_MODE_HOME_FORWARD = 4U,
-    MOTION_MODE_HOME_REVERSE = 5U
-  };
+    enum MotionMode : uint32_t
+    {
+        MOTION_MODE_POSITION_FORWARD = 0U,
+        MOTION_MODE_POSITION_REVERSE = 1U,
+        MOTION_MODE_VELOCITY_FORWARD = 2U,
+        MOTION_MODE_VELOCITY_REVERSE = 3U,
+        MOTION_MODE_HOME_FORWARD = 4U,
+        MOTION_MODE_HOME_REVERSE = 5U
+    };
 
-  void setMotionConfig(float start_rpm, float max_rpm, float accel_rpm_s, uint32_t pulse_count, MotionMode mode);
-  void startMotion();
-  void stopMotion();
-  void rampUpdate(uint64_t now_ns);
-  bool isMotionRunning() const;
-  float getMotionSpeedRpm() const;
-  float getMotionPositionDeg() const;
-  uint32_t getWaveformWindowMs() const;
-  void setWaveformWindowMs(uint32_t window_ms);
+    void setMotionConfig(float start_rpm, float max_rpm, float accel_rpm_s, uint32_t pulse_count, MotionMode mode);
+    void startMotion();
+    void stopMotion();
+    void rampUpdate(uint64_t now_ns);
+    bool isMotionRunning() const;
+    float getMotionSpeedRpm() const;
+    float getMotionPositionDeg() const;
+    uint32_t getWaveformWindowMs() const;
+    void setWaveformWindowMs(uint32_t window_ms);
 
-  // 统一设置基本 PID 参数。
-  void setPid(float kp, float ki, float kd);
+    // 统一设置基本 PID 参数。
+    void setPid(float kp, float ki, float kd);
 
-  // 启用/关闭自适应增益调节。
-  void enableAdaptivePid(bool enable);
+    // 启用/关闭自适应增益调节。
+    void enableAdaptivePid(bool enable);
 
-  // 设置自适应 PID 的参数阈值。
-  void setAdaptivePidConfig(const PidAutoTuneConfig &config);
+    // 设置自适应 PID 的参数阈值。
+    void setAdaptivePidConfig(const PidAutoTuneConfig& config);
 
-  // 根据当前速度、加速度和跟随误差动态修正 PID 参数。
-  void updateAdaptivePid(float speed_rps, float acceleration_rps2, float follow_error);
+    // 根据当前速度、加速度和跟随误差动态修正 PID 参数。
+    void updateAdaptivePid(float speed_rps, float acceleration_rps2, float follow_error);
 
-  // 对编码器执行校准，更新零点偏差。
-  void calibrateEncoder(const EncoderCalibrationConfig &config);
+    // 对编码器执行校准，更新零点偏差。
+    void calibrateEncoder(const EncoderCalibrationConfig& config);
 
-  // 开启/关闭循环频率统计功能。
-  void enableLoopStats(bool enable);
+    // 开启/关闭循环频率统计功能。
+    void enableLoopStats(bool enable);
 
-  // 获取控制环运行频率统计。
-  void getLoopFrequencyStats(LoopFrequencyStats *stats) const;
+    // 获取控制环运行频率统计。
+    void getLoopFrequencyStats(LoopFrequencyStats* stats) const;
 
-  // 清空 frequency stats。
-  void resetLoopFrequencyStats();
+    // 清空 frequency stats。
+    void resetLoopFrequencyStats();
 
-  // 读取当前闭环位置步数。
-  int32_t getPositionSteps() const;
+    // 读取当前闭环位置步数。
+    int32_t getPositionSteps() const;
 
-  // 读取目标位置步数。
-  int32_t getTargetSteps() const;
-  uint16_t getEncoderZero() const;
-  void setEncoderZero(uint16_t zero_angle);
-  uint16_t getEncoderRawAngle() const;
-  uint32_t getEncoderAngleMilliDegrees() const;
-  bool isMagneticFieldHigh() const;
-  bool isMagneticFieldLow() const;
+    // 读取目标位置步数。
+    int32_t getTargetSteps() const;
+    uint16_t getEncoderZero() const;
+    void setEncoderZero(uint16_t zero_angle);
+    uint16_t getEncoderRawAngle() const;
+    uint32_t getEncoderAngleMilliDegrees() const;
+    bool isMagneticFieldHigh() const;
+    bool isMagneticFieldLow() const;
 
-  // 返回当前位置与目标之间的跟随误差。
-  float getFollowError() const;
+    // 返回当前位置与目标之间的跟随误差。
+    float getFollowError() const;
 
-  // 读取当前相电流和 loop 频率，用于 USB telemetry 回传。
-  float getPhaseCurrentTelemetryA() const;
-  float getPhaseCurrentTelemetryB() const;
-  uint32_t getPositionLoopHz() const;
-  uint32_t getVelocityLoopHz() const;
-  uint32_t getCurrentLoopHz() const;
+    // 读取当前相电流和 loop 频率，用于 USB telemetry 回传。
+    float getPhaseCurrentTelemetryA() const;
+    float getPhaseCurrentTelemetryB() const;
+    uint32_t getPositionLoopHz() const;
+    uint32_t getVelocityLoopHz() const;
+    uint32_t getCurrentLoopHz() const;
 
 private:
-  void updateLoopFrequencyStats(uint64_t time_ns);
-  StepperDriver *driver_;
-  AngleEncoder *encoder_;
-  ClosedLoopDriverProtocol *protocol_;
-  PidController position_pid_;
-  PidController velocity_pid_;
+    void updateLoopFrequencyStats(uint64_t time_ns);
+    StepperDriver* driver_;
+    AngleEncoder* encoder_;
+    ClosedLoopDriverProtocol* protocol_;
+    PidController position_pid_;
+    PidController velocity_pid_;
 
-  float base_position_kp_;
-  float base_position_ki_;
-  float base_position_kd_;
-  float base_velocity_kp_;
-  float base_velocity_ki_;
-  float base_velocity_kd_;
-  bool adaptive_pid_enabled_;
-  PidAutoTuneConfig adaptive_config_;
+    float base_position_kp_;
+    float base_position_ki_;
+    float base_position_kd_;
+    float base_velocity_kp_;
+    float base_velocity_ki_;
+    float base_velocity_kd_;
+    bool adaptive_pid_enabled_;
+    PidAutoTuneConfig adaptive_config_;
 
-  volatile int32_t target_step_;
-  volatile int32_t actual_step_;
-  volatile int32_t last_actual_step_;
-  volatile int32_t command_step_;
-  volatile float follow_error_;
-  volatile float measured_velocity_rps_;
-  volatile float target_velocity_rps_;
-  volatile float motion_start_rpm_;
-  volatile float motion_max_rpm_;
-  volatile float motion_accel_rpm_s_;
-  volatile uint32_t motion_pulse_count_;
-  volatile uint32_t motion_window_ms_;
-  volatile MotionMode motion_mode_;
-  volatile bool motion_running_;
-  volatile bool motion_paused_;
-  volatile float motion_speed_rpm_;
-  volatile float encoder_speed_rpm_;
-  volatile float motion_position_deg_;
-  volatile uint64_t motion_last_step_time_ns_;
-  volatile uint64_t motion_last_ramp_time_ns_;
-  volatile uint32_t motion_last_step_time_us_;
-  volatile uint32_t motion_last_ramp_time_us_;
-  volatile uint32_t motion_steps_emitted_;
-  volatile double motion_step_accumulator_;
-  volatile int8_t motion_direction_;
-  volatile bool motion_step_high_;
-  volatile uint64_t step_pulse_width_ns_;
-  volatile uint32_t step_period_us_;
-  volatile uint16_t encoder_zero_;
-  volatile uint16_t encoder_raw_angle_;
-  volatile bool magnetic_field_high_;
-  volatile bool magnetic_field_low_;
-  volatile uint32_t last_process_time_us_;
-  volatile uint8_t last_step_state_;
-  volatile uint8_t last_dir_state_;
-  volatile uint8_t last_en_state_;
-  bool stop_on_encoder_fault_;
-  bool stop_on_magnetic_fault_;
-  bool encoder_fault_active_;
-  bool magnetic_fault_active_;
-  bool output_stopped_;
-  float phase_a_current_a_;
-  float phase_b_current_a_;
+    volatile int32_t target_step_;
+    volatile int32_t actual_step_;
+    volatile int32_t last_actual_step_;
+    volatile int32_t command_step_;
+    volatile float follow_error_;
+    volatile float measured_velocity_rps_;
+    volatile float target_velocity_rps_;
+    volatile float motion_start_rpm_;
+    volatile float motion_max_rpm_;
+    volatile float motion_accel_rpm_s_;
+    volatile uint32_t motion_pulse_count_;
+    volatile uint32_t motion_window_ms_;
+    volatile MotionMode motion_mode_;
+    volatile bool motion_running_;
+    volatile bool motion_paused_;
+    volatile float motion_speed_rpm_;
+    volatile float encoder_speed_rpm_;
+    volatile float motion_position_deg_;
+    volatile uint64_t motion_last_step_time_ns_;
+    volatile uint64_t motion_last_ramp_time_ns_;
+    volatile uint32_t motion_last_step_time_us_;
+    volatile uint32_t motion_last_ramp_time_us_;
+    volatile uint32_t motion_steps_emitted_;
+    volatile double motion_step_accumulator_;
+    volatile int8_t motion_direction_;
+    volatile bool motion_step_high_;
+    volatile uint64_t step_pulse_width_ns_;
+    volatile uint32_t step_period_us_;
+    volatile uint16_t encoder_zero_;
+    volatile uint16_t encoder_raw_angle_;
+    volatile bool magnetic_field_high_;
+    volatile bool magnetic_field_low_;
+    volatile uint32_t last_process_time_us_;
+    volatile uint8_t last_step_state_;
+    volatile uint8_t last_dir_state_;
+    volatile uint8_t last_en_state_;
+    bool stop_on_encoder_fault_;
+    bool stop_on_magnetic_fault_;
+    bool encoder_fault_active_;
+    bool magnetic_fault_active_;
+    bool output_stopped_;
+    float phase_a_current_a_;
+    float phase_b_current_a_;
 
-  bool loop_stats_enabled_;
-  uint64_t last_position_tick_ns_;
-  uint64_t last_velocity_tick_ns_;
-  uint64_t last_current_tick_ns_;
-  uint32_t position_loop_hz_;
-  uint32_t velocity_loop_hz_;
-  uint32_t current_loop_hz_;
-  uint32_t position_samples_;
-  uint32_t velocity_samples_;
-  uint32_t current_samples_;
+    bool loop_stats_enabled_;
+    uint64_t last_position_tick_ns_;
+    uint64_t last_velocity_tick_ns_;
+    uint64_t last_current_tick_ns_;
+    uint32_t position_loop_hz_;
+    uint32_t velocity_loop_hz_;
+    uint32_t current_loop_hz_;
+    uint32_t position_samples_;
+    uint32_t velocity_samples_;
+    uint32_t current_samples_;
 
-  // ====================== 【补充梯形加减速预计算】======================
-  // 梯形加减速预计算参数（startMotion里一次性算出）
-  float motion_accel_step_s2_;       // 加速度：微步/s²
-  float motion_start_step_s_;        // 起始速度：微步/s
-  float motion_max_step_s_;          // 最高速度：微步/s
-  uint32_t accel_total_steps_;       // 加速段总步数
-  uint32_t decel_total_steps_;       // 减速段总步数
-  uint32_t cruise_total_steps_;      // 匀速段步数
-  enum MotionRampStage {
-      RAMP_STAGE_ACCEL,
-      RAMP_STAGE_CRUISE,
-      RAMP_STAGE_DECEL,
-      RAMP_STAGE_DONE
-  } motion_ramp_stage_;              // 当前阶段：加速/匀速/减速/结束
-  float current_step_speed_;         // 当前瞬时速度，微步/s
-  uint32_t steps_to_decel_;          // 剩余多少步必须开始减速
+    // ====================== 【补充梯形加减速预计算】======================
+    // 梯形加减速预计算参数（startMotion里一次性算出）
+    float motion_accel_step_s2_; // 加速度：微步/s²
+    float motion_start_step_s_; // 起始速度：微步/s
+    float motion_max_step_s_; // 最高速度：微步/s
+    uint32_t accel_total_steps_; // 加速段总步数
+    uint32_t decel_total_steps_; // 减速段总步数
+    uint32_t cruise_total_steps_; // 匀速段步数
+    enum MotionRampStage
+    {
+        RAMP_STAGE_ACCEL,
+        RAMP_STAGE_CRUISE,
+        RAMP_STAGE_DECEL,
+        RAMP_STAGE_DONE
+    } motion_ramp_stage_; // 当前阶段：加速/匀速/减速/结束
+    float current_step_speed_; // 当前瞬时速度，微步/s
+    uint32_t steps_to_decel_; // 剩余多少步必须开始减速
 };
 
 #endif
