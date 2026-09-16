@@ -853,24 +853,6 @@ void ClosedLoopController::startMotion()
 
     uint32_t total_req_steps = motion_pulse_count_;
 
-    // 极少步数直接禁用加减速，直接匀速
-    if(total_req_steps < MIN_RAMP_STEPS)
-    {
-        // 短步数：直接恒速运行，不做加减速，直接进入匀速阶段
-        accel_total_steps_ = 0U;
-        decel_total_steps_ = 0U;
-        cruise_total_steps_ = total_req_steps;
-        motion_ramp_stage_ = RAMP_STAGE_CRUISE;  // 全程匀速
-        steps_to_decel_ = 0xFFFFFFFFU; // 极大值：永远不会触发自动切入减速
-        current_step_speed_ = motion_start_step_s_;
-        motion_step_accumulator_ = 0.0f;
-
-        motion_last_step_time_ns_ = get_hw_time_ns();
-        motion_last_ramp_time_ns_ = get_hw_time_ns();
-        motion_running_ = true;
-        return; // 直接返回，跳过后面梯形/三角的计算
-    }
-
     // 判断：行程够不够跑完整梯形（加速+匀速+减速），不够就退化成三角曲线（无匀速段）
     if(accel_total_steps_ + decel_total_steps_ <= total_req_steps)
     {

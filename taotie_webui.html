@@ -1375,12 +1375,10 @@
     }
 
     function getEffectivePulseCount() {
-      const pulseCount = Number(document.getElementById('pulseCountInput').value || 51200);
-      const normalizedPulse = Math.max(51200, Number.isFinite(pulseCount) ? pulseCount : 51200);
-      return Math.round(normalizedPulse / 51200) * 51200;
+      return Number(document.getElementById('pulseCountInput').value || 51200);
     }
     function updateMotionDurationEstimate() {
-      const pulseCount = Math.max(1, getEffectivePulseCount());
+      const pulseCount = Math.max(2, getEffectivePulseCount());
       const startRpm = Number(document.getElementById('startRpmSelect').value || 0);
       const maxRpm = Number(document.getElementById('maxRpmSelect').value || 0);
       const accelRpm = Number(document.getElementById('accelRpmSelect').value || 0);
@@ -1391,7 +1389,7 @@
         ? accelSeconds + (pulseCount - accelPulses) / (maxRpm / 60 * stepsPerRevolution)
         : pulseCount / Math.max(1, startRpm / 60 * stepsPerRevolution);
       document.getElementById('motionDurationEstimate').textContent =
-        `理论时间（固定 256 细分，${maxRpm} RPM）：约 ${physicalSeconds.toFixed(1)} s；STEP 基准：${stepsPerRevolution} 个/圈`;
+        `脉冲数：${pulseCount}，理论时间（固定 256 细分，${maxRpm} RPM）：约 ${physicalSeconds.toFixed(1)} s；STEP 基准：${stepsPerRevolution} 个/圈`;
     }
   updateMotionDurationEstimate();
 
@@ -1524,7 +1522,7 @@
       const maxRpm = Number(document.getElementById('maxRpmSelect').value || 1000);
       const accelRpm = Number(document.getElementById('accelRpmSelect').value || 600);
       const motionMode = Number(document.getElementById('motionModeSelect').value || 0);
-      const pulseCount = Math.max(51200, Math.round(getEffectivePulseCount()));
+      const pulseCount = Math.max(2, Math.round(getEffectivePulseCount()));
       const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
       const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 2), 100, 20000);
       document.getElementById('waveWindowMsInput').value = String(windowMs);

@@ -278,7 +278,6 @@ private:
 
   // ====================== 【补充梯形加减速预计算】======================
   // 梯形加减速预计算参数（startMotion里一次性算出）
-  static constexpr uint32_t MIN_RAMP_STEPS = 4U; // 少于该步数，禁用加减速，直接恒速跑
   float motion_accel_step_s2_;       // 加速度：微步/s²
   float motion_start_step_s_;        // 起始速度：微步/s
   float motion_max_step_s_;          // 最高速度：微步/s
