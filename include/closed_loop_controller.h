@@ -244,7 +244,7 @@ private:
   volatile uint32_t motion_last_step_time_us_;
   volatile uint32_t motion_last_ramp_time_us_;
   volatile uint32_t motion_steps_emitted_;
-  volatile float motion_step_accumulator_;
+  volatile double motion_step_accumulator_;
   volatile int8_t motion_direction_;
   volatile bool motion_step_high_;
   volatile uint64_t step_pulse_width_ns_;

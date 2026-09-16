@@ -860,7 +860,7 @@ void ClosedLoopController::startMotion()
         accel_total_steps_ = 0U;
         decel_total_steps_ = 0U;
         cruise_total_steps_ = total_req_steps;
-        motion_ramp_stage_ = RAMP_STAGE_CRUISE;
+        motion_ramp_stage_ = RAMP_STAGE_CRUISE;  // 全程匀速
         steps_to_decel_ = 0xFFFFFFFFU; // 极大值：永远不会触发自动切入减速
         current_step_speed_ = motion_start_step_s_;
         motion_step_accumulator_ = 0.0f;
@@ -876,7 +876,7 @@ void ClosedLoopController::startMotion()
     {
         // 完整梯形：存在匀速区间
         cruise_total_steps_ = total_req_steps - accel_total_steps_ - decel_total_steps_;
-        motion_ramp_stage_ = RAMP_STAGE_ACCEL;
+        motion_ramp_stage_ = RAMP_STAGE_ACCEL;  // 开局加速
     }
     else
     {
@@ -890,7 +890,7 @@ void ClosedLoopController::startMotion()
         if(accel_total_steps_ < 1U) accel_total_steps_ = 1U; // 至少1步加速
         decel_total_steps_ = total_req_steps - accel_total_steps_;
         if(decel_total_steps_ < 1U) decel_total_steps_ = 1U; // 至少1步减速
-        motion_ramp_stage_ = RAMP_STAGE_ACCEL;
+        motion_ramp_stage_ = RAMP_STAGE_ACCEL;  // 开局加速
     }
 
     // 关键标记：剩余步数 <= steps_to_decel_ 就进入减速阶段
@@ -993,12 +993,13 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
   // 获取两次脉冲生成之间真实流逝的纳秒
   uint64_t delta_step_ns = now_ns - motion_last_step_time_ns_;
   // 时间单位换算：纳秒 → 秒
-  float dt_step_s = static_cast<float>(delta_step_ns) / 1.0e9f;
+  double dt_step_s = static_cast<float>(delta_step_ns) / 1.0e9f;
 
   // 累加本次时间内应该产生的步数（浮点数，允许小数累积）
   motion_step_accumulator_ += current_step_speed_ * dt_step_s;
 
   // 只要累加器≥1，代表需要输出1个step脉冲；循环批量输出，直到没有脉冲待输出或者全部脉冲发完
+  // TODO: 尽可能前移这部分，让now_ns更加即时
   while( (motion_step_accumulator_ >= 1.0f) && (motion_steps_emitted_ < motion_pulse_count_) )
   {
       // 调用驱动输出STEP脉冲；脉冲高电平宽度固定为step_pulse_width_ns_，底层实现ns延时
