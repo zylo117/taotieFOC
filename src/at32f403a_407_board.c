@@ -341,9 +341,11 @@ void delay_cycles(uint32_t cycles)
     }
     __asm__ volatile (
 
+
     "1: subs %0, #1\n"
         "bne 1b\n"
     ::
+
     "r"(cycles):"cc"
     );
 }

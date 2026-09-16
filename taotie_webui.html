@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
     <title>闭环驱动参数配置器</title>
     <style>
         :root {
@@ -451,12 +451,12 @@
             <div class="subtitle">TMC 兼容协议 + 闭环扩展参数 + 实时位置控制</div>
         </div>
         <div class="actions">
-            <button id="connectBtn" class="primary">连接串口</button>
+            <button class="primary" id="connectBtn">连接串口</button>
             <button id="readAllBtn">读取全部</button>
             <button id="writeAllBtn">应用配置</button>
-            <button id="tuneBtn" class="warn">自动整定</button>
-            <span id="faultBadge" class="badge ok"><span class="led"></span> 无故障</span>
-            <span id="connBadge" class="badge">未连接</span>
+            <button class="warn" id="tuneBtn">自动整定</button>
+            <span class="badge ok" id="faultBadge"><span class="led"></span> 无故障</span>
+            <span class="badge" id="connBadge">未连接</span>
         </div>
     </header>
 
@@ -469,12 +469,12 @@
             <div class="panel-body">
                 <div class="dial-panel">
                     <div class="dial-wrap">
-                        <div class="dial-ring" id="dial" aria-label="位置拨盘">
+                        <div aria-label="位置拨盘" class="dial-ring" id="dial">
                             <div class="dial-grid"></div>
-                            <svg class="dial-pointer-svg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"
-                                 aria-hidden="true">
+                            <svg aria-hidden="true" class="dial-pointer-svg" preserveAspectRatio="xMidYMid meet"
+                                 viewBox="0 0 100 100">
                                 <g id="dialPointerGroup">
-                                    <line class="dial-pointer-line" x1="50" y1="50" x2="50" y2="18"></line>
+                                    <line class="dial-pointer-line" x1="50" x2="50" y1="50" y2="18"></line>
                                     <circle class="dial-pointer-dot" cx="50" cy="50" r="3.5"></circle>
                                 </g>
                             </svg>
@@ -489,21 +489,21 @@
                     <div class="card">
                         <div class="field">
                             <label>目标位置 <span class="tiny" id="targetPosReadout">0°</span></label>
-                            <input id="targetPosInput" type="number" value="0" step="1"/>
+                            <input id="targetPosInput" step="1" type="number" value="0"/>
                         </div>
                     </div>
                     <div class="card">
                         <div class="field">
                             <label>当前位置 <span class="tiny" id="currentPosReadout">0°</span></label>
-                            <input id="currentPosDisplay" type="text" value="0°" readonly/>
+                            <input id="currentPosDisplay" readonly type="text" value="0°"/>
                         </div>
                     </div>
                 </div>
 
                 <div class="inline">
-                    <button id="sendTargetBtn" class="primary">发送目标位置</button>
+                    <button class="primary" id="sendTargetBtn">发送目标位置</button>
                     <button id="zeroBtn">归零</button>
-                    <button id="stopBtn" class="danger">停止</button>
+                    <button class="danger" id="stopBtn">停止</button>
                 </div>
 
                 <div class="status-line">
@@ -529,7 +529,7 @@
                         </div>
                         <div class="field">
                             <label>脉冲数（STEP 个数）</label>
-                            <input id="pulseCountInput" type="number" min="0" step="51200" value="2560000"/>
+                            <input id="pulseCountInput" min="0" step="51200" type="number" value="2560000"/>
                         </div>
                         <div class="field">
                             <label>运动模式</label>
@@ -544,28 +544,28 @@
                         </div>
                         <div class="field">
                             <label>窗口长度</label>
-                            <input id="waveWindowMsInput" type="number" min="2000" max="2000" step="50" value="2000"/>
+                            <input id="waveWindowMsInput" max="2000" min="2000" step="50" type="number" value="2000"/>
                         </div>
                         <div class="field">
                             <label>STEP 脉宽（ns）</label>
-                            <input id="stepPulseWidthNsInput" type="number" min="100" max="20000" step="20"
+                            <input id="stepPulseWidthNsInput" max="20000" min="100" step="20" type="number"
                                    value="100"/>
                         </div>
                     </div>
                     <div class="inline mt">
-                        <button id="startMotionBtn" class="primary">启动</button>
-                        <button id="stopMotionBtn" class="danger">停止</button>
+                        <button class="primary" id="startMotionBtn">启动</button>
+                        <button class="danger" id="stopMotionBtn">停止</button>
                         <button id="motorEnableBtn">电机使能（EN=0）</button>
                         <button id="motorDisableBtn">电机失能（EN=1）</button>
-                        <button id="singleStepBtn" class="warn">半圈正向脉冲</button>
+                        <button class="warn" id="singleStepBtn">半圈正向脉冲</button>
                         <button id="pauseWaveBtn">暂停查看</button>
                     </div>
                     <div class="tiny mt">说明：脉冲数固定按 256 细分角度基准计算，1.8° 电机每转 51200 个
                         STEP，与驱动器微步和插值设置无关。
                     </div>
                     <div class="tiny mt" id="motionDurationEstimate">预计时间：等待参数</div>
-                    <canvas id="motionWaveCanvas" width="620" height="220"
-                            style="width:100%;height:220px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"></canvas>
+                    <canvas height="220" id="motionWaveCanvas" style="width:100%;height:220px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"
+                            width="620"></canvas>
                 </div>
             </div>
         </section>
@@ -573,14 +573,14 @@
         <aside class="panel">
             <div class="panel-header">
                 <h3>串口与协议状态</h3>
-                <span id="protoBadge" class="badge">TMC 兼容</span>
+                <span class="badge" id="protoBadge">TMC 兼容</span>
             </div>
             <div class="panel-body">
                 <div class="grid-2">
                     <div class="field">
                         <label>串口波特率</label>
                         <select id="baudRate">
-                            <option value="115200" selected>115200</option>
+                            <option selected value="115200">115200</option>
                             <option value="57600">57600</option>
                             <option value="230400">230400</option>
                             <option value="921600">921600</option>
@@ -672,19 +672,19 @@
                             <h3 style="margin-top:0;">电机基础参数</h3>
                             <div class="field">
                                 <label>微步数</label>
-                                <input id="microsteps" type="number" value="32" min="2" max="256"/>
+                                <input id="microsteps" max="256" min="2" type="number" value="32"/>
                             </div>
                             <div class="field mt">
                                 <label>插值微步</label>
-                                <input id="interpMicrosteps" type="number" value="256" min="32" max="256"/>
+                                <input id="interpMicrosteps" max="256" min="32" type="number" value="256"/>
                             </div>
                             <div class="field mt">
                                 <label>运行电流（A）</label>
-                                <input id="runCurrent" type="number" value="0.8" min="0" max="3" step="0.01"/>
+                                <input id="runCurrent" max="3" min="0" step="0.01" type="number" value="0.8"/>
                             </div>
                             <div class="field mt">
                                 <label>保持电流（A）</label>
-                                <input id="holdCurrent" type="number" value="0.2" min="0" max="3" step="0.01"/>
+                                <input id="holdCurrent" max="3" min="0" step="0.01" type="number" value="0.2"/>
                             </div>
                             <div class="field mt">
                                 <label>静音模式</label>
@@ -699,19 +699,19 @@
                             <h3 style="margin-top:0;">闭环与速度参数</h3>
                             <div class="field">
                                 <label>当前位置（编码器）</label>
-                                <input id="encoderPos" type="number" value="0" step="1"/>
+                                <input id="encoderPos" step="1" type="number" value="0"/>
                             </div>
                             <div class="field mt">
                                 <label>目标速度（rps）</label>
-                                <input id="targetVelocity" type="number" value="1.2" step="0.01"/>
+                                <input id="targetVelocity" step="0.01" type="number" value="1.2"/>
                             </div>
                             <div class="field mt">
                                 <label>最大加速度（rps²）</label>
-                                <input id="maxAccel" type="number" value="3.5" step="0.01"/>
+                                <input id="maxAccel" step="0.01" type="number" value="3.5"/>
                             </div>
                             <div class="field mt">
                                 <label>跟随误差阈值</label>
-                                <input id="followError" type="number" value="0.25" step="0.01"/>
+                                <input id="followError" step="0.01" type="number" value="0.25"/>
                             </div>
                             <div class="field mt">
                                 <label>当前闭环使能</label>
@@ -736,15 +736,15 @@
                             <h3 style="margin-top:0;">位置 PID</h3>
                             <div class="field">
                                 <label>Kp</label>
-                                <input id="posKp" type="number" value="1.0" step="0.01"/>
+                                <input id="posKp" step="0.01" type="number" value="1.0"/>
                             </div>
                             <div class="field mt">
                                 <label>Ki</label>
-                                <input id="posKi" type="number" value="0.04" step="0.01"/>
+                                <input id="posKi" step="0.01" type="number" value="0.04"/>
                             </div>
                             <div class="field mt">
                                 <label>Kd</label>
-                                <input id="posKd" type="number" value="0.02" step="0.01"/>
+                                <input id="posKd" step="0.01" type="number" value="0.02"/>
                             </div>
                         </div>
 
@@ -752,15 +752,15 @@
                             <h3 style="margin-top:0;">速度 PID</h3>
                             <div class="field">
                                 <label>Kp</label>
-                                <input id="velKp" type="number" value="0.7" step="0.01"/>
+                                <input id="velKp" step="0.01" type="number" value="0.7"/>
                             </div>
                             <div class="field mt">
                                 <label>Ki</label>
-                                <input id="velKi" type="number" value="0.06" step="0.01"/>
+                                <input id="velKi" step="0.01" type="number" value="0.06"/>
                             </div>
                             <div class="field mt">
                                 <label>Kd</label>
-                                <input id="velKd" type="number" value="0.01" step="0.01"/>
+                                <input id="velKd" step="0.01" type="number" value="0.01"/>
                             </div>
                         </div>
                     </div>
@@ -782,15 +782,15 @@
                         <div class="card">
                             <div class="field">
                                 <label>最大速度（rps）</label>
-                                <input id="tuneMaxSpeed" type="number" value="2.0" step="0.01"/>
+                                <input id="tuneMaxSpeed" step="0.01" type="number" value="2.0"/>
                             </div>
                             <div class="field mt">
                                 <label>加速度（rps²）</label>
-                                <input id="tuneAccel" type="number" value="4.0" step="0.01"/>
+                                <input id="tuneAccel" step="0.01" type="number" value="4.0"/>
                             </div>
                             <div class="field mt">
                                 <label>增益步进</label>
-                                <input id="tuneGainStep" type="number" value="0.05" step="0.01"/>
+                                <input id="tuneGainStep" step="0.01" type="number" value="0.05"/>
                             </div>
                         </div>
 
@@ -807,8 +807,8 @@
                                 <div class="tiny">高：过大电流 / 高增益 / 高转速 / 长时间振荡</div>
                             </div>
                             <div class="inline mt">
-                                <button id="startTuneBtn" class="warn">开始整定</button>
-                                <button id="applyTuneBtn" class="danger">应用整定结果</button>
+                                <button class="warn" id="startTuneBtn">开始整定</button>
+                                <button class="danger" id="applyTuneBtn">应用整定结果</button>
                             </div>
                         </div>
                     </div>
@@ -1702,6 +1702,5 @@
             handleCustomTelemetry(frame);
         };
     </script>
-<div>
 </body>
 </html>
