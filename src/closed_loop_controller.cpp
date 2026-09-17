@@ -859,6 +859,10 @@ void ClosedLoopController::startMotion()
 
         uint32_t total_req_steps = motion_pulse_count_;
 
+        printf("total_req_steps: %lu\n", total_req_steps);
+        printf("accel_total_steps_: %lu\n", accel_total_steps_);
+        printf("decel_total_steps_: %lu\n", decel_total_steps_);
+
         // 判断：行程够不够跑完整梯形（加速+匀速+减速），不够就退化成三角曲线（无匀速段）
         if (accel_total_steps_ + decel_total_steps_ <= total_req_steps)
         {
@@ -880,13 +884,12 @@ void ClosedLoopController::startMotion()
             if (decel_total_steps_ < 1U) decel_total_steps_ = 1U; // 至少1步减速
             motion_ramp_stage_ = RAMP_STAGE_ACCEL; // 开局加速
 
-            printf("total_req_steps: %d\n", total_req_steps);
             printf("v_peak_sq: %.6f\n", v_peak_sq);
             printf("v_peak: %.6f\n", v_peak);
-            printf("accel_total_steps_: %d\n", accel_total_steps_);
-            printf("decel_total_steps_: %d\n", decel_total_steps_);
+            printf("accel_total_steps_: %lu\n", accel_total_steps_);
+            printf("decel_total_steps_: %lu\n", decel_total_steps_);
         }
-        printf("cruise_total_steps_: %d\n", cruise_total_steps_);
+        printf("cruise_total_steps_: %lu\n", cruise_total_steps_);
 
         // 关键标记：剩余步数 <= steps_to_decel_ 就进入减速阶段
         steps_to_decel_ = decel_total_steps_;
