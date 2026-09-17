@@ -548,7 +548,7 @@
                         </div>
                         <div class="field">
                             <label>STEP 脉宽（ns）</label>
-                            <input id="stepPulseWidthNsInput" max="20000" min="100" step="20" type="number"
+                            <input id="stepPulseWidthNsInput" max="20000" min="1" step="20" type="number"
                                    value="100"/>
                         </div>
                     </div>
@@ -672,7 +672,7 @@
                             <h3 style="margin-top:0;">电机基础参数</h3>
                             <div class="field">
                                 <label>微步数</label>
-                                <input id="microsteps" max="256" min="2" type="number" value="32"/>
+                                <input id="microsteps" max="256" min="2" type="number" value="64"/>
                             </div>
                             <div class="field mt">
                                 <label>插值微步</label>
@@ -1563,7 +1563,7 @@
             const motionMode = Number(document.getElementById('motionModeSelect').value || 0);
             const pulseCount = Math.max(2, Math.round(getEffectivePulseCount()));
             const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
-            const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 2), 100, 20000);
+            const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 2), 1, 20000);
             document.getElementById('waveWindowMsInput').value = String(windowMs);
             document.getElementById('stepPulseWidthNsInput').value = String(stepPulseWidthNs);
 
