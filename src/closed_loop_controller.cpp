@@ -915,6 +915,7 @@ void ClosedLoopController::startMotion()
  */
 void ClosedLoopController::rampUpdate(uint64_t now_ns)
 {
+    // 更新FOC频率信息
     updateLoopFrequencyStats(now_ns);
 
     if (driver_ == nullptr)
@@ -922,16 +923,16 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         return;
     }
 
+    // 更新编码器信息
     if (encoder_ != nullptr)
     {
         uint16_t encoder_raw = encoder_->readRawAngle();
         encoder_raw_angle_ = encoder_raw;
         magnetic_field_high_ = encoder_->magneticFieldHigh();
         magnetic_field_low_ = encoder_->magneticFieldLow();
-        // reportMagneticFieldAlarm(magnetic_field_high_ || magnetic_field_low_);
+        reportMagneticFieldAlarm(magnetic_field_high_ || magnetic_field_low_);
 
-        motion_position_deg_ = static_cast<float>(static_cast<int32_t>(encoder_raw) - static_cast<int32_t>(
-            encoder_zero_)) * 360.0f / 65536.0f;
+        motion_position_deg_ = static_cast<float>(encoder_zero_ - encoder_raw) * 360.0f / 65536.0f;
         if (motion_position_deg_ > 180.0f)
         {
             motion_position_deg_ -= 360.0f;
@@ -941,6 +942,9 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             motion_position_deg_ += 360.0f;
         }
     }
+
+    // 同步上传信息到串口
+    syncProtocolTelemetry();
 
     // 如果当前没有运动在运行，直接退出
     if (!motion_running_)
@@ -1041,6 +1045,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
 void ClosedLoopController::stopMotion()
 {
+    printf("motion stopping!!!");
     motion_running_ = false;
     motion_paused_ = false;
     motion_speed_rpm_ = 0.0f;
