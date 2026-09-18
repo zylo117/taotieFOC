@@ -72,12 +72,52 @@ extern "C" void USBFS_L_CAN1_RX0_IRQHandler(void)
     usbd_irq_handler(&g_usb_core);
 }
 
+
+// 全局统计变量，ISR写，任务读
+volatile uint64_t g_max_isr_cost_ns = 0;
+volatile uint64_t g_last_isr_cost_ns = 0;
+volatile uint32_t g_isr_overrun_cnt = 0;
+const uint64_t ISR_COST_WARN_NS = 25000ULL;  // 25us警告超时
 extern "C" void TMR4_GLOBAL_IRQHandler(void)
 {
     if (tmr_interrupt_flag_get(TMR4, TMR_OVF_FLAG) != RESET)
     {
-        BaseType_t higher_priority_task_woken = pdFALSE;
         tmr_flag_clear(TMR4, TMR_OVF_FLAG);
+
+        uint64_t isr_start_ns = get_hw_time_ns();
+
+        // ============【可选】全局关中断，完全隔绝所有中断，保证ns时序不被打断 ============
+        // 警告：关中断总时间必须 <25us！否则USB、串口、其它外设中断会积压出错
+        // __disable_irq();
+
+        uint64_t now_ns = get_hw_time_ns();
+        // ✅闭环rampUpdate（包含内部delay_ns自旋ns延时），运行在中断上下文
+        g_controller.rampUpdate(now_ns);
+
+        // 如果开启了全局关中断，务必配对打开
+        // __enable_irq();
+
+        uint64_t isr_end_ns = get_hw_time_ns();
+        uint64_t exec_cost_ns = isr_end_ns - isr_start_ns;
+
+        // 耗时超限告警，阈值设置25000ns =25us，小于50us定时器周期留安全余量
+        UBaseType_t isr_mask;
+        isr_mask = portSET_INTERRUPT_MASK_FROM_ISR();
+
+        g_last_isr_cost_ns = exec_cost_ns;
+        if(exec_cost_ns > g_max_isr_cost_ns)
+        {
+            g_max_isr_cost_ns = exec_cost_ns;
+        }
+        if(exec_cost_ns > ISR_COST_WARN_NS)
+        {
+            g_isr_overrun_cnt ++;
+        }
+
+        portCLEAR_INTERRUPT_MASK_FROM_ISR(isr_mask);
+
+        // 通知control_task任务：闭环计算已经完成，任务做非实时后处理，不跑时序
+        BaseType_t higher_priority_task_woken = pdFALSE;
         if (control_handler != NULL)
         {
             vTaskNotifyGiveFromISR(control_handler, &higher_priority_task_woken);
@@ -185,14 +225,33 @@ void led5_task_function(void* pvParameters)
 void control_task_function(void* pvParameters)
 {
     (void)pvParameters;
+    uint64_t local_max = 0;
+    uint32_t local_overrun = 0;
+
     while (1)
     {
-        // 等待TMR4定时器ISR通知，50μs唤醒一次（20kHz）
+        // 等待TMR4 ISR通知，50Hz*1000=20kHz唤醒
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-        // 读取真实硬件纳秒时间戳，传给rampUpdate
-        uint64_t now_ns = get_hw_time_ns();
-        g_controller.rampUpdate(now_ns);
+        // 拷贝volatile统计值，临界区保护简短读取
+        taskENTER_CRITICAL();
+        uint64_t current_cost = g_last_isr_cost_ns;
+        uint32_t overrun = g_isr_overrun_cnt;
+        taskEXIT_CRITICAL();
+
+        if(current_cost > local_max)
+        {
+            local_max = current_cost;
+        }
+        if(overrun != local_overrun)
+        {
+            local_overrun = overrun;
+            printf("[WARN] TMR4 ISR OVERRUN! count=%lu, last_cost_ns=%lu, max_cost_ns=%d\r\n",
+                   local_overrun, current_cost, local_max);
+        }
+
+        // 这里放闭环的非实时逻辑：状态判断、故障标记，**严禁任何delay_ns自旋**
+        // g_controller.postProcess();
     }
 }
 
@@ -204,9 +263,12 @@ void telemetry_task_function(void* pvParameters)
     while (1)
     {
         g_usb_bridge.sendTelemetry();
-        if ((xTaskGetTickCount() - last_log_tick) >= pdMS_TO_TICKS(500))
+        if ((xTaskGetTickCount() - last_log_tick) >= pdMS_TO_TICKS(2000))
         {
             const uint32_t angle_mdeg = (static_cast<uint32_t>(g_encoder.lastRawFrame()) * 360000UL) / 65536UL;
+            // uint64_t n = get_hw_time_ns();
+            // double nf = static_cast<double>(n) / 1e9;
+            // printf("Time: %.9f s\n", nf);
             printf("KTH7823: tx=0x%04X raw=0x%04X angle=%lu.%03lu MISO=%u MGH=%u MGL=%u reads=%lu ff=%lu 00=%lu\r\n",
                    g_encoder.lastTxFrame(), g_encoder.lastRawFrame(),
                    static_cast<unsigned long>(angle_mdeg / 1000UL),

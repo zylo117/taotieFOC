@@ -13,19 +13,55 @@
 
 #include "core_cm4.h"
 // AT32F403A system_core_clock 是内核时钟，例如 240000000UL
+// 使用 DWT (Data Watchpoint and Trace) 实现高精度纳秒计时
+// CYCCNT 是 32 位寄存器，@250MHz 时约 17.17 秒溢出一次
+// 通过跟踪溢出次数，可实现长期高精度时间戳（理论上可运行数千年）
+
+static uint32_t g_dwt_overflow_count = 0;
+static uint32_t g_last_dwt_value = 0;
+static bool g_dwt_initialized = false;
+
 static inline uint64_t get_hw_time_ns(void)
 {
-    static int dwt_init_done = 0;
-    if (!dwt_init_done)
+    // 首次初始化 DWT
+    if (!g_dwt_initialized)
     {
+        // 解锁 DEMCR 寄存器（TRCENA 位）
         CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+        // 清零 CYCCNT 计数器
         DWT->CYCCNT = 0;
+        // 使能 CYCCNT 计数器
         DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-        dwt_init_done = 1;
+
+        g_dwt_initialized = true;
+        g_last_dwt_value = 0;
+        g_dwt_overflow_count = 0;
     }
-    uint32_t cc = DWT->CYCCNT;
-    // ns = cycle * 1000 / (core_freq_MHz)
-    return ((uint64_t)cc * 1000ULL) / (system_core_clock / 1000000ULL);
+
+    // 读取当前 DWT cycle 计数（32 位）
+    uint32_t current_cc = DWT->CYCCNT;
+
+    // 检测 DWT 溢出：从大值跳变到小值表示发生了溢出
+    // 例如：0xFFFFFFFF → 0x00000000
+    if (current_cc < g_last_dwt_value)
+    {
+        g_dwt_overflow_count++;
+    }
+    g_last_dwt_value = current_cc;
+
+    // 系统核心频率参数
+    // @250MHz: 1 cycle = 4ns (10^9 / 250,000,000)
+    const uint32_t cpu_freq_hz = system_core_clock;
+    const uint64_t ns_per_cycle = 1000000000ULL / (uint64_t)cpu_freq_hz;
+
+    // 计算总周期数：溢出部分 + 当前周期内部分
+    // 使用 64 位整数避免溢出：total_cycles = overflow_count * 2^32 + current_cc
+    uint64_t total_cycles = ((uint64_t)g_dwt_overflow_count << 32) | (uint64_t)current_cc;
+
+    // 转换为纳秒
+    uint64_t time_ns = total_cycles * ns_per_cycle;
+
+    return time_ns;
 }
 
 // 自适应 PID 的基础参数配置。
@@ -130,7 +166,7 @@ public:
     void syncStepDirection();
 
     // 核心控制循环，负责读取编码器、计算误差、更新两层 PID，并输出修正。
-    void process(uint32_t time_us);
+    void process(uint64_t time_ns);
 
     // 设置目标位置步数。
     void setTargetStep(int32_t target_step);
@@ -235,6 +271,7 @@ private:
     volatile uint32_t motion_window_ms_;
     volatile MotionMode motion_mode_;
     volatile bool motion_running_;
+    volatile bool motion_first_run_;
     volatile bool motion_paused_;
     volatile float motion_speed_rpm_;
     volatile float encoder_speed_rpm_;
