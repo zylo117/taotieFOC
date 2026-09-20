@@ -165,8 +165,12 @@ public:
     // 读取外部步进方向/使能/步进状态，并同步到闭环控制器状态机。
     void syncStepDirection();
 
-    // 核心控制循环，负责读取编码器、计算误差、更新两层 PID，并输出修正。
-    void process(uint64_t time_ns);
+    // 从 TMR2 捕获环形 buffer 中消费 STEP/DIR 事件，并按事件顺序更新控制器状态。
+    void consumeQueuedStepDirEvents();
+
+    // 上位机模拟测试模式：不依赖真实输入捕获，而是生成事件并走同样的消费逻辑。
+    void setSimulationMode(bool enable);
+    bool isSimulationMode() const;
 
     // 设置目标位置步数。
     void setTargetStep(int32_t target_step);
@@ -270,6 +274,7 @@ private:
     volatile uint32_t motion_pulse_count_;
     volatile uint32_t motion_window_ms_;
     volatile MotionMode motion_mode_;
+    bool simulation_mode_;
     volatile bool motion_running_;
     volatile bool motion_first_run_;
     volatile bool motion_paused_;

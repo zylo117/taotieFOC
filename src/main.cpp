@@ -91,6 +91,7 @@ extern "C" void TMR4_GLOBAL_IRQHandler(void)
         // __disable_irq();
 
         uint64_t now_ns = get_hw_time_ns();
+        g_controller.consumeQueuedStepDirEvents();
         // ✅闭环rampUpdate（包含内部delay_ns自旋ns延时），运行在中断上下文
         g_controller.rampUpdate(now_ns);
 

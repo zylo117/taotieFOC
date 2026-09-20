@@ -551,6 +551,13 @@
                             <input id="stepPulseWidthNsInput" max="20000" min="1" step="20" type="number"
                                    value="100"/>
                         </div>
+                        <div class="field">
+                            <label>控制路径</label>
+                            <select id="simulationModeSelect">
+                                <option value="1" selected>MCU 内部脉冲测试（真实输出）</option>
+                                <option value="0">MCU 运动规划输出（真实输出）</option>
+                            </select>
+                        </div>
                     </div>
                     <div class="inline mt">
                         <button class="primary" id="startMotionBtn">启动</button>
@@ -909,6 +916,7 @@
             , MAGNETIC_HIGH: 0x117
             , MAGNETIC_LOW: 0x118
             , ENCODER_ZERO: 0x119
+            , HOST_SIMULATE: 0x127
         };
 
         const REGISTER_DESCRIPTIONS = new Map([
@@ -955,6 +963,7 @@
             , [0x124, ['0x0124', 'MOTOR_ENABLE', '电机使能，EN 输出低电平']]
             , [0x125, ['0x0125', 'MOTOR_DISABLE', '电机失能，EN 输出高电平']]
             , [0x126, ['0x0126', 'SINGLE_FORWARD_STEP', 'DIR 高电平并输出单个 STEP']]
+            , [CUSTOM_REGS.HOST_SIMULATE, ['0x0127', 'HOST_SIMULATE', '上位机模拟测试：1 开启，0 使用真实 STEP/DIR 输入']]
         ]);
 
         function log(message) {
@@ -1564,10 +1573,12 @@
             const pulseCount = Math.max(2, Math.round(getEffectivePulseCount()));
             const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
             const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 2), 1, 20000);
+            const simulationMode = Number(document.getElementById('simulationModeSelect').value || 1);
             document.getElementById('waveWindowMsInput').value = String(windowMs);
             document.getElementById('stepPulseWidthNsInput').value = String(stepPulseWidthNs);
 
             if (state.connected) {
+                await writeRegister(CUSTOM_REGS.HOST_SIMULATE, simulationMode);
                 await writeRegister(0x11A, startRpm);
                 await writeRegister(0x11B, maxRpm);
                 await writeRegister(0x11C, accelRpm);
@@ -1580,7 +1591,7 @@
 
             state.motionSpeedRpm = 0;
             state.waveHistory = [];
-            log(`[INFO] 发送测速控制：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms step=${stepPulseWidthNs}ns`);
+            log(`[INFO] ${simulationMode ? '上位机模拟' : '真实 STEP/DIR'}：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms step=${stepPulseWidthNs}ns`);
         }
 
         async function stopMotionTest() {
@@ -1633,15 +1644,17 @@
                 const maxRpm = Number(document.getElementById('maxRpmSelect').value);
                 const accelRpm = Number(document.getElementById('accelRpmSelect').value);
                 const motionMode = Number(document.getElementById('motionModeSelect').value);
+                const simulationMode = Number(document.getElementById('simulationModeSelect').value || 1);
 
                 // 下发运动相关参数寄存器
+                await writeRegister(CUSTOM_REGS.HOST_SIMULATE, simulationMode);
                 await writeRegister(0x11A, startRpm);
                 await writeRegister(0x11B, maxRpm);
                 await writeRegister(0x11C, accelRpm);
                 await writeRegister(0x11E, motionMode);
 
                 // 再触发单步正向脉冲命令寄存器
-                await sendManualMotionCommand(0x126, '单个正向 STEP：DIR=1（已同步速度/加速度参数）');
+                await sendManualMotionCommand(0x126, `${simulationMode ? '模拟' : '真实'}半圈正向脉冲：DIR=1（已同步速度/加速度参数）`);
             });
             document.getElementById('pauseWaveBtn').addEventListener('click', toggleWavePause);
             ['startRpmSelect', 'maxRpmSelect', 'accelRpmSelect', 'pulseCountInput', 'microsteps'].forEach((id) => {

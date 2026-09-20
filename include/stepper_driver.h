@@ -20,6 +20,15 @@
 
 namespace stepper_common
 {
+    struct StepDirCaptureEvent
+    {
+        uint32_t tick;
+        bool step;
+        bool dir;
+    };
+
+    constexpr uint32_t kStepDirCaptureRingDepth = 256U;
+
     // 向指定 GPIO 端口写入数字状态，封装了 AT32 的寄存器写法。
     void stepper_write_gpio(gpio_type* port, uint16_t pin, bool state);
     void stepper_write_gpio_high(gpio_type* port, uint16_t pin);
@@ -27,13 +36,22 @@ namespace stepper_common
     void stepper_write_gpio(gpio_type* port, uint16_t pin, bool state);
     void stepper_delay_us(uint32_t microseconds);
     void stepper_delay_ns(uint64_t nanoseconds);
+    void stepper_set_direction(bool direction);
+    void stepper_set_step_state(bool state);
+    void stepper_send_step_pulse(uint64_t width_ns);
     void stepper_init_motion_timer(void);
     void stepper_start_motion_timer(uint32_t step_hz, uint32_t pulse_width_us);
     void stepper_update_motion_timer(uint32_t step_hz, uint32_t pulse_width_us);
     void stepper_stop_motion_timer(void);
 
-    // 初始化步进输出相关 GPIO（STEP / DIR / EN），用于驱动器逻辑电平控制。
+    // 初始化步进输出相关 GPIO（STEP / DIR / EN），并配置 TMR2 的输入捕获/输出比较。
     void stepper_init_step_gpio(void);
+    void stepper_init_tmr2_capture_and_oc(void);
+    void stepper_init_capture_ring_buffer(void);
+    bool stepper_push_capture_event(uint32_t tick, bool step_state, bool dir_state);
+    bool stepper_pop_capture_event(StepDirCaptureEvent* output);
+    void stepper_reset_capture_ring_buffer(void);
+    void stepper_queue_simulated_pulse_sequence(uint32_t pulse_count, bool direction, uint32_t start_hz, uint32_t max_hz, uint32_t accel_hz_s);
 
     // 初始化 UART 相关 GPIO，用于 TMC 单线串口通信。
     void stepper_init_uart_gpio(gpio_type* port, uint16_t pin);

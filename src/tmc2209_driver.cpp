@@ -132,19 +132,15 @@ void Tmc2209Driver::setEnable(bool enable)
 void Tmc2209Driver::setDirection(bool direction)
 {
     direction_ = direction;
-    stepper_common::stepper_write_gpio(DIR_OUTPUT_PORT, DIR_OUT_PIN,
-                                       direction ? DIR_FORWARD_LEVEL : !DIR_FORWARD_LEVEL);
+    stepper_common::stepper_set_direction(direction);
 }
 
 void Tmc2209Driver::setStepState(bool state)
 {
-    stepper_common::stepper_write_gpio(STEP_OUTPUT_PORT, STEP_OUT_PIN, state);
+    stepper_common::stepper_set_step_state(state);
 }
 
 void Tmc2209Driver::sendStepPulse(uint64_t width_ns)
 {
-    stepper_common::stepper_write_gpio_high(STEP_OUTPUT_PORT, STEP_OUT_PIN);
-    delay_ns(width_ns);
-    stepper_common::stepper_write_gpio_low(STEP_OUTPUT_PORT, STEP_OUT_PIN);
-    delay_ns(width_ns);
+    stepper_common::stepper_send_step_pulse(width_ns);
 }
