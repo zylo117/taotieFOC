@@ -16,14 +16,46 @@ namespace
 {
     constexpr uint16_t kLedPin = GPIO_PINS_8;
 
-    constexpr uint32_t k_psc = 1249UL;          // PSC=1249 → tick = 10us
-    constexpr uint16_t fixed_pulse_width_tick = 200U; // 固定脉宽 2ms
+    // at32的定时器的外部时钟频率fTMRxCLK（我简称fT）是cpu频率除以2（APB总线），250Mhz就是125Mhz
+    // PSC决定了定时器计数频率，越大计数越快，fC = fT/(PSC+1)
+    // ARR指计数到多少就重置，指数到多少归零（周期），事件触发间隔T = (PSC+1)*(ARR+1) / fT
+    // CCR指数到多少触发通道动作（翻转 / 高低电平）
+    // 这里一定要搞明白，在SWITCH模式下，翻转状态是会继承的
+    // 也就是你下一次计数重置并不会重置翻转状态，而是继承
+    // 也就是SWITCH模式下CCR设置多少，占空比都是50%
+    // 而在PWM模式下，是会重置的，不会继承！！！
+
+    // PSC=13 → tick = 13/125M = 104ns
+    constexpr uint32_t k_psc = 1249UL;
+
+     // 固定脉宽6.82ms，脉宽tick数*psc对应的tick时间
+     // 脉宽tick数/ARR都不可以大于计数器最大范围，比如16位就是2^16，32位就2^32
+     // ARR需要大于脉宽tick数
+     // 脉宽tick数到达ARR位置就会重置电平
+
+    constexpr uint16_t fixed_pulse_width_tick = 3276;
+
+        /*
+        模式	极性	        CNT<CCR	    CNT≥CCR	    CCR处边沿	ARR(溢出归零)边沿
+        PWM‑A	ACTIVE_HIGH	    HIGH	    LOW	        下降沿	    上升沿
+        PWM‑A	ACTIVE_LOW	    LOW	        HIGH	    上升沿	    下降沿  // 就要这个，步进脉冲
+        PWM‑B	ACTIVE_HIGH	    LOW	        HIGH	    上升沿	    下降沿  // 就要这个，步进脉冲
+        PWM‑B	ACTIVE_LOW	    HIGH	    LOW	        下降沿	    上升沿
+        */
+     // 也就是说你用PWM-A + ACTIVE_LOW或者PWM‑B + ACTIVE_HIGH就可以模拟步进脉冲
+     // 从0计数到脉宽tick就是脉冲前，然后发生一个脉宽tick数长度的脉冲（上升沿）
+     // 但是会持续到ARR数，也就是说你要结束这个脉冲，只需要把ARR设置到脉宽稍微大一点（至少1）就行
+     // 但是有个问题，步进脉冲识别的是上升沿，也就是第一tick必须是低电平，也就是脉冲不可以一上来就是高电平
+     // 步进的方向可以一上来就高，脉冲不行，切记
+     // 也就是说：把ARR设置成你要触发的时间的位置的tick数+脉宽即可
 
     const uint16_t arr_seq[] =
     {
-        50000U,   // 500ms 慢闪
+        //依次执行下述周期
+        6553
+        // 50000U,   // 500ms 慢闪
         // 20000U,   // 200ms 慢闪
-        10000U   // 100ms 慢闪
+        // 10000U   // 100ms 慢闪
     };
     constexpr uint32_t pulse_count = sizeof(arr_seq)/sizeof(arr_seq[0]);
 
@@ -63,10 +95,10 @@ namespace
         output_config.oc_mode = TMR_OUTPUT_CONTROL_PWM_MODE_A;
         output_config.oc_idle_state = FALSE;
         output_config.occ_idle_state = FALSE;
-        output_config.oc_polarity = TMR_OUTPUT_ACTIVE_HIGH;
-        output_config.occ_polarity = TMR_OUTPUT_ACTIVE_HIGH;
+        output_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
+        // output_config.occ_polarity = TMR_OUTPUT_ACTIVE_LOW;  // 无效
         output_config.oc_output_state = TRUE;
-        output_config.occ_output_state = FALSE;
+        // output_config.occ_output_state = FALSE;  // 无效
 
         tmr_output_channel_config(TMR1, TMR_SELECT_CHANNEL_1, &output_config);
         tmr_channel_value_set(TMR1, TMR_SELECT_CHANNEL_1, fixed_pulse_width_tick);
@@ -155,21 +187,21 @@ int main(void)
 
     while (1)
     {
-        delay_ms(2);
-        tick_cnt++;
+        // delay_ms(2);
+        // tick_cnt++;
 
-        uint32_t now_pr = tmr_period_value_get(TMR1);
-        if(now_pr != last_pr)
-        {
-            last_pr = now_pr;
-            uart_send_str("PR = ");
-            uart_print_num(now_pr);
-        }
+        // uint32_t now_pr = tmr_period_value_get(TMR1);
+        // if(now_pr != last_pr)
+        // {
+        //     last_pr = now_pr;
+        //     uart_send_str("PR = ");
+        //     uart_print_num(now_pr);
+        // }
 
-        if(tick_cnt >= 500)
-        {
-            tick_cnt = 0;
-            uart_send_str("heartbeat\r\n");
-        }
+        // if(tick_cnt >= 500)
+        // {
+        //     tick_cnt = 0;
+        //     uart_send_str("heartbeat\r\n");
+        // }
     }
 }
