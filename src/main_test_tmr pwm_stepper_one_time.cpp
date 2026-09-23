@@ -1,5 +1,5 @@
 /**
- * TMR2 CH1 PA8 PWM‑A ACTIVE_LOW + FLEX‑DMA加载ARR序列
+ * TMR1 CH1 PA8 PWM‑A ACTIVE_LOW + FLEX‑DMA加载ARR序列
  * 新增宏 PWM_SEQ_ONE_SHOT_MODE
  *  0 = 原始模式：DMA循环，无限重复输出arr_seq序列（原有逻辑完全保留）
  *  1 = 单次序列模式：完整跑完一遍arr_seq全部脉冲，硬件自动停机，PA8拉低，不再输出
@@ -21,9 +21,7 @@
 
 namespace
 {
-    constexpr uint16_t kStepPin = GPIO_PINS_10;
-    constexpr uint16_t kDirPin = GPIO_PINS_11;
-    constexpr uint16_t kEnPin = GPIO_PINS_3;
+    constexpr uint16_t kLedPin = GPIO_PINS_8;
 
     // at32的定时器的外部时钟频率fTMRxCLK（我简称fT）是cpu频率除以2（APB总线），250Mhz就是125Mhz
     // PSC决定了定时器计数频率，越大计数越快，fC = fT/(PSC+1)
@@ -35,14 +33,14 @@ namespace
     // 而在PWM模式下，是会重置的，不会继承！！！
 
     // PSC=13 → tick = 13/125M = 104ns
-    constexpr uint32_t k_psc = 124;  // 0.8ns @ 125Mhz
+    constexpr uint32_t k_psc = 0;
 
      // 固定脉宽6.82ms，脉宽tick数*psc对应的tick时间
      // 脉宽tick数/ARR都不可以大于计数器最大范围，比如16位就是2^16，32位就2^32
      // ARR需要大于脉宽tick数
      // 脉宽tick数到达ARR位置就会重置电平
 
-    constexpr uint32_t fixed_pulse_width_tick = 15615;
+    constexpr uint16_t fixed_pulse_width_tick = 0;
 
         /*
         模式	极性	        CNT<CCR	    CNT≥CCR	    CCR处边沿	ARR(溢出归零)边沿
@@ -59,9 +57,31 @@ namespace
      // 也就是说：把ARR设置成你要触发的时间的位置的tick数+脉宽即可
 
     // 波形周期序列数组
-    const uint32_t arr_seq[] =
+    const uint16_t arr_seq[] =
     {
-        15624,
+        1,
+        // 50000,
+        // 40000,
+        // 30000,
+        // 20000,
+        // 10000,
+        // 5000,
+        // 2500,
+        // 1500,
+        // 500,
+        // 300,
+        // 200,
+        // 300,
+        // 500,
+        // 1500,
+        // 2500,
+        // 5000,
+        // 10000,
+        // 20000,
+        // 30000,
+        // 40000,
+        // 50000,
+        // 65535,
     };
     constexpr uint32_t pulse_count = sizeof(arr_seq)/sizeof(arr_seq[0]);
 
@@ -69,14 +89,14 @@ namespace
     {
         dma_init_type dma_conf;
         dma_default_para_init(&dma_conf);
-        dma_conf.peripheral_base_addr  = reinterpret_cast<uint32_t>(&TMR2->pr);
+        dma_conf.peripheral_base_addr  = reinterpret_cast<uint32_t>(&TMR1->pr);
         dma_conf.memory_base_addr      = reinterpret_cast<uint32_t>(arr_seq);
         dma_conf.direction             = DMA_DIR_MEMORY_TO_PERIPHERAL;
         dma_conf.buffer_size           = static_cast<uint16_t>(pulse_count);
         dma_conf.peripheral_inc_enable  = FALSE;
         dma_conf.memory_inc_enable      = TRUE;
-        dma_conf.peripheral_data_width  = DMA_PERIPHERAL_DATA_WIDTH_WORD; // 16位则是DMA_PERIPHERAL_DATA_WIDTH_HALFWORD
-        dma_conf.memory_data_width      = DMA_MEMORY_DATA_WIDTH_WORD; // 16位则是DMA_PERIPHERAL_DATA_WIDTH_HALFWORD
+        dma_conf.peripheral_data_width  = DMA_PERIPHERAL_DATA_WIDTH_HALFWORD;
+        dma_conf.memory_data_width      = DMA_MEMORY_DATA_WIDTH_HALFWORD;
 
 #if (PWM_SEQ_ONE_SHOT_MODE == 1U)
         // ==========单次序列模式：关闭DMA循环==========
@@ -87,7 +107,7 @@ namespace
 #endif
         dma_conf.priority               = DMA_PRIORITY_HIGH;
 
-        dma_flexible_config(DMA1, FLEX_CHANNEL2, DMA_FLEXIBLE_TMR2_OVERFLOW);
+        dma_flexible_config(DMA1, FLEX_CHANNEL2, DMA_FLEXIBLE_TMR1_OVERFLOW);
         dma_init(DMA1_CHANNEL2, &dma_conf);
 
 #if (PWM_SEQ_ONE_SHOT_MODE == 1U)
@@ -107,57 +127,40 @@ namespace
         tmr_output_config_type output_config;
         tmr_output_default_para_init(&output_config);
 
-        tmr_base_init(TMR2, arr_seq[0], static_cast<uint16_t>(k_psc));
-        tmr_cnt_dir_set(TMR2, TMR_COUNT_UP);
-        tmr_clock_source_div_set(TMR2, TMR_CLOCK_DIV1);
-        tmr_period_buffer_enable(TMR2, TRUE);  //ARR预装载，保证周期不会中途撕裂波形，高频必须打开
+        tmr_base_init(TMR1, arr_seq[0], static_cast<uint16_t>(k_psc));
+        tmr_cnt_dir_set(TMR1, TMR_COUNT_UP);
+        tmr_clock_source_div_set(TMR1, TMR_CLOCK_DIV1);
+        tmr_period_buffer_enable(TMR1, TRUE);  //ARR预装载，保证周期不会中途撕裂波形，高频必须打开
 
         output_config.oc_mode = TMR_OUTPUT_CONTROL_PWM_MODE_A;
         output_config.oc_idle_state = FALSE;
         output_config.occ_idle_state = FALSE;
         output_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
         output_config.oc_output_state = TRUE;
-        tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_3, &output_config);
+        tmr_output_channel_config(TMR1, TMR_SELECT_CHANNEL_1, &output_config);
 
-        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, fixed_pulse_width_tick);
-        tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, TRUE);
+        tmr_channel_value_set(TMR1, TMR_SELECT_CHANNEL_1, fixed_pulse_width_tick);
+        tmr_dma_request_enable(TMR1, TMR_OVERFLOW_DMA_REQUEST, TRUE);
 
-        tmr_counter_value_set(TMR2, 0U);
-        tmr_output_enable(TMR2, TRUE);
-        tmr_counter_enable(TMR2, TRUE);
+        tmr_counter_value_set(TMR1, 0U);
+        tmr_output_enable(TMR1, TRUE);
+        tmr_counter_enable(TMR1, TRUE);
     }
 
     void gpio_configuration()
     {
         gpio_init_type gpio_init_struct;
         gpio_default_para_init(&gpio_init_struct);
-
         crm_periph_clock_enable(CRM_GPIOA_PERIPH_CLOCK, TRUE);
-        crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);
-        crm_periph_clock_enable(CRM_TMR2_PERIPH_CLOCK, TRUE);
+        crm_periph_clock_enable(CRM_TMR1_PERIPH_CLOCK, TRUE);
         crm_periph_clock_enable(CRM_DMA1_PERIPH_CLOCK, TRUE);
 
-        gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
-        gpio_init_struct.gpio_pins = kDirPin;
-        gpio_init(GPIOB, &gpio_init_struct);
-        gpio_bits_set(GPIOB, kDirPin);
-
-        gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
-        gpio_init_struct.gpio_pins = kEnPin;
-        gpio_init(GPIOA, &gpio_init_struct);
-        gpio_bits_reset(GPIOA, kEnPin);
-
-        gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
-        gpio_init_struct.gpio_pins = LED5_PIN;
-        gpio_init(GPIOA, &gpio_init_struct);
-        gpio_bits_set(GPIOA, LED5_PIN);
-
-        gpio_init_struct.gpio_pins = kStepPin;
+        gpio_init_struct.gpio_pins = kLedPin;
         gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
         gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
         gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
         gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-        gpio_init(GPIOB, &gpio_init_struct);
+        gpio_init(GPIOA, &gpio_init_struct);
     }
 
 #if ENABLE_UART_DEBUG
@@ -208,10 +211,10 @@ extern "C" void DMA1_Channel2_IRQHandler(void)
         //1.关闭DMA通道
         dma_channel_enable(DMA1_CHANNEL2, FALSE);
         //2.关闭TMR计数器
-        tmr_counter_enable(TMR2, FALSE);
+        tmr_counter_enable(TMR1, FALSE);
         //3.强制CH1输出拉低，PA8置低电平
-        tmr_force_output_set(TMR2, TMR_SELECT_CHANNEL_3, TMR_FORCE_OUTPUT_LOW);
-        tmr_output_enable(TMR2, FALSE);
+        tmr_force_output_set(TMR1, TMR_SELECT_CHANNEL_1, TMR_FORCE_OUTPUT_LOW);
+        tmr_output_enable(TMR1, FALSE);
 
 #if ENABLE_UART_DEBUG
         uart_send_str("\r\n==== PWM SEQ ONE‑SHOT FINISHED! TMR STOPPED ====\r\n");
@@ -225,10 +228,6 @@ int main(void)
     system_clock_config();
     at32_board_init();
     nvic_priority_group_config(NVIC_PRIORITY_GROUP_4);
-    
-    tmr_32_bit_function_enable(TMR2, TRUE);  // 32位定时器特殊函数
-    // TMR2 CH3/CH4 are exposed on PB10/PB11 only after this remap is enabled.
-    gpio_pin_remap_config(TMR2_MUX_11, TRUE);
 
     gpio_configuration();
 #if ENABLE_UART_DEBUG
@@ -245,7 +244,7 @@ int main(void)
 
 #if ENABLE_UART_DEBUG
     uart_send_str("PR init = ");
-    uart_print_num(tmr_period_value_get(TMR2));
+    uart_print_num(tmr_period_value_get(TMR1));
 #endif
 
     while (1)
