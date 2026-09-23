@@ -35,14 +35,14 @@ namespace
     // 而在PWM模式下，是会重置的，不会继承！！！
 
     // PSC=13 → tick = 13/125M = 104ns
-    constexpr uint32_t k_psc = 124;  // 0.8ns @ 125Mhz
+    constexpr uint32_t k_psc = 0;  // 8ns @ 125Mhz
 
      // 固定脉宽6.82ms，脉宽tick数*psc对应的tick时间
      // 脉宽tick数/ARR都不可以大于计数器最大范围，比如16位就是2^16，32位就2^32
      // ARR需要大于脉宽tick数
      // 脉宽tick数到达ARR位置就会重置电平
 
-    constexpr uint32_t fixed_pulse_width_tick = 15615;
+    constexpr uint32_t fixed_pulse_width_tick = 12;  // 脉宽或负脉宽（取决于你，先触发就脉宽，先等待后触发就是负脉宽）
 
         /*
         模式	极性	        CNT<CCR	    CNT≥CCR	    CCR处边沿	ARR(溢出归零)边沿
@@ -61,7 +61,11 @@ namespace
     // 波形周期序列数组
     const uint32_t arr_seq[] =
     {
-        15624,
+        1953124,
+        853124,
+        43124,
+        23124,
+        13124,
     };
     constexpr uint32_t pulse_count = sizeof(arr_seq)/sizeof(arr_seq[0]);
 
@@ -107,7 +111,7 @@ namespace
         tmr_output_config_type output_config;
         tmr_output_default_para_init(&output_config);
 
-        tmr_base_init(TMR2, arr_seq[0], static_cast<uint16_t>(k_psc));
+        tmr_base_init(TMR2, arr_seq[0], k_psc);
         tmr_cnt_dir_set(TMR2, TMR_COUNT_UP);
         tmr_clock_source_div_set(TMR2, TMR_CLOCK_DIV1);
         tmr_period_buffer_enable(TMR2, TRUE);  //ARR预装载，保证周期不会中途撕裂波形，高频必须打开
@@ -132,10 +136,14 @@ namespace
         gpio_init_type gpio_init_struct;
         gpio_default_para_init(&gpio_init_struct);
 
+        crm_periph_clock_enable(CRM_IOMUX_PERIPH_CLOCK, TRUE); // 非常重要，重映射io必须有这句话
         crm_periph_clock_enable(CRM_GPIOA_PERIPH_CLOCK, TRUE);
         crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);
         crm_periph_clock_enable(CRM_TMR2_PERIPH_CLOCK, TRUE);
         crm_periph_clock_enable(CRM_DMA1_PERIPH_CLOCK, TRUE);
+
+        // TMR2 CH3/CH4 are exposed on PB10/PB11 only after this remap is enabled.
+        gpio_pin_remap_config(TMR2_MUX_11, TRUE);
 
         gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
         gpio_init_struct.gpio_pins = kDirPin;
@@ -227,8 +235,6 @@ int main(void)
     nvic_priority_group_config(NVIC_PRIORITY_GROUP_4);
     
     tmr_32_bit_function_enable(TMR2, TRUE);  // 32位定时器特殊函数
-    // TMR2 CH3/CH4 are exposed on PB10/PB11 only after this remap is enabled.
-    gpio_pin_remap_config(TMR2_MUX_11, TRUE);
 
     gpio_configuration();
 #if ENABLE_UART_DEBUG
