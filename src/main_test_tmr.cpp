@@ -34,7 +34,8 @@ namespace
     // 也就是SWITCH模式下CCR设置多少，占空比都是50%
     // 而在PWM模式下，是会重置的，不会继承！！！
 
-    // PSC=13 → tick = 13/125M = 104ns
+    // PSC=12 → tick = (12+1)/125M = 104ns
+    // PSC=0 → tick = (0+1)/125M = 8ns
     constexpr uint32_t k_psc = 0;  // 8ns @ 125Mhz
 
      // 固定脉宽6.82ms，脉宽tick数*psc对应的tick时间
@@ -42,7 +43,9 @@ namespace
      // ARR需要大于脉宽tick数
      // 脉宽tick数到达ARR位置就会重置电平
 
-    constexpr uint32_t fixed_pulse_width_tick = 12;  // 脉宽或负脉宽（取决于你，先触发就脉宽，先等待后触发就是负脉宽）
+     // 脉宽或负脉宽（取决于你，先触发就脉宽，先等待后触发就是负脉宽）
+     // 脉宽tick 12，就是（12+1）,13 tick，也就是104ns
+    constexpr uint32_t fixed_pulse_width_tick = 12; 
 
         /*
         模式	极性	        CNT<CCR	    CNT≥CCR	    CCR处边沿	ARR(溢出归零)边沿
@@ -58,7 +61,9 @@ namespace
      // 步进的方向可以一上来就高，脉冲不行，切记
      // 也就是说：把ARR设置成你要触发的时间的位置的tick数+脉宽即可
 
-    // 波形周期序列数组
+    // 波形周期序列数组ARR
+    // 每个周期代表这次脉冲持续多久才拉低（结束），也就是ARR越小，脉冲越密集
+    // 也就是说可以通过这个来调整步进电机的转速/加速度
     const uint32_t arr_seq[] =
     {
         1953124,
@@ -66,6 +71,12 @@ namespace
         43124,
         23124,
         13124,
+        5124,
+        2524,
+        1024,
+        512,
+        256,
+        128,
     };
     constexpr uint32_t pulse_count = sizeof(arr_seq)/sizeof(arr_seq[0]);
 
