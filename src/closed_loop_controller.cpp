@@ -13,6 +13,11 @@
 
 namespace
 {
+    constexpr uint32_t kHardwareStepPeriodTick = 9765UL;
+    constexpr uint32_t kHardwarePulseWidthTick = 25UL;
+    constexpr uint32_t kHardwareGuardTicks = 2UL;
+    constexpr uint32_t kHardwareStepWindowLimit = 12800UL;
+
     uint16_t clampMicrosteps(uint16_t value)
     {
         if (value < 2U)
@@ -930,23 +935,44 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     // TODO: 尽可能前移这部分，让now_ns更加即时
     while ((motion_step_accumulator_ >= 1.0f) && (motion_steps_emitted_ < motion_pulse_count_))
     {
-        // 调用驱动输出STEP脉冲；脉冲高电平宽度固定为step_pulse_width_ns_，底层实现ns延时
+        const uint32_t remaining = motion_pulse_count_ - motion_steps_emitted_;
+        const uint32_t due_steps = static_cast<uint32_t>(motion_step_accumulator_);
+        const uint32_t burst_steps = (due_steps < remaining) ? due_steps : remaining;
+        const uint32_t safe_burst = (burst_steps > kHardwareStepWindowLimit) ? kHardwareStepWindowLimit : burst_steps;
+
         if (simulation_mode_)
         {
-            stepper_common::stepper_push_capture_event(static_cast<uint32_t>(now_ns / 1000ULL), true,
-                                                       motion_direction_ > 0);
+            for (uint32_t i = 0U; i < safe_burst; ++i)
+            {
+                stepper_common::stepper_push_capture_event(static_cast<uint32_t>(now_ns / 1000ULL), true,
+                                                           motion_direction_ > 0);
+            }
+            motion_steps_emitted_ += safe_burst;
+            motion_step_accumulator_ -= static_cast<float>(safe_burst);
+            if (motion_steps_emitted_ >= motion_pulse_count_)
+            {
+                break;
+            }
+            continue;
         }
-        else
+
+        if (safe_burst > 0U)
         {
-            driver_->sendStepPulse(step_pulse_width_ns_);
-            motion_steps_emitted_++;
+            const bool direction = (motion_direction_ > 0);
+            if (stepper_common::stepper_plan_dma_window(safe_burst, direction,
+                                                       kHardwareStepPeriodTick,
+                                                       kHardwarePulseWidthTick,
+                                                       kHardwareGuardTicks))
+            {
+                motion_steps_emitted_ += safe_burst;
+                motion_step_accumulator_ -= static_cast<float>(safe_burst);
+                continue;
+            }
         }
-        // 已经消耗1步，累加器减去1，小数部分保留，留给下一次调度
+
+        driver_->sendStepPulse(step_pulse_width_ns_);
+        motion_steps_emitted_++;
         motion_step_accumulator_ -= 1.0f;
-        if (simulation_mode_)
-        {
-            break;
-        }
     }
 
     // 更新脉冲模块的时间戳

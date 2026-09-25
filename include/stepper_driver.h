@@ -39,6 +39,11 @@ namespace stepper_common
     void stepper_set_direction(bool direction);
     void stepper_set_step_state(bool state);
     void stepper_send_step_pulse(uint64_t width_ns);
+    bool stepper_plan_dma_window(uint32_t pulse_count,
+                                bool direction,
+                                uint32_t step_period_tick,
+                                uint32_t pulse_width_tick,
+                                uint32_t guard_ticks);
     void stepper_init_motion_timer(void);
     void stepper_start_motion_timer(uint32_t step_hz, uint32_t pulse_width_us);
     void stepper_update_motion_timer(uint32_t step_hz, uint32_t pulse_width_us);

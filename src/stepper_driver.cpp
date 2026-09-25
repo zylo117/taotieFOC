@@ -6,12 +6,15 @@ namespace stepper_common
     namespace
     {
         bool motion_timer_running = false;
+        bool g_hardware_timer_ready = false;
         constexpr uint64_t default_step_pulse_width_ns = 2000ULL;
+        constexpr uint32_t kMaxHardwareWindowPulses = 12800U;
 
         StepDirCaptureEvent g_step_dir_ring[kStepDirCaptureRingDepth];
         volatile uint32_t g_ring_head = 0U;
         volatile uint32_t g_ring_tail = 0U;
         volatile uint32_t g_ring_count = 0U;
+        uint32_t g_dma_window_arr[kMaxHardwareWindowPulses];
     }
 
     void stepper_write_gpio_high(gpio_type* port, uint16_t pin) { port->scr = pin; }
@@ -49,27 +52,78 @@ namespace stepper_common
         return ticks > 0xFFFFFFFFULL ? 0xFFFFFFFFU : static_cast<uint32_t>(ticks);
     }
 
+    static void stepper_configure_hardware_timer2(void)
+    {
+        if (g_hardware_timer_ready)
+        {
+            return;
+        }
+
+        crm_periph_clock_enable(CRM_IOMUX_PERIPH_CLOCK, TRUE);
+        crm_periph_clock_enable(CRM_GPIOA_PERIPH_CLOCK, TRUE);
+        crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);
+        crm_periph_clock_enable(CRM_TMR2_PERIPH_CLOCK, TRUE);
+        crm_periph_clock_enable(CRM_DMA1_PERIPH_CLOCK, TRUE);
+
+        gpio_pin_remap_config(TMR2_MUX_11, TRUE);
+
+        gpio_init_type gpio_init_struct;
+        gpio_default_para_init(&gpio_init_struct);
+        gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
+        gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
+        gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
+        gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
+        gpio_init_struct.gpio_pins = STEP_OUT_PIN | DIR_OUT_PIN;
+        gpio_init(STEP_OUTPUT_PORT, &gpio_init_struct);
+
+        tmr_output_config_type ch3_cfg;
+        tmr_output_default_para_init(&ch3_cfg);
+        ch3_cfg.oc_mode = TMR_OUTPUT_CONTROL_PWM_MODE_A;
+        ch3_cfg.oc_idle_state = FALSE;
+        ch3_cfg.occ_idle_state = FALSE;
+        ch3_cfg.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
+        ch3_cfg.oc_output_state = TRUE;
+        tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_3, &ch3_cfg);
+        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, 1U);
+        tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
+
+        tmr_output_config_type ch4_cfg;
+        tmr_output_default_para_init(&ch4_cfg);
+        ch4_cfg.oc_mode = TMR_OUTPUT_CONTROL_FORCE_LOW;
+        ch4_cfg.oc_idle_state = FALSE;
+        ch4_cfg.occ_idle_state = FALSE;
+        ch4_cfg.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
+        ch4_cfg.oc_output_state = TRUE;
+        tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_4, &ch4_cfg);
+        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
+        tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_4, TRUE);
+
+        tmr_base_init(TMR2, 1U, 0U);
+        tmr_cnt_dir_set(TMR2, TMR_COUNT_UP);
+        tmr_clock_source_div_set(TMR2, TMR_CLOCK_DIV1);
+        tmr_period_buffer_enable(TMR2, TRUE);
+        tmr_output_enable(TMR2, TRUE);
+        g_hardware_timer_ready = true;
+    }
+
     static void stepper_config_direction_output(bool direction)
     {
-        tmr_output_config_type output_config;
-        tmr_output_default_para_init(&output_config);
-        output_config.oc_mode = direction ? TMR_OUTPUT_CONTROL_FORCE_HIGH : TMR_OUTPUT_CONTROL_FORCE_LOW;
-        output_config.oc_idle_state = FALSE;
-        output_config.oc_output_state = TRUE;
-        output_config.oc_polarity = TMR_OUTPUT_ACTIVE_HIGH;
-        tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_4, &output_config);
-        tmr_output_channel_buffer_enable(TMR2, TMR_SELECT_CHANNEL_4, TRUE);
-        tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_4, TRUE);
+        stepper_configure_hardware_timer2();
+        tmr_counter_enable(TMR2, FALSE);
+        tmr_output_channel_mode_select(TMR2, TMR_SELECT_CHANNEL_4,
+            direction ? TMR_OUTPUT_CONTROL_FORCE_HIGH : TMR_OUTPUT_CONTROL_FORCE_LOW);
     }
 
     static void stepper_config_step_output(uint32_t pulse_ticks)
     {
+        stepper_configure_hardware_timer2();
         tmr_output_config_type output_config;
         tmr_output_default_para_init(&output_config);
         output_config.oc_mode = TMR_OUTPUT_CONTROL_PWM_MODE_A;
         output_config.oc_idle_state = FALSE;
+        output_config.occ_idle_state = FALSE;
+        output_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
         output_config.oc_output_state = TRUE;
-        output_config.oc_polarity = TMR_OUTPUT_ACTIVE_HIGH;
         tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_3, &output_config);
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, pulse_ticks);
         tmr_output_channel_buffer_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
@@ -78,7 +132,6 @@ namespace stepper_common
 
     void stepper_set_direction(bool direction)
     {
-        tmr_counter_enable(TMR2, FALSE);
         stepper_config_direction_output(direction ? DIR_FORWARD_LEVEL : !DIR_FORWARD_LEVEL);
     }
 
@@ -96,10 +149,18 @@ namespace stepper_common
 
     void stepper_send_step_pulse(uint64_t width_ns)
     {
+        stepper_configure_hardware_timer2();
+
         uint32_t pulse_ticks = stepper_ns_to_ticks(width_ns < 100ULL ? 100ULL : width_ns);
+        if (pulse_ticks < 2U)
+        {
+            pulse_ticks = 2U;
+        }
+
+        uint32_t arr_value = pulse_ticks + 1U;
         tmr_counter_enable(TMR2, FALSE);
         tmr_counter_value_set(TMR2, 0U);
-        tmr_base_init(TMR2, pulse_ticks, 0U);
+        tmr_base_init(TMR2, arr_value, 0U);
         tmr_cnt_dir_set(TMR2, TMR_COUNT_UP);
         tmr_clock_source_div_set(TMR2, TMR_CLOCK_DIV1);
         tmr_period_buffer_enable(TMR2, TRUE);
@@ -107,6 +168,68 @@ namespace stepper_common
         tmr_one_cycle_mode_enable(TMR2, TRUE);
         tmr_output_enable(TMR2, TRUE);
         tmr_counter_enable(TMR2, TRUE);
+    }
+
+    bool stepper_plan_dma_window(uint32_t pulse_count,
+                                bool direction,
+                                uint32_t step_period_tick,
+                                uint32_t pulse_width_tick,
+                                uint32_t guard_ticks)
+    {
+        if (pulse_count == 0U || pulse_count > kMaxHardwareWindowPulses)
+        {
+            return false;
+        }
+
+        stepper_configure_hardware_timer2();
+        stepper_set_direction(direction);
+
+        uint32_t safe_guard_ticks = (guard_ticks > 1U) ? guard_ticks - 1U : 1U;
+        for (uint32_t i = 0U; i < pulse_count; ++i)
+        {
+            g_dma_window_arr[i] = step_period_tick;
+        }
+
+        if (pulse_count > 1U)
+        {
+            g_dma_window_arr[pulse_count - 1U] = safe_guard_ticks;
+        }
+        else
+        {
+            g_dma_window_arr[0U] = safe_guard_ticks;
+        }
+
+        dma_init_type dma_conf;
+        dma_default_para_init(&dma_conf);
+        dma_conf.direction = DMA_DIR_MEMORY_TO_PERIPHERAL;
+        dma_conf.buffer_size = static_cast<uint16_t>(pulse_count);
+        dma_conf.peripheral_inc_enable = FALSE;
+        dma_conf.memory_inc_enable = TRUE;
+        dma_conf.peripheral_data_width = DMA_PERIPHERAL_DATA_WIDTH_WORD;
+        dma_conf.memory_data_width = DMA_MEMORY_DATA_WIDTH_WORD;
+        dma_conf.loop_mode_enable = FALSE;
+        dma_conf.priority = DMA_PRIORITY_HIGH;
+        dma_conf.peripheral_base_addr = reinterpret_cast<uint32_t>(&TMR2->pr);
+        dma_conf.memory_base_addr = reinterpret_cast<uint32_t>(g_dma_window_arr);
+
+        dma_flexible_config(DMA1, FLEX_CHANNEL2, DMA_FLEXIBLE_TMR2_OVERFLOW);
+        dma_init(DMA1_CHANNEL2, &dma_conf);
+
+        dma_flag_clear(DMA1_FDT2_FLAG);
+        dma_channel_enable(DMA1_CHANNEL2, TRUE);
+
+        const uint32_t pulse_ticks = (pulse_width_tick > 0U) ? pulse_width_tick : 25U;
+        tmr_counter_enable(TMR2, FALSE);
+        tmr_counter_value_set(TMR2, 0U);
+        tmr_base_init(TMR2, step_period_tick, 0U);
+        tmr_cnt_dir_set(TMR2, TMR_COUNT_UP);
+        tmr_clock_source_div_set(TMR2, TMR_CLOCK_DIV1);
+        tmr_period_buffer_enable(TMR2, TRUE);
+        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, pulse_ticks);
+        tmr_output_enable(TMR2, TRUE);
+        tmr_counter_enable(TMR2, TRUE);
+
+        return true;
     }
 
     void stepper_init_capture_ring_buffer(void)
@@ -185,7 +308,9 @@ namespace stepper_common
             return;
         }
 
+        crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);
         crm_periph_clock_enable(CRM_TMR2_PERIPH_CLOCK, TRUE);
+        // TMR2 CH3/CH4 are exposed on PB10/PB11 only after this remap is enabled.
         gpio_pin_remap_config(TMR2_MUX_11, TRUE);
 
         gpio_init_type gpio_init_struct;
@@ -247,6 +372,9 @@ namespace stepper_common
 
     void stepper_init_tmr2_capture_and_oc(void)
     {
+        // TMR2 CH3/CH4 are routed to PB10/PB11 only after the remap is applied.
+        gpio_pin_remap_config(TMR2_MUX_11, TRUE);
+
         // Configure TMR2 CH1 = DIR capture on PA15, CH2 = STEP capture on PB3.
         tmr_input_config_type ic_init;
         tmr_input_default_para_init(&ic_init);
