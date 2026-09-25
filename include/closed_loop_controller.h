@@ -286,6 +286,8 @@ private:
     volatile uint32_t motion_last_step_time_us_;
     volatile uint32_t motion_last_ramp_time_us_;
     volatile uint32_t motion_steps_emitted_;
+    volatile uint32_t motion_dma_pending_steps_;
+    stepper_common::StepPulseScheduleEntry captured_step_schedule_[stepper_common::kStepDirCaptureRingDepth];
     volatile double motion_step_accumulator_;
     volatile int8_t motion_direction_;
     volatile bool motion_step_high_;

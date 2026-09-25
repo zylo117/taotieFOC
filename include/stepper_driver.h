@@ -20,11 +20,23 @@
 
 namespace stepper_common
 {
+    constexpr uint64_t kStepPulseMinimumNs = 200ULL;
+    constexpr uint64_t kStepPulseMaximumNs = 20000ULL;
+    constexpr uint64_t kDefaultStepPulseWidthNs = 2000ULL;
+    constexpr uint64_t kDirectionSetupHoldMinimumNs = 20ULL;
+    constexpr uint32_t kMaxHardwareWindowPulses = 12800U;
+
     struct StepDirCaptureEvent
     {
         uint32_t tick;
         bool step;
         bool dir;
+    };
+
+    struct StepPulseScheduleEntry
+    {
+        uint32_t timestamp_cycles;
+        bool direction;
     };
 
     constexpr uint32_t kStepDirCaptureRingDepth = 256U;
@@ -39,11 +51,15 @@ namespace stepper_common
     void stepper_set_direction(bool direction);
     void stepper_set_step_state(bool state);
     void stepper_send_step_pulse(uint64_t width_ns);
+    uint32_t stepper_timer_clock_hz(void);
+    bool stepper_dma_window_is_busy(void);
+    bool stepper_plan_dma_capture_sequence(const StepPulseScheduleEntry* pulses,
+                                           uint32_t pulse_count,
+                                           uint64_t pulse_width_ns);
     bool stepper_plan_dma_window(uint32_t pulse_count,
                                 bool direction,
-                                uint32_t step_period_tick,
-                                uint32_t pulse_width_tick,
-                                uint32_t guard_ticks);
+                                uint32_t step_hz,
+                                uint64_t pulse_width_ns);
     void stepper_init_motion_timer(void);
     void stepper_start_motion_timer(uint32_t step_hz, uint32_t pulse_width_us);
     void stepper_update_motion_timer(uint32_t step_hz, uint32_t pulse_width_us);

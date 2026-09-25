@@ -548,8 +548,8 @@
                         </div>
                         <div class="field">
                             <label>STEP 脉宽（ns）</label>
-                            <input id="stepPulseWidthNsInput" max="20000" min="1" step="20" type="number"
-                                   value="100"/>
+                            <input id="stepPulseWidthNsInput" max="20000" min="200" step="20" type="number"
+                                   value="200"/>
                         </div>
                         <div class="field">
                             <label>控制路径</label>
@@ -1572,7 +1572,7 @@
             const motionMode = Number(document.getElementById('motionModeSelect').value || 0);
             const pulseCount = Math.max(2, Math.round(getEffectivePulseCount()));
             const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
-            const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 2), 1, 20000);
+            const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 200), 200, 20000);
             const simulationMode = Number(document.getElementById('simulationModeSelect').value || 1);
             document.getElementById('waveWindowMsInput').value = String(windowMs);
             document.getElementById('stepPulseWidthNsInput').value = String(stepPulseWidthNs);
@@ -1584,9 +1584,9 @@
                 await writeRegister(0x11C, accelRpm);
                 await writeRegister(0x11D, pulseCount);
                 await writeRegister(0x11E, motionMode);
+                await writeRegister(0x123, stepPulseWidthNs);
                 await writeRegister(0x11F, 1);
                 await writeRegister(0x122, windowMs);
-                await writeRegister(0x123, stepPulseWidthNs);
             }
 
             state.motionSpeedRpm = 0;
@@ -1652,6 +1652,8 @@
                 await writeRegister(0x11B, maxRpm);
                 await writeRegister(0x11C, accelRpm);
                 await writeRegister(0x11E, motionMode);
+                const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 200), 200, 20000);
+                await writeRegister(0x123, stepPulseWidthNs);
 
                 // 再触发单步正向脉冲命令寄存器
                 await sendManualMotionCommand(0x126, `${simulationMode ? '模拟' : '真实'}半圈正向脉冲：DIR=1（已同步速度/加速度参数）`);

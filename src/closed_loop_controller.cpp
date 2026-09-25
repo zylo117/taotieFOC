@@ -5,19 +5,11 @@
 #define STEP_EDGE_TIMEOUT_US    200U
 #define STEP_PERIOD_US_DEFAULT  5000U
 #define FULL_STEPS_PER_ROUND    200U  // 1.8度步进
-#define MIN_STEP_PULSE_NS       100ULL
-#define DEFAULT_STEP_PULSE_NS   2000ULL
-#define MAX_STEP_PULSE_NS       20000ULL
 #define MAX_PID_OUTPUT          2000.0f
 #define MAX_I_TERM              100.0f
 
 namespace
 {
-    constexpr uint32_t kHardwareStepPeriodTick = 9765UL;
-    constexpr uint32_t kHardwarePulseWidthTick = 25UL;
-    constexpr uint32_t kHardwareGuardTicks = 2UL;
-    constexpr uint32_t kHardwareStepWindowLimit = 12800UL;
-
     uint16_t clampMicrosteps(uint16_t value)
     {
         if (value < 2U)
@@ -46,13 +38,13 @@ namespace
 
     uint64_t clampStepPulseWidthNs(uint64_t value)
     {
-        if (value < MIN_STEP_PULSE_NS)
+        if (value < stepper_common::kStepPulseMinimumNs)
         {
-            return MIN_STEP_PULSE_NS;
+            return stepper_common::kStepPulseMinimumNs;
         }
-        if (value > MAX_STEP_PULSE_NS)
+        if (value > stepper_common::kStepPulseMaximumNs)
         {
-            return MAX_STEP_PULSE_NS;
+            return stepper_common::kStepPulseMaximumNs;
         }
         return value;
     }
@@ -190,8 +182,9 @@ ClosedLoopController::ClosedLoopController()
       motion_running_(false), motion_first_run_(false), motion_paused_(false), motion_speed_rpm_(0.0f), encoder_speed_rpm_(0.0f),
       motion_position_deg_(0.0f),
       motion_last_step_time_us_(0U), motion_last_ramp_time_us_(0U), motion_steps_emitted_(0U),
+    motion_dma_pending_steps_(0U),
       motion_step_accumulator_(0.0f), motion_direction_(1),
-      motion_step_high_(false), step_pulse_width_ns_(DEFAULT_STEP_PULSE_NS),
+    motion_step_high_(false), step_pulse_width_ns_(stepper_common::kDefaultStepPulseWidthNs),
       step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), encoder_raw_angle_(0U),
       magnetic_field_high_(false), magnetic_field_low_(false), last_process_time_us_(0U),
       last_step_state_(0U), last_dir_state_(0U), last_en_state_(0U),
@@ -562,17 +555,23 @@ void ClosedLoopController::syncStepDirection()
     {
         if (step_state != 0U)
         {
-            command_step_ += (dir_state != 0U) ? 1 : -1;
-            target_step_ = command_step_;
-            driver_->sendStepPulse(step_pulse_width_ns_);
+            if (stepper_common::stepper_push_capture_event(DWT->CYCCNT, true, dir_state != 0U))
+            {
+                last_step_state_ = step_state;
+            }
         }
-        last_step_state_ = step_state;
+        else
+        {
+            last_step_state_ = step_state;
+        }
     }
 
     if (dir_state != last_dir_state_)
     {
-        driver_->setDirection(dir_state != 0U);
-        last_dir_state_ = dir_state;
+        if (stepper_common::stepper_push_capture_event(DWT->CYCCNT, false, dir_state != 0U))
+        {
+            last_dir_state_ = dir_state;
+        }
     }
 
     if (en_state != last_en_state_)
@@ -584,9 +583,19 @@ void ClosedLoopController::syncStepDirection()
 
 void ClosedLoopController::consumeQueuedStepDirEvents()
 {
+    if (stepper_common::stepper_dma_window_is_busy())
+    {
+        return;
+    }
+
+    uint32_t pulse_count = 0U;
+    bool direction_seen = false;
+    bool latest_direction = false;
     stepper_common::StepDirCaptureEvent event;
     while (stepper_common::stepper_pop_capture_event(&event))
     {
+        latest_direction = event.dir;
+        direction_seen = true;
         if (simulation_mode_)
         {
             command_step_ += (event.dir) ? 1 : -1;
@@ -595,15 +604,12 @@ void ClosedLoopController::consumeQueuedStepDirEvents()
             if (event.step)
             {
                 motion_steps_emitted_ += 1U;
-                if (driver_ != nullptr)
+                if (pulse_count < stepper_common::kStepDirCaptureRingDepth)
                 {
-                    driver_->setDirection(event.dir);
-                    driver_->sendStepPulse(step_pulse_width_ns_);
+                    captured_step_schedule_[pulse_count].timestamp_cycles = event.tick;
+                    captured_step_schedule_[pulse_count].direction = event.dir;
+                    ++pulse_count;
                 }
-            }
-            else if (driver_ != nullptr)
-            {
-                driver_->setDirection(event.dir);
             }
             continue;
         }
@@ -613,16 +619,28 @@ void ClosedLoopController::consumeQueuedStepDirEvents()
             command_step_ += (event.dir) ? 1 : -1;
             target_step_ = command_step_;
             actual_step_ = command_step_;
-            if (driver_ != nullptr)
+            if (pulse_count < stepper_common::kStepDirCaptureRingDepth)
             {
-                driver_->setDirection(event.dir);
-                driver_->sendStepPulse(step_pulse_width_ns_);
+                captured_step_schedule_[pulse_count].timestamp_cycles = event.tick;
+                captured_step_schedule_[pulse_count].direction = event.dir;
+                ++pulse_count;
             }
         }
-        else if (driver_ != nullptr)
-        {
-            driver_->setDirection(event.dir);
-        }
+    }
+
+    if (driver_ == nullptr)
+    {
+        return;
+    }
+
+    if (pulse_count > 0U)
+    {
+        stepper_common::stepper_plan_dma_capture_sequence(captured_step_schedule_, pulse_count,
+                                                          step_pulse_width_ns_);
+    }
+    else if (direction_seen)
+    {
+        driver_->setDirection(latest_direction);
     }
 }
 
@@ -711,6 +729,7 @@ void ClosedLoopController::startMotion()
     motion_paused_ = false;
     motion_steps_emitted_ = 0U;
     motion_step_accumulator_ = 0.0f;
+    motion_dma_pending_steps_ = 0U;
     motion_step_high_ = false;
     if (motion_mode_ == MOTION_MODE_POSITION_REVERSE ||
         motion_mode_ == MOTION_MODE_VELOCITY_REVERSE ||
@@ -931,6 +950,25 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     // 累加本次时间内应该产生的步数（浮点数，允许小数累积）
     motion_step_accumulator_ += current_step_speed_ * dt_step_s;
 
+    if (motion_dma_pending_steps_ != 0U)
+    {
+        if (stepper_common::stepper_dma_window_is_busy())
+        {
+            motion_last_step_time_ns_ = now_ns;
+            return;
+        }
+
+        motion_steps_emitted_ += motion_dma_pending_steps_;
+        motion_step_accumulator_ -= static_cast<double>(motion_dma_pending_steps_);
+        motion_dma_pending_steps_ = 0U;
+    }
+
+    if (stepper_common::stepper_dma_window_is_busy())
+    {
+        motion_last_step_time_ns_ = now_ns;
+        return;
+    }
+
     // 只要累加器≥1，代表需要输出1个step脉冲；循环批量输出，直到没有脉冲待输出或者全部脉冲发完
     // TODO: 尽可能前移这部分，让now_ns更加即时
     while ((motion_step_accumulator_ >= 1.0f) && (motion_steps_emitted_ < motion_pulse_count_))
@@ -938,7 +976,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const uint32_t remaining = motion_pulse_count_ - motion_steps_emitted_;
         const uint32_t due_steps = static_cast<uint32_t>(motion_step_accumulator_);
         const uint32_t burst_steps = (due_steps < remaining) ? due_steps : remaining;
-        const uint32_t safe_burst = (burst_steps > kHardwareStepWindowLimit) ? kHardwareStepWindowLimit : burst_steps;
+        const uint32_t safe_burst = (burst_steps > stepper_common::kMaxHardwareWindowPulses) ?
+                        stepper_common::kMaxHardwareWindowPulses : burst_steps;
 
         if (simulation_mode_)
         {
@@ -959,20 +998,17 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         if (safe_burst > 0U)
         {
             const bool direction = (motion_direction_ > 0);
+            const uint32_t step_hz = static_cast<uint32_t>(ceilf(current_step_speed_));
             if (stepper_common::stepper_plan_dma_window(safe_burst, direction,
-                                                       kHardwareStepPeriodTick,
-                                                       kHardwarePulseWidthTick,
-                                                       kHardwareGuardTicks))
+                                                       step_hz,
+                                                       step_pulse_width_ns_))
             {
-                motion_steps_emitted_ += safe_burst;
-                motion_step_accumulator_ -= static_cast<float>(safe_burst);
-                continue;
+                motion_dma_pending_steps_ = safe_burst;
+                break;
             }
         }
 
-        driver_->sendStepPulse(step_pulse_width_ns_);
-        motion_steps_emitted_++;
-        motion_step_accumulator_ -= 1.0f;
+        break;
     }
 
     // 更新脉冲模块的时间戳
@@ -989,6 +1025,7 @@ void ClosedLoopController::stopMotion()
     encoder_speed_rpm_ = 0.0f;
     target_velocity_rps_ = 0.0f;
     motion_steps_emitted_ = 0U;
+    motion_dma_pending_steps_ = 0U;
     motion_step_accumulator_ = 0.0f;
     motion_last_step_time_ns_ = 0ULL;
     motion_last_ramp_time_ns_ = 0ULL;
