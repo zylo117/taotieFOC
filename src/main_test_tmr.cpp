@@ -72,47 +72,66 @@ namespace
     // 波形周期序列数组ARR
     // 每个周期代表这次脉冲持续多久才拉低（结束），也就是ARR越小，脉冲越密集
     // 也就是说可以通过这个来调整步进电机的转速/加速度
-    // 200步/圈 * 64细分 * 2圈 = 25600个STEP脉冲。
+    // 200步/圈 * 64细分 = 12800个STEP脉冲；前半圈正转，后半圈反转。
     constexpr uint32_t pulse_count = 1UL * 200UL * 64UL;
+    constexpr uint32_t half_turn_pulse_count = pulse_count / 2UL;
+    constexpr uint32_t half_turn_sequence_count = half_turn_pulse_count + 1UL;
     // 125 MHz / (9765 + 1) = about 12800 STEP/s = 60 rpm at 64 microsteps.
     constexpr uint32_t step_period_tick = 9765UL;
 
-    // 所有周期都小于65535，因此用半字数组一次性装入25600个DMA周期值。
-    uint32_t arr_seq[pulse_count];
+    // TMR2 是 32 位计数器，因此 ARR 序列必须是 32 位。
+    // 正转和反转各自作为一个单向周期列表，换向时只切换一个方向标志和 DMA 内存基地址，
+    // 不再为 DIR 单独创建额外的 DMA 通道。
+    uint32_t arr_seq_forward[half_turn_sequence_count];
+    uint32_t arr_seq_reverse[half_turn_sequence_count];
+    bool reverse_phase = false;
 
-    void fill_arr_sequence()
+    void fill_single_direction_sequence(uint32_t *seq, uint32_t count)
     {
-        for (uint32_t i = 0U; i < pulse_count; ++i)
+        const uint32_t dir_hold_ticks =
+            (dir_to_step_hold_time + target_tick_time - 1U) / target_tick_time;
+        const uint32_t direction_guard_arr = (dir_hold_ticks > 1U) ? (dir_hold_ticks - 1U) : 1U;
+
+        for (uint32_t i = 0U; i < count; ++i)
         {
-            arr_seq[i] = step_period_tick;
+            seq[i] = static_cast<uint32_t>(step_period_tick);
         }
+
+        // 让换向前的最后一个周期变成保护周期，保证 DIR 切换前后都满足 20 ns 约束，
+        // 且这一个周期不产生STEP脉冲。
+        seq[count - 1U] = static_cast<uint32_t>(direction_guard_arr);
     }
 
-    void pwm_overflow_dma_config()
+    void dma_reload_arr_sequence(uint32_t *seq, uint32_t count)
     {
-        fill_arr_sequence();
-
         dma_init_type dma_conf;
         dma_default_para_init(&dma_conf);
-        dma_conf.peripheral_base_addr  = reinterpret_cast<uint32_t>(&TMR2->pr);
-        dma_conf.memory_base_addr      = reinterpret_cast<uint32_t>(arr_seq);
         dma_conf.direction             = DMA_DIR_MEMORY_TO_PERIPHERAL;
-        dma_conf.buffer_size           = static_cast<uint16_t>(pulse_count);
+        dma_conf.buffer_size           = static_cast<uint16_t>(count);
         dma_conf.peripheral_inc_enable  = FALSE;
         dma_conf.memory_inc_enable      = TRUE;
         dma_conf.peripheral_data_width  = DMA_PERIPHERAL_DATA_WIDTH_WORD;
         dma_conf.memory_data_width      = DMA_MEMORY_DATA_WIDTH_WORD;
+        dma_conf.loop_mode_enable      = FALSE;
+        dma_conf.priority              = DMA_PRIORITY_HIGH;
 
-        // 一次DMA装入全部25600个脉冲；0模式循环，1模式完成后停止。
-    #if (PWM_SEQ_ONE_SHOT_MODE == 1U)
-        dma_conf.loop_mode_enable       = FALSE;
-    #else
-        dma_conf.loop_mode_enable       = TRUE;
-    #endif
-        dma_conf.priority               = DMA_PRIORITY_HIGH;
-
+        dma_conf.peripheral_base_addr  = reinterpret_cast<uint32_t>(&TMR2->pr);
+        dma_conf.memory_base_addr      = reinterpret_cast<uint32_t>(seq);
         dma_flexible_config(DMA1, FLEX_CHANNEL2, DMA_FLEXIBLE_TMR2_OVERFLOW);
         dma_init(DMA1_CHANNEL2, &dma_conf);
+
+        dma_flag_clear(DMA1_FDT2_FLAG);
+        tmr_counter_value_set(TMR2, 0U);
+        dma_channel_enable(DMA1_CHANNEL2, TRUE);
+    }
+
+    void pwm_overflow_dma_config()
+    {
+        fill_single_direction_sequence(arr_seq_forward, half_turn_sequence_count);
+        fill_single_direction_sequence(arr_seq_reverse, half_turn_sequence_count);
+
+        reverse_phase = false;
+        dma_reload_arr_sequence(arr_seq_forward, half_turn_sequence_count);
 
     #if (PWM_SEQ_ONE_SHOT_MODE == 1U)
         dma_interrupt_enable(DMA1_CHANNEL2, DMA_FDT_INT, TRUE);
@@ -120,9 +139,6 @@ namespace
     #else
         dma_interrupt_enable(DMA1_CHANNEL2, DMA_FDT_INT, FALSE);
     #endif
-
-        dma_channel_enable(DMA1_CHANNEL2, TRUE);
-
     }
 
     void timer_pwm_dma_config()
@@ -130,7 +146,7 @@ namespace
         tmr_output_config_type output_config;
         tmr_output_default_para_init(&output_config);
 
-        tmr_base_init(TMR2, arr_seq[0], k_psc);
+        tmr_base_init(TMR2, step_period_tick, k_psc);
         tmr_cnt_dir_set(TMR2, TMR_COUNT_UP);
         tmr_clock_source_div_set(TMR2, TMR_CLOCK_DIV1);
         tmr_period_buffer_enable(TMR2, TRUE);  //ARR预装载，保证周期不会中途撕裂波形，高频必须打开
@@ -144,7 +160,7 @@ namespace
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, fixed_pulse_width_tick);
         tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
 
-        // CH4：同样使用 PWM-A + ACTIVE_LOW，通过软件定时修改 CCR4 实现 DIR 翻转。
+        // CH4：DIR 使用同一个 ARR 计时基准；实际方向切换在段切换时由软件改写 CCR4。 
         tmr_output_config_type dir_config;
         tmr_output_default_para_init(&dir_config);
         dir_config.oc_mode = TMR_OUTPUT_CONTROL_PWM_MODE_A;
@@ -153,7 +169,6 @@ namespace
         dir_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
         dir_config.oc_output_state = TRUE;
         tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_4, &dir_config);
-        // DIR 与 STEP 共用 TMR2 的 ARR/计数周期；这里只修改 CCR4
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
         tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_4, TRUE);
 
@@ -239,6 +254,14 @@ extern "C" void DMA1_Channel2_IRQHandler(void)
     {
         dma_flag_clear(DMA1_FDT2_FLAG);
         dma_channel_enable(DMA1_CHANNEL2, FALSE);
+
+        if (!reverse_phase)
+        {
+            reverse_phase = true;
+            tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0xFFFFFFFFU);
+            dma_reload_arr_sequence(arr_seq_reverse, half_turn_sequence_count);
+            return;
+        }
 
         tmr_counter_enable(TMR2, FALSE);
         tmr_force_output_set(TMR2, TMR_SELECT_CHANNEL_3, TMR_FORCE_OUTPUT_LOW);
