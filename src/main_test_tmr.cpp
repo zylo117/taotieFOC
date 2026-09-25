@@ -11,11 +11,12 @@
 #include "at32f403a_407_clock.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 #define ENABLE_UART_DEBUG   1
 
 //===================== 模式切换宏 =====================
-#define PWM_SEQ_ONE_SHOT_MODE     0
+#define PWM_SEQ_ONE_SHOT_MODE     1
 // 0：原始无限循环模式； 1：跑完整一遍数组后自动停止输出
 //=====================================================
 
@@ -34,9 +35,12 @@ namespace
     // 也就是SWITCH模式下CCR设置多少，占空比都是50%
     // 而在PWM模式下，是会重置的，不会继承！！！
 
+    constexpr uint32_t F_APB = 125 * 1e6; // cpu主频的一半，125Mhz
+
     // PSC=12 → tick = (12+1)/125M = 104ns
     // PSC=0 → tick = (0+1)/125M = 8ns
-    constexpr uint32_t k_psc = 0;  // 8ns @ 125Mhz
+    constexpr uint32_t target_tick_time = 8; // 8ns
+    constexpr uint32_t k_psc = ceil(target_tick_time * (F_APB / 1.0e9)) - 1;  // 8ns @ 125Mhz
 
      // 固定脉宽6.82ms，脉宽tick数*psc对应的tick时间
      // 脉宽tick数/ARR都不可以大于计数器最大范围，比如16位就是2^16，32位就2^32
@@ -46,7 +50,8 @@ namespace
      // CCR
      // 脉宽或负脉宽（取决于你，先触发就脉宽，先等待后触发就是负脉宽）
      // 脉宽tick 12，96ns
-    constexpr uint32_t fixed_pulse_width_tick = 12; 
+    constexpr uint32_t target_pulse_width = 200; // 8ns
+    constexpr uint32_t fixed_pulse_width_tick = ceil(target_pulse_width / target_tick_time);  // 四舍五入往上取整（math.ceil） 
 
         /*
         模式	极性	        CNT<CCR	    CNT≥CCR	    CCR处边沿	ARR(溢出归零)边沿
@@ -65,38 +70,25 @@ namespace
     // 波形周期序列数组ARR
     // 每个周期代表这次脉冲持续多久才拉低（结束），也就是ARR越小，脉冲越密集
     // 也就是说可以通过这个来调整步进电机的转速/加速度
-    uint32_t arr_seq[] =
-    {
-        1953124,
-        853124,
-        43124,
-        23124,
-        13124,
-        5124,
-        2524,
-        1024,
-        512,
-        256,
-        128,
-    };
-    constexpr uint32_t pulse_count = sizeof(arr_seq)/sizeof(arr_seq[0]);
+    // 200步/圈 * 64细分 * 2圈 = 25600个STEP脉冲。
+    constexpr uint32_t pulse_count = 1UL * 200UL * 64UL;
+    // 125 MHz / (9765 + 1) = about 12800 STEP/s = 60 rpm at 64 microsteps.
+    constexpr uint32_t step_period_tick = 9765UL;
 
-    void increase_step_speed()
+    // 所有周期都小于65535，因此用半字数组一次性装入25600个DMA周期值。
+    uint32_t arr_seq[pulse_count];
+
+    void fill_arr_sequence()
     {
         for (uint32_t i = 0U; i < pulse_count; ++i)
         {
-            uint32_t next_period = (arr_seq[i] * 50U) / 100U;
-            if (next_period <= fixed_pulse_width_tick)
-            {
-                next_period = fixed_pulse_width_tick + 1U;
-            }
-            arr_seq[i] = next_period;
+            arr_seq[i] = step_period_tick;
         }
     }
 
-    void refresh_step_dma_sequence()
+    void pwm_overflow_dma_config()
     {
-        dma_channel_enable(DMA1_CHANNEL2, FALSE);
+        fill_arr_sequence();
 
         dma_init_type dma_conf;
         dma_default_para_init(&dma_conf);
@@ -108,47 +100,24 @@ namespace
         dma_conf.memory_inc_enable      = TRUE;
         dma_conf.peripheral_data_width  = DMA_PERIPHERAL_DATA_WIDTH_WORD;
         dma_conf.memory_data_width      = DMA_MEMORY_DATA_WIDTH_WORD;
-        dma_conf.loop_mode_enable       = TRUE;
-        dma_conf.priority               = DMA_PRIORITY_HIGH;
 
-        dma_flexible_config(DMA1, FLEX_CHANNEL2, DMA_FLEXIBLE_TMR2_OVERFLOW);
-        dma_init(DMA1_CHANNEL2, &dma_conf);
-        dma_channel_enable(DMA1_CHANNEL2, TRUE);
-    }
-
-    void pwm_overflow_dma_config()
-    {
-        dma_init_type dma_conf;
-        dma_default_para_init(&dma_conf);
-        dma_conf.peripheral_base_addr  = reinterpret_cast<uint32_t>(&TMR2->pr);
-        dma_conf.memory_base_addr      = reinterpret_cast<uint32_t>(arr_seq);
-        dma_conf.direction             = DMA_DIR_MEMORY_TO_PERIPHERAL;
-        dma_conf.buffer_size           = static_cast<uint16_t>(pulse_count);
-        dma_conf.peripheral_inc_enable  = FALSE;
-        dma_conf.memory_inc_enable      = TRUE;
-        dma_conf.peripheral_data_width  = DMA_PERIPHERAL_DATA_WIDTH_WORD; // 16位则是DMA_PERIPHERAL_DATA_WIDTH_HALFWORD
-        dma_conf.memory_data_width      = DMA_MEMORY_DATA_WIDTH_WORD; // 16位则是DMA_PERIPHERAL_DATA_WIDTH_HALFWORD
-
-#if (PWM_SEQ_ONE_SHOT_MODE == 1U)
-        // ==========单次序列模式：关闭DMA循环==========
+        // 一次DMA装入全部25600个脉冲；0模式循环，1模式完成后停止。
+    #if (PWM_SEQ_ONE_SHOT_MODE == 1U)
         dma_conf.loop_mode_enable       = FALSE;
-#else
-        // ==========原始模式：DMA无限循环（原有逻辑）==========
+    #else
         dma_conf.loop_mode_enable       = TRUE;
-#endif
+    #endif
         dma_conf.priority               = DMA_PRIORITY_HIGH;
 
         dma_flexible_config(DMA1, FLEX_CHANNEL2, DMA_FLEXIBLE_TMR2_OVERFLOW);
         dma_init(DMA1_CHANNEL2, &dma_conf);
 
-#if (PWM_SEQ_ONE_SHOT_MODE == 1U)
-        /* ONE‑SHOT模式：开启DMA FDT传输完成中断；全部脉冲跑完触发停机ISR */
+    #if (PWM_SEQ_ONE_SHOT_MODE == 1U)
         dma_interrupt_enable(DMA1_CHANNEL2, DMA_FDT_INT, TRUE);
         nvic_irq_enable(DMA1_Channel2_IRQn, 2U, 0U);
-#else
-        /* 原始循环模式：关闭DMA FDT中断，和原版代码一致 */
+    #else
         dma_interrupt_enable(DMA1_CHANNEL2, DMA_FDT_INT, FALSE);
-#endif
+    #endif
 
         dma_channel_enable(DMA1_CHANNEL2, TRUE);
 
@@ -170,8 +139,8 @@ namespace
         output_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
         output_config.oc_output_state = TRUE;
         tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_3, &output_config);
-
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, fixed_pulse_width_tick);
+        tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
 
         // CH4：同样使用 PWM-A + ACTIVE_LOW，通过软件定时修改 CCR4 实现 DIR 翻转。
         tmr_output_config_type dir_config;
@@ -184,7 +153,6 @@ namespace
         tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_4, &dir_config);
         // DIR 与 STEP 共用 TMR2 的 ARR/计数周期；这里只修改 CCR4
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
-        tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
         tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_4, TRUE);
 
         tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, TRUE);
@@ -261,26 +229,21 @@ namespace
 
 #if (PWM_SEQ_ONE_SHOT_MODE == 1U)
 /**
- * DMA1 Channel2 ISR：ONE‑SHOT模式专用
- * 条件：全部N个PWM脉冲完整跑完，最后一次TMR溢出触发第N次DMA搬运，置FDT标志才进ISR停机
- * ✅不会截断任何脉冲，全部预定波形输出完毕之后才关闭定时器、拉低PA8
-*/
+ * DMA1 Channel2 ISR：一次DMA完成全部25600个脉冲后停机。
+ */
 extern "C" void DMA1_Channel2_IRQHandler(void)
 {
     if(dma_flag_get(DMA1_FDT2_FLAG) != RESET)
     {
         dma_flag_clear(DMA1_FDT2_FLAG);
-
-        //1.关闭DMA通道
         dma_channel_enable(DMA1_CHANNEL2, FALSE);
-        //2.关闭TMR计数器
+
         tmr_counter_enable(TMR2, FALSE);
-        //3.强制CH1输出拉低，PA8置低电平
         tmr_force_output_set(TMR2, TMR_SELECT_CHANNEL_3, TMR_FORCE_OUTPUT_LOW);
         tmr_output_enable(TMR2, FALSE);
 
 #if ENABLE_UART_DEBUG
-        uart_send_str("\r\n==== PWM SEQ ONE‑SHOT FINISHED! TMR STOPPED ====\r\n");
+        uart_send_str("\r\n==== PWM SEQ ONE-SHOT FINISHED! TMR STOPPED ====\r\n");
 #endif
     }
 }
@@ -312,19 +275,23 @@ int main(void)
     uart_print_num(tmr_period_value_get(TMR2));
 #endif
 
+#if (PWM_SEQ_ONE_SHOT_MODE == 0U)
     bool dir_high = true;
+#endif
     while (1)
     {
+#if (PWM_SEQ_ONE_SHOT_MODE == 0U)
         // STEP 的 ARR/脉冲时序由硬件 DMA+TMR 自主运行；
         // DIR 与 STEP 共用同一个 TMR2 周期，只在约 1 秒时修改一次 CCR4。
         delay_ms(1000U);
-        increase_step_speed();
-        refresh_step_dma_sequence();
-        tmr_channel_value_set(
-            TMR2,
-            TMR_SELECT_CHANNEL_4,
-            dir_high ? 0U : 0xFFFFFFFFUL);
-        dir_high = !dir_high;
+        // tmr_channel_value_set(
+        //     TMR2,
+        //     TMR_SELECT_CHANNEL_4,
+        //     dir_high ? 0U : 0xFFFFFFFFUL);
+        // dir_high = !dir_high;
+#else
+        // ONE-SHOT：全部轨迹由DMA完成中断续装，跑完后自动停机。
+#endif
 
         // ONE‑SHOT：序列跑完DMA‑FDT中断自动停机；
         // LOOP原始模式：无限循环输出；
