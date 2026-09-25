@@ -36,10 +36,13 @@ namespace
     // 而在PWM模式下，是会重置的，不会继承！！！
 
     constexpr uint32_t F_APB = 125 * 1e6; // cpu主频的一半，125Mhz
+    constexpr uint32_t target_tick_time = 8; // ns
+    constexpr uint32_t target_pulse_width = 200; // ns
+    constexpr uint32_t dir_to_step_setup_time = 20; // ns, DIR to STEP 最小提前时间
+    constexpr uint32_t dir_to_step_hold_time = 20; // ns, DIR to STEP 最小保持时间
 
     // PSC=12 → tick = (12+1)/125M = 104ns
     // PSC=0 → tick = (0+1)/125M = 8ns
-    constexpr uint32_t target_tick_time = 8; // 8ns
     constexpr uint32_t k_psc = ceil(target_tick_time * (F_APB / 1.0e9)) - 1;  // 8ns @ 125Mhz
 
      // 固定脉宽6.82ms，脉宽tick数*psc对应的tick时间
@@ -50,7 +53,6 @@ namespace
      // CCR
      // 脉宽或负脉宽（取决于你，先触发就脉宽，先等待后触发就是负脉宽）
      // 脉宽tick 12，96ns
-    constexpr uint32_t target_pulse_width = 200; // 8ns
     constexpr uint32_t fixed_pulse_width_tick = ceil(target_pulse_width / target_tick_time);  // 四舍五入往上取整（math.ceil） 
 
         /*
