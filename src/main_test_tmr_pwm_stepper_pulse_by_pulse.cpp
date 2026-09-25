@@ -1,5 +1,5 @@
 /**
- * TMR2 CH3 PB10 STEP / CH4 PB11 DIR PWM‑A ACTIVE_LOW + FLEX‑DMA加载ARR序列
+ * TMR2 CH1 PA8 PWM‑A ACTIVE_LOW + FLEX‑DMA加载ARR序列
  * 新增宏 PWM_SEQ_ONE_SHOT_MODE
  *  0 = 原始模式：DMA循环，无限重复输出arr_seq序列（原有逻辑完全保留）
  *  1 = 单次序列模式：完整跑完一遍arr_seq全部脉冲，硬件自动停机，PA8拉低，不再输出
@@ -43,9 +43,8 @@ namespace
      // ARR需要大于脉宽tick数
      // 脉宽tick数到达ARR位置就会重置电平
 
-     // CCR
      // 脉宽或负脉宽（取决于你，先触发就脉宽，先等待后触发就是负脉宽）
-     // 脉宽tick 12，96ns
+     // 脉宽tick 12，就是（12+1）,13 tick，也就是104ns
     constexpr uint32_t fixed_pulse_width_tick = 12; 
 
         /*
@@ -85,7 +84,7 @@ namespace
     {
         dma_init_type dma_conf;
         dma_default_para_init(&dma_conf);
-        dma_conf.peripheral_base_addr  = reinterpret_cast<uint32_t>(&TMR2->c3dt);
+        dma_conf.peripheral_base_addr  = reinterpret_cast<uint32_t>(&TMR2->pr);
         dma_conf.memory_base_addr      = reinterpret_cast<uint32_t>(arr_seq);
         dma_conf.direction             = DMA_DIR_MEMORY_TO_PERIPHERAL;
         dma_conf.buffer_size           = static_cast<uint16_t>(pulse_count);
@@ -116,7 +115,6 @@ namespace
 #endif
 
         dma_channel_enable(DMA1_CHANNEL2, TRUE);
-
     }
 
     void timer_pwm_dma_config()
@@ -137,22 +135,6 @@ namespace
         tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_3, &output_config);
 
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, fixed_pulse_width_tick);
-
-        // CH4：同样使用 PWM-A + ACTIVE_LOW，通过软件定时修改 CCR4 实现 DIR 翻转。
-        tmr_output_config_type dir_config;
-        tmr_output_default_para_init(&dir_config);
-        dir_config.oc_mode = TMR_OUTPUT_CONTROL_PWM_MODE_A;
-        dir_config.oc_idle_state = FALSE;
-        dir_config.occ_idle_state = FALSE;
-        dir_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
-        dir_config.oc_output_state = TRUE;
-        tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_4, &dir_config);
-        // DIR 与 STEP 共用 TMR2 的 ARR/计数周期；这里只修改 CCR4，不能再用
-        // 一个很大的 ARR 表示方向保持时间，否则会把 STEP 周期也变成 1 秒。
-        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
-        tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
-        tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_4, TRUE);
-
         tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, TRUE);
 
         tmr_counter_value_set(TMR2, 0U);
@@ -175,6 +157,11 @@ namespace
         gpio_pin_remap_config(TMR2_MUX_11, TRUE);
 
         gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
+        gpio_init_struct.gpio_pins = kDirPin;
+        gpio_init(GPIOB, &gpio_init_struct);
+        gpio_bits_set(GPIOB, kDirPin);
+
+        gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
         gpio_init_struct.gpio_pins = kEnPin;
         gpio_init(GPIOA, &gpio_init_struct);
         gpio_bits_reset(GPIOA, kEnPin);
@@ -184,7 +171,7 @@ namespace
         gpio_init(GPIOA, &gpio_init_struct);
         gpio_bits_set(GPIOA, LED5_PIN);
 
-        gpio_init_struct.gpio_pins = kStepPin | kDirPin;
+        gpio_init_struct.gpio_pins = kStepPin;
         gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
         gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
         gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
@@ -278,18 +265,9 @@ int main(void)
     uart_print_num(tmr_period_value_get(TMR2));
 #endif
 
-    bool dir_high = true;
     while (1)
     {
-        // STEP 的 ARR/脉冲时序由硬件 DMA+TMR 自主运行；
-        // DIR 与 STEP 共用同一个 TMR2 周期，只在约 1 秒时修改一次 CCR4。
-        delay_ms(1000U);
-        tmr_channel_value_set(
-            TMR2,
-            TMR_SELECT_CHANNEL_4,
-            dir_high ? 0U : 0xFFFFFFFFUL);
-        dir_high = !dir_high;
-
+        //全部时序由硬件DMA+TMR自主运行；
         // ONE‑SHOT：序列跑完DMA‑FDT中断自动停机；
         // LOOP原始模式：无限循环输出；
     }
