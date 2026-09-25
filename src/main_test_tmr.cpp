@@ -65,7 +65,7 @@ namespace
     // 波形周期序列数组ARR
     // 每个周期代表这次脉冲持续多久才拉低（结束），也就是ARR越小，脉冲越密集
     // 也就是说可以通过这个来调整步进电机的转速/加速度
-    const uint32_t arr_seq[] =
+    uint32_t arr_seq[] =
     {
         1953124,
         853124,
@@ -81,11 +81,46 @@ namespace
     };
     constexpr uint32_t pulse_count = sizeof(arr_seq)/sizeof(arr_seq[0]);
 
+    void increase_step_speed()
+    {
+        for (uint32_t i = 0U; i < pulse_count; ++i)
+        {
+            uint32_t next_period = (arr_seq[i] * 50U) / 100U;
+            if (next_period <= fixed_pulse_width_tick)
+            {
+                next_period = fixed_pulse_width_tick + 1U;
+            }
+            arr_seq[i] = next_period;
+        }
+    }
+
+    void refresh_step_dma_sequence()
+    {
+        dma_channel_enable(DMA1_CHANNEL2, FALSE);
+
+        dma_init_type dma_conf;
+        dma_default_para_init(&dma_conf);
+        dma_conf.peripheral_base_addr  = reinterpret_cast<uint32_t>(&TMR2->pr);
+        dma_conf.memory_base_addr      = reinterpret_cast<uint32_t>(arr_seq);
+        dma_conf.direction             = DMA_DIR_MEMORY_TO_PERIPHERAL;
+        dma_conf.buffer_size           = static_cast<uint16_t>(pulse_count);
+        dma_conf.peripheral_inc_enable  = FALSE;
+        dma_conf.memory_inc_enable      = TRUE;
+        dma_conf.peripheral_data_width  = DMA_PERIPHERAL_DATA_WIDTH_WORD;
+        dma_conf.memory_data_width      = DMA_MEMORY_DATA_WIDTH_WORD;
+        dma_conf.loop_mode_enable       = TRUE;
+        dma_conf.priority               = DMA_PRIORITY_HIGH;
+
+        dma_flexible_config(DMA1, FLEX_CHANNEL2, DMA_FLEXIBLE_TMR2_OVERFLOW);
+        dma_init(DMA1_CHANNEL2, &dma_conf);
+        dma_channel_enable(DMA1_CHANNEL2, TRUE);
+    }
+
     void pwm_overflow_dma_config()
     {
         dma_init_type dma_conf;
         dma_default_para_init(&dma_conf);
-        dma_conf.peripheral_base_addr  = reinterpret_cast<uint32_t>(&TMR2->c3dt);
+        dma_conf.peripheral_base_addr  = reinterpret_cast<uint32_t>(&TMR2->pr);
         dma_conf.memory_base_addr      = reinterpret_cast<uint32_t>(arr_seq);
         dma_conf.direction             = DMA_DIR_MEMORY_TO_PERIPHERAL;
         dma_conf.buffer_size           = static_cast<uint16_t>(pulse_count);
@@ -147,8 +182,7 @@ namespace
         dir_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
         dir_config.oc_output_state = TRUE;
         tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_4, &dir_config);
-        // DIR 与 STEP 共用 TMR2 的 ARR/计数周期；这里只修改 CCR4，不能再用
-        // 一个很大的 ARR 表示方向保持时间，否则会把 STEP 周期也变成 1 秒。
+        // DIR 与 STEP 共用 TMR2 的 ARR/计数周期；这里只修改 CCR4
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
         tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
         tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_4, TRUE);
@@ -284,6 +318,8 @@ int main(void)
         // STEP 的 ARR/脉冲时序由硬件 DMA+TMR 自主运行；
         // DIR 与 STEP 共用同一个 TMR2 周期，只在约 1 秒时修改一次 CCR4。
         delay_ms(1000U);
+        increase_step_speed();
+        refresh_step_dma_sequence();
         tmr_channel_value_set(
             TMR2,
             TMR_SELECT_CHANNEL_4,
