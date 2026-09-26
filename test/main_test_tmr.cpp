@@ -54,7 +54,8 @@ namespace
      // CCR
      // 脉宽或负脉宽（取决于你，先触发就脉宽，先等待后触发就是负脉宽）
      // 脉宽tick 25, 200ns @ 125Mhz
-    constexpr uint32_t k_step_pulse_ticks = ceil(target_pulse_width / (float) target_tick_time); // 脉宽tick数
+    // 负脉宽tick数，每个周期等多久就开始触发上升沿
+    constexpr uint32_t k_step_pulse_ticks = ceil(target_pulse_width / (float) target_tick_time);
     constexpr uint32_t k_dir_guard_ticks = ceil((dir_to_step_setup_time > dir_to_step_hold_time ? dir_to_step_setup_time : dir_to_step_hold_time) / (float) target_tick_time);
     constexpr uint32_t guard_tick = (k_dir_guard_ticks > 1U) ? k_dir_guard_ticks : 1U;
 
@@ -99,7 +100,7 @@ namespace
         }
     }
 
-    void add_dir_to_step_sequence(uint32_t *seq, uint32_t seq_count, uint32_t dir_toogle_index, bool direction)
+    void add_dir_to_step_sequence(uint32_t *seq, uint32_t seq_count, bool direction)
     {
         // 如果开局和上一次方向相同则不必加额外换向等待，否则等一个guard_tick
         // 但是末端一定要加，避免这一局最后一步脉冲结束不到guard_tick就进入下一局开局换向
@@ -110,17 +111,12 @@ namespace
             current_direction = not current_direction;
         }
         seq[seq_count - 1U] = guard_tick;
-
-        // for (uint32_t i = 1U; i < dir_toogle_index; i++)
-        // {
-        //     seq[i] = static_cast<uint32_t>(step_period_tick);
-        // }
     }
 
     void run_mode1_turn_cycle_test()
     {
         generate_step_sequence(arr_seq_cycle, seq_count);
-        add_dir_to_step_sequence(arr_seq_cycle, seq_count, dir_toogle_index, not current_direction);
+        add_dir_to_step_sequence(arr_seq_cycle, seq_count, not current_direction);
     }
 
 
@@ -325,14 +321,23 @@ int main(void)
 #endif
 #endif
 
+#if ENABLE_UART_DEBUG
+        uart_send_str("fuck1\n");
+#endif
     run_mode1_turn_cycle_test();
     pwm_overflow_dma_config();
     timer_pwm_dma_config(current_direction);
 
 #if ENABLE_UART_DEBUG
+        uart_send_str("fuck2\n");
+#endif
+#if ENABLE_UART_DEBUG
     uart_send_str("PR init = ");
     uart_print_num(tmr_period_value_get(TMR2));
 #endif
+
+delay_ms(1500);
+    
 
 #if (PWM_SEQ_ONE_SHOT_MODE == 0U)
     bool dir_high = true;
@@ -350,29 +355,44 @@ int main(void)
         // dir_high = !dir_high;
 #else
         // ONE-SHOT：全部轨迹由DMA完成中断续装，跑完后自动停机。
-        delay_ms(2000);
-#if ENABLE_UART_DEBUG
-        uart_send_str("fuck\n");
-#endif
+// #if ENABLE_UART_DEBUG
+//         uart_send_str("fuck\n");
+// #endif
 
-        // 设定
-        uint32_t pulse_count = 1UL * 50UL * 64UL;  // 90度
-        uint32_t dir_toogle_index = pulse_count;
-        uint32_t step_period_tick = 9765UL;  // 匀速的话，每一周期（一个周期有且只有一步，每一周期就是每一步）就有那么多个tick
+        // 设定, 20khz/4pulse/12v/1A
+        uint32_t iter_delay_time_us = 10;  // us
+        delay_us(iter_delay_time_us);
+        uint32_t pulse_count = 1UL;
+        // 匀速的话，每一周期（一个周期有且只有一步，每一周期就是每一步）就有那么多个tick
+        uint32_t step_ticks = k_step_pulse_ticks * 2;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
 
         uint32_t seq_count = pulse_count + 2;  // 乘2是因为脉冲必须先高后低，高是一个ARR周期，低也是一个ARR周期
+
+        uint32_t max_iter_time_ns = (2 * guard_tick + step_ticks * pulse_count) * target_tick_time;
+
+        // 因为硬件TMR定时器+DMA工作是异步的，耗时必须短于软件定时器迭代时间，否则就会输出延迟
+        if (iter_delay_time_us * 1000 < max_iter_time_ns) {
+#if ENABLE_UART_DEBUG
+        uart_send_str("shitfuck, iter delay time too short, lower your iter rate.\n");
+#endif
+        }
 
         bool next_dir = true;
 
         uint32_t my_arr_seq_cycle[seq_count];
-        generate_step_sequence(my_arr_seq_cycle, seq_count);
-        add_dir_to_step_sequence(my_arr_seq_cycle, seq_count, dir_toogle_index, next_dir);
+        // generate_step_sequence(my_arr_seq_cycle, seq_count);
+        
+        for (uint32_t i = 1; i < seq_count - 1; i++){  //头尾一个是用来换向的，不是脉冲用的
+            // 这里就贪方便匀速，实际测试要改成各种匀加速，S加速
+            my_arr_seq_cycle[i] = step_ticks;
+        }
+        add_dir_to_step_sequence(my_arr_seq_cycle, seq_count, next_dir);
 
         start_step_sequence(my_arr_seq_cycle, seq_count, 0);
 
-#if ENABLE_UART_DEBUG
-        uart_send_str("shit\n");
-#endif
+// #if ENABLE_UART_DEBUG
+//         uart_send_str("shit\n");
+// #endif
         
 #endif
 
