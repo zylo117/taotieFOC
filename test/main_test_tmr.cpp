@@ -22,6 +22,8 @@
 
 namespace
 {
+    void uart_send_str(const char *str);
+
     constexpr uint16_t kStepPin = GPIO_PINS_10;
     constexpr uint16_t kDirPin = GPIO_PINS_11;
     constexpr uint16_t kEnPin = GPIO_PINS_3;
@@ -37,13 +39,17 @@ namespace
 
     constexpr uint32_t F_APB = 125 * 1e6; // cpu主频的一半，125Mhz
     constexpr uint32_t target_tick_time = 8; // ns
-    constexpr uint32_t target_pulse_width = 200; // ns
+    constexpr uint32_t target_pulse_width = 200; // ns, 需要保证足够宽的高电平，避免丢步
     constexpr uint32_t dir_to_step_setup_time = 20; // ns, DIR to STEP 最小提前时间
     constexpr uint32_t dir_to_step_hold_time = 20; // ns, DIR to STEP 最小保持时间
 
     // PSC=12 → tick = (12+1)/125M = 104ns
     // PSC=0 → tick = (0+1)/125M = 8ns
     constexpr uint32_t k_psc = ceil(target_tick_time * (F_APB / 1.0e9)) - 1;  // 8ns @ 125Mhz
+
+    constexpr uint32_t k_step_pulse_ticks = ceil(target_pulse_width / (float) target_tick_time);
+    constexpr uint32_t k_dir_guard_ticks = ceil((dir_to_step_setup_time > dir_to_step_hold_time ? dir_to_step_setup_time : dir_to_step_hold_time) / (float) target_tick_time);
+    constexpr uint32_t k_min_step_period_ticks = k_step_pulse_ticks + 2U;
 
      // 固定脉宽6.82ms，脉宽tick数*psc对应的tick时间
      // 脉宽tick数/ARR都不可以大于计数器最大范围，比如16位就是2^16，32位就2^32
@@ -72,34 +78,80 @@ namespace
     // 波形周期序列数组ARR
     // 每个周期代表这次脉冲持续多久才拉低（结束），也就是ARR越小，脉冲越密集
     // 也就是说可以通过这个来调整步进电机的转速/加速度
-    // 200步/圈 * 64细分 = 12800个STEP脉冲；前半圈正转，后半圈反转。
+    // 200步/圈 * 64细分 = 12800个STEP脉冲；要求模式1执行：正转一圈 -> 反转一圈。
     constexpr uint32_t pulse_count = 1UL * 200UL * 64UL;
-    constexpr uint32_t half_turn_pulse_count = pulse_count / 2UL;
-    constexpr uint32_t half_turn_sequence_count = half_turn_pulse_count + 1UL;
+    constexpr uint32_t full_turn_sequence_count = pulse_count + 1UL;
     // 125 MHz / (9765 + 1) = about 12800 STEP/s = 60 rpm at 64 microsteps.
     constexpr uint32_t step_period_tick = 9765UL;
 
     // TMR2 是 32 位计数器，因此 ARR 序列必须是 32 位。
-    // 正转和反转各自作为一个单向周期列表，换向时只切换一个方向标志和 DMA 内存基地址，
-    // 不再为 DIR 单独创建额外的 DMA 通道。
-    uint32_t arr_seq_forward[half_turn_sequence_count];
-    uint32_t arr_seq_reverse[half_turn_sequence_count];
+    // 这里复用同一份周期表，正转和反转都只需要切换 DIR 输出 + 重新装载同一块 RAM，
+    // 这样既能完成“正转一圈 -> 反转一圈”，又不会把 RAM 翻倍消耗掉。
+    uint32_t arr_seq_cycle[full_turn_sequence_count];
     bool reverse_phase = false;
+    bool dir_is_forward = true;
 
     void fill_single_direction_sequence(uint32_t *seq, uint32_t count)
     {
-        const uint32_t dir_hold_ticks =
-            (dir_to_step_hold_time + target_tick_time - 1U) / target_tick_time;
-        const uint32_t direction_guard_arr = (dir_hold_ticks > 1U) ? (dir_hold_ticks - 1U) : 1U;
+        const uint32_t guard_tick = (k_dir_guard_ticks > 1U) ? k_dir_guard_ticks : 1U;
 
+        // 1）在方向切换前后都留出保护窗口，避免 DIR 变化剥走刚刚产生的 STEP 边沿。
+        // 2）真正的步进周期在每个有效脉冲之间执行，且一旦切换方向，下一脉冲之前都要先经历 guard。
         for (uint32_t i = 0U; i < count; ++i)
         {
             seq[i] = static_cast<uint32_t>(step_period_tick);
         }
 
-        // 让换向前的最后一个周期变成保护周期，保证 DIR 切换前后都满足 20 ns 约束，
-        // 且这一个周期不产生STEP脉冲。
-        seq[count - 1U] = static_cast<uint32_t>(direction_guard_arr);
+        if (count > 1U)
+        {
+            seq[0U] = guard_tick;
+            seq[count - 1U] = guard_tick;
+        }
+        else
+        {
+            seq[0U] = guard_tick;
+        }
+    }
+
+    bool validate_step_sequence(const uint32_t *seq, uint32_t count)
+    {
+        if (count == 0U)
+        {
+            return false;
+        }
+
+        if (seq[0U] < k_dir_guard_ticks || seq[count - 1U] < k_dir_guard_ticks)
+        {
+            return false;
+        }
+
+        for (uint32_t i = 1U; i + 1U < count; ++i)
+        {
+            if (seq[i] < step_period_tick)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    void run_mode1_turn_cycle_test()
+    {
+        fill_single_direction_sequence(arr_seq_cycle, full_turn_sequence_count);
+
+        const bool cycle_ok = validate_step_sequence(arr_seq_cycle, full_turn_sequence_count);
+
+#if ENABLE_UART_DEBUG
+        if (cycle_ok)
+        {
+            uart_send_str("[TMR TEST] full-turn guard + pulse width schedule VALID\r\n");
+        }
+        else
+        {
+            uart_send_str("[TMR TEST] full-turn guard + pulse width schedule INVALID\r\n");
+        }
+#endif
     }
 
     void dma_reload_arr_sequence(uint32_t *seq, uint32_t count)
@@ -127,11 +179,12 @@ namespace
 
     void pwm_overflow_dma_config()
     {
-        fill_single_direction_sequence(arr_seq_forward, half_turn_sequence_count);
-        fill_single_direction_sequence(arr_seq_reverse, half_turn_sequence_count);
+        fill_single_direction_sequence(arr_seq_cycle, full_turn_sequence_count);
 
         reverse_phase = false;
-        dma_reload_arr_sequence(arr_seq_forward, half_turn_sequence_count);
+        dir_is_forward = true;
+        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
+        dma_reload_arr_sequence(arr_seq_cycle, full_turn_sequence_count);
 
     #if (PWM_SEQ_ONE_SHOT_MODE == 1U)
         dma_interrupt_enable(DMA1_CHANNEL2, DMA_FDT_INT, TRUE);
@@ -157,10 +210,11 @@ namespace
         output_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
         output_config.oc_output_state = TRUE;
         tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_3, &output_config);
-        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, fixed_pulse_width_tick);
+        // 高电平宽度按真正被要求的脉宽保持，随后拉低，避免过窄导致被忽略。
+        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, k_step_pulse_ticks);
         tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
 
-        // CH4：DIR 使用同一个 ARR 计时基准；实际方向切换在段切换时由软件改写 CCR4。 
+        // CH4：DIR 使用同一个 ARR 计时基准；前后加保护时间，保证 DIR 在 STEP 产生前后都稳定。
         tmr_output_config_type dir_config;
         tmr_output_default_para_init(&dir_config);
         dir_config.oc_mode = TMR_OUTPUT_CONTROL_PWM_MODE_A;
@@ -169,6 +223,7 @@ namespace
         dir_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
         dir_config.oc_output_state = TRUE;
         tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_4, &dir_config);
+        dir_is_forward = true;
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
         tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_4, TRUE);
 
@@ -246,7 +301,7 @@ namespace
 
 #if (PWM_SEQ_ONE_SHOT_MODE == 1U)
 /**
- * DMA1 Channel2 ISR：一次DMA完成全部25600个脉冲后停机。
+ * DMA1 Channel2 ISR：在 one-shot 模式下执行正转一圈 -> 反转一圈 -> 停止。
  */
 extern "C" void DMA1_Channel2_IRQHandler(void)
 {
@@ -258,8 +313,10 @@ extern "C" void DMA1_Channel2_IRQHandler(void)
         if (!reverse_phase)
         {
             reverse_phase = true;
-            tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0xFFFFFFFFU);
-            dma_reload_arr_sequence(arr_seq_reverse, half_turn_sequence_count);
+            dir_is_forward = false;
+            // 方向切换前后都保留一段保护时间，确保 DIR 在 STEP 上升沿前后稳定。
+            tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, step_period_tick);
+            dma_reload_arr_sequence(arr_seq_cycle, full_turn_sequence_count);
             return;
         }
 
@@ -292,6 +349,7 @@ int main(void)
 #endif
 #endif
 
+    run_mode1_turn_cycle_test();
     pwm_overflow_dma_config();
     timer_pwm_dma_config();
 
