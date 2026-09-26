@@ -17,7 +17,7 @@
 
 //===================== 模式切换宏 =====================
 #define PWM_SEQ_ONE_SHOT_MODE     1
-// 0：原始无限循环模式； 1：跑完整一遍数组后自动停止输出
+// 0：原始无限循环模式； 1：跑完整一遍数组后自动停止输出; 2：软件分段给脉冲
 //=====================================================
 
 namespace
@@ -90,9 +90,9 @@ namespace
     constexpr uint32_t seq_count = pulse_count + 2;  // 乘2是因为脉冲必须先高后低，高是一个ARR周期，低也是一个ARR周期
     uint32_t arr_seq_cycle[seq_count];  
 
-    bool reverse_phase = false;
-    bool dir_is_forward = true;
     bool current_direction = true;
+
+    void timer_pwm_dma_config();
 
     void generate_step_sequence(uint32_t *seq, uint32_t seq_count) {
         for (uint32_t i = 1; i < seq_count - 1; i+=1){  //头尾一个是用来换向的，不是脉冲用的
@@ -126,12 +126,22 @@ namespace
     }
 
 
-    void dma_reload_arr_sequence(uint32_t *seq, uint32_t count)
+    void stop_timer_dma_for_reload()
+    {
+        tmr_counter_enable(TMR2, FALSE);
+        tmr_output_enable(TMR2, FALSE);
+        tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, FALSE);
+        dma_channel_enable(DMA1_CHANNEL2, FALSE);
+        dma_flag_clear(DMA1_FDT2_FLAG);
+        tmr_counter_value_set(TMR2, 0U);
+    }
+
+    void dma_reload_arr_sequence(uint32_t *seq, uint32_t seq_count)
     {
         dma_init_type dma_conf;
         dma_default_para_init(&dma_conf);
         dma_conf.direction             = DMA_DIR_MEMORY_TO_PERIPHERAL;
-        dma_conf.buffer_size           = static_cast<uint16_t>(count);
+        dma_conf.buffer_size           = static_cast<uint16_t>(seq_count);
         dma_conf.peripheral_inc_enable  = FALSE;
         dma_conf.memory_inc_enable      = TRUE;
         dma_conf.peripheral_data_width  = DMA_PERIPHERAL_DATA_WIDTH_WORD;
@@ -149,16 +159,21 @@ namespace
         dma_channel_enable(DMA1_CHANNEL2, TRUE);
     }
 
+    void start_step_sequence(uint32_t *seq, uint32_t seq_count)
+    {
+        stop_timer_dma_for_reload();
+        dma_reload_arr_sequence(seq, seq_count);
+        timer_pwm_dma_config();
+    }
+
     void pwm_overflow_dma_config()
     {
-        reverse_phase = false;
-        dir_is_forward = true;
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
-        dma_reload_arr_sequence(arr_seq_cycle, dir_toogle_index);
+        dma_reload_arr_sequence(arr_seq_cycle, seq_count);
 
     #if (PWM_SEQ_ONE_SHOT_MODE == 1U)
-        dma_interrupt_enable(DMA1_CHANNEL2, DMA_FDT_INT, TRUE);
-        nvic_irq_enable(DMA1_Channel2_IRQn, 2U, 0U);
+        // dma_interrupt_enable(DMA1_CHANNEL2, DMA_FDT_INT, TRUE);
+        // nvic_irq_enable(DMA1_Channel2_IRQn, 2U, 0U);
     #else
         dma_interrupt_enable(DMA1_CHANNEL2, DMA_FDT_INT, FALSE);
     #endif
@@ -166,10 +181,14 @@ namespace
 
     void timer_pwm_dma_config()
     {
+        tmr_counter_enable(TMR2, FALSE);
+        tmr_output_enable(TMR2, FALSE);
+        tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, FALSE);
+
         tmr_output_config_type output_config;
         tmr_output_default_para_init(&output_config);
 
-        tmr_base_init(TMR2, step_period_tick, k_psc);
+        tmr_base_init(TMR2, 1, k_psc);  // 1是垃圾值，只为了初始，后期会被dma的arr取代
         tmr_cnt_dir_set(TMR2, TMR_COUNT_UP);
         tmr_clock_source_div_set(TMR2, TMR_CLOCK_DIV1);
         tmr_period_buffer_enable(TMR2, TRUE);  //ARR预装载，保证周期不会中途撕裂波形，高频必须打开
@@ -193,7 +212,6 @@ namespace
         dir_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
         dir_config.oc_output_state = TRUE;
         tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_4, &dir_config);
-        dir_is_forward = true;
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
         tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_4, TRUE);
 
@@ -269,37 +287,27 @@ namespace
 #endif
 }
 
-#if (PWM_SEQ_ONE_SHOT_MODE == 1U)
-/**
- * DMA1 Channel2 ISR：在 one-shot 模式下执行正转一圈 -> 反转一圈 -> 停止。
- */
-extern "C" void DMA1_Channel2_IRQHandler(void)
-{
-    if(dma_flag_get(DMA1_FDT2_FLAG) != RESET)
-    {
-        dma_flag_clear(DMA1_FDT2_FLAG);
-        dma_channel_enable(DMA1_CHANNEL2, FALSE);
+// #if (PWM_SEQ_ONE_SHOT_MODE >= 1U)
+// /**
+//  * DMA1 Channel2 ISR：在 one-shot 模式下执行正转一圈 -> 反转一圈 -> 停止。
+//  */
+// extern "C" void DMA1_Channel2_IRQHandler(void)
+// {
+//     if(dma_flag_get(DMA1_FDT2_FLAG) != RESET)
+//     {
+//         dma_flag_clear(DMA1_FDT2_FLAG);
+//         dma_channel_enable(DMA1_CHANNEL2, FALSE);
 
-        if (!reverse_phase)
-        {
-            reverse_phase = true;
-            dir_is_forward = false;
-            // 方向切换前后都保留一段保护时间，确保 DIR 在 STEP 上升沿前后稳定。
-            tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0xFFFFFFFF);
-            dma_reload_arr_sequence(arr_seq_cycle, dir_toogle_index);
-            return;
-        }
+//         tmr_counter_enable(TMR2, FALSE);
+//         tmr_force_output_set(TMR2, TMR_SELECT_CHANNEL_3, TMR_FORCE_OUTPUT_LOW);
+//         tmr_output_enable(TMR2, FALSE);
 
-        tmr_counter_enable(TMR2, FALSE);
-        tmr_force_output_set(TMR2, TMR_SELECT_CHANNEL_3, TMR_FORCE_OUTPUT_LOW);
-        tmr_output_enable(TMR2, FALSE);
-
-#if ENABLE_UART_DEBUG
-        uart_send_str("\r\n==== PWM SEQ ONE-SHOT FINISHED! TMR STOPPED ====\r\n");
-#endif
-    }
-}
-#endif
+// #if ENABLE_UART_DEBUG
+//         uart_send_str("\r\n==== PWM SEQ ONE-SHOT FINISHED! TMR STOPPED ====\r\n");
+// #endif
+//     }
+// }
+// #endif
 
 int main(void)
 {
@@ -344,6 +352,33 @@ int main(void)
         // dir_high = !dir_high;
 #else
         // ONE-SHOT：全部轨迹由DMA完成中断续装，跑完后自动停机。
+        delay_ms(2000);
+#if ENABLE_UART_DEBUG
+        uart_send_str("fuck\n");
+#endif
+
+        // 设定
+        uint32_t pulse_count = 1UL * 50UL * 64UL;  // 90度
+        uint32_t dir_toogle_index = pulse_count;
+        uint32_t step_period_tick = 9765UL;  // 匀速的话，每一周期（一个周期有且只有一步，每一周期就是每一步）就有那么多个tick
+
+        uint32_t seq_count = pulse_count + 2;  // 乘2是因为脉冲必须先高后低，高是一个ARR周期，低也是一个ARR周期
+
+        bool next_dir = true;
+
+        uint32_t my_arr_seq_cycle[seq_count];
+        generate_step_sequence(my_arr_seq_cycle, seq_count);
+        add_dir_to_step_sequence(my_arr_seq_cycle, seq_count, dir_toogle_index, next_dir);
+
+        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
+        // tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0xFFFFFFFF);
+
+        start_step_sequence(my_arr_seq_cycle, seq_count);
+
+#if ENABLE_UART_DEBUG
+        uart_send_str("shit\n");
+#endif
+        
 #endif
 
         // ONE‑SHOT：序列跑完DMA‑FDT中断自动停机；
