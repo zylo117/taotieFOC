@@ -47,19 +47,16 @@ namespace
     // PSC=0 → tick = (0+1)/125M = 8ns
     constexpr uint32_t k_psc = ceil(target_tick_time * (F_APB / 1.0e9)) - 1;  // 8ns @ 125Mhz
 
-    constexpr uint32_t k_step_pulse_ticks = ceil(target_pulse_width / (float) target_tick_time);
-    constexpr uint32_t k_dir_guard_ticks = ceil((dir_to_step_setup_time > dir_to_step_hold_time ? dir_to_step_setup_time : dir_to_step_hold_time) / (float) target_tick_time);
-    constexpr uint32_t k_min_step_period_ticks = k_step_pulse_ticks + 2U;
-
-     // 固定脉宽6.82ms，脉宽tick数*psc对应的tick时间
      // 脉宽tick数/ARR都不可以大于计数器最大范围，比如16位就是2^16，32位就2^32
      // ARR需要大于脉宽tick数
      // 脉宽tick数到达ARR位置就会重置电平
 
      // CCR
      // 脉宽或负脉宽（取决于你，先触发就脉宽，先等待后触发就是负脉宽）
-     // 脉宽tick 12，96ns
-    constexpr uint32_t fixed_pulse_width_tick = ceil(target_pulse_width / target_tick_time);  // 四舍五入往上取整（math.ceil） 
+     // 脉宽tick 25, 200ns @ 125Mhz
+    constexpr uint32_t k_step_pulse_ticks = ceil(target_pulse_width / (float) target_tick_time); // 脉宽tick数
+    constexpr uint32_t k_dir_guard_ticks = ceil((dir_to_step_setup_time > dir_to_step_hold_time ? dir_to_step_setup_time : dir_to_step_hold_time) / (float) target_tick_time);
+    constexpr uint32_t guard_tick = (k_dir_guard_ticks > 1U) ? k_dir_guard_ticks : 1U;
 
         /*
         模式	极性	        CNT<CCR	    CNT≥CCR	    CCR处边沿	ARR(溢出归零)边沿
@@ -80,79 +77,54 @@ namespace
     // 也就是说可以通过这个来调整步进电机的转速/加速度
     // 200步/圈 * 64细分 = 12800个STEP脉冲；要求模式1执行：正转一圈 -> 反转一圈。
     constexpr uint32_t pulse_count = 1UL * 200UL * 64UL;
-    constexpr uint32_t full_turn_sequence_count = pulse_count + 1UL;
+    constexpr uint32_t dir_toogle_index = pulse_count;
     // 125 MHz / (9765 + 1) = about 12800 STEP/s = 60 rpm at 64 microsteps.
-    constexpr uint32_t step_period_tick = 9765UL;
+    constexpr uint32_t step_period_tick = 9765UL;  // 匀速的话，每一周期（一个周期有且只有一步，每一周期就是每一步）就有那么多个tick
 
     // TMR2 是 32 位计数器，因此 ARR 序列必须是 32 位。
     // 这里复用同一份周期表，正转和反转都只需要切换 DIR 输出 + 重新装载同一块 RAM，
     // 这样既能完成“正转一圈 -> 反转一圈”，又不会把 RAM 翻倍消耗掉。
-    uint32_t arr_seq_cycle[full_turn_sequence_count];
+
+    // 人为规定第一个和最后arr周期是用来提前和延后换向的，
+    // 如果是同向，这两个的arr周期为0，否则arr为guard_tick
+    constexpr uint32_t seq_count = pulse_count + 2;  // 乘2是因为脉冲必须先高后低，高是一个ARR周期，低也是一个ARR周期
+    uint32_t arr_seq_cycle[seq_count];  
+
     bool reverse_phase = false;
     bool dir_is_forward = true;
+    bool current_direction = true;
 
-    void fill_single_direction_sequence(uint32_t *seq, uint32_t count)
-    {
-        const uint32_t guard_tick = (k_dir_guard_ticks > 1U) ? k_dir_guard_ticks : 1U;
-
-        // 1）在方向切换前后都留出保护窗口，避免 DIR 变化剥走刚刚产生的 STEP 边沿。
-        // 2）真正的步进周期在每个有效脉冲之间执行，且一旦切换方向，下一脉冲之前都要先经历 guard。
-        for (uint32_t i = 0U; i < count; ++i)
-        {
-            seq[i] = static_cast<uint32_t>(step_period_tick);
-        }
-
-        if (count > 1U)
-        {
-            seq[0U] = guard_tick;
-            seq[count - 1U] = guard_tick;
-        }
-        else
-        {
-            seq[0U] = guard_tick;
+    void generate_step_sequence(uint32_t *seq, uint32_t seq_count) {
+        for (uint32_t i = 1; i < seq_count - 1; i+=1){  //头尾一个是用来换向的，不是脉冲用的
+            // 这里就贪方便匀速，实际测试要改成各种匀加速，S加速
+            seq[i] = step_period_tick;
         }
     }
 
-    bool validate_step_sequence(const uint32_t *seq, uint32_t count)
+    void add_dir_to_step_sequence(uint32_t *seq, uint32_t seq_count, uint32_t dir_toogle_index, bool direction)
     {
-        if (count == 0U)
-        {
-            return false;
+        // 如果开局和上一次方向相同则不必加额外换向等待，否则等一个guard_tick
+        // 但是末端一定要加，避免这一局最后一步脉冲结束不到guard_tick就进入下一局开局换向
+        if (direction == current_direction) {
+            seq[0] = 0;
+        } else {
+            seq[0] = guard_tick;
+            current_direction = not current_direction;
         }
+        seq[seq_count - 1U] = guard_tick;
 
-        if (seq[0U] < k_dir_guard_ticks || seq[count - 1U] < k_dir_guard_ticks)
-        {
-            return false;
-        }
-
-        for (uint32_t i = 1U; i + 1U < count; ++i)
-        {
-            if (seq[i] < step_period_tick)
-            {
-                return false;
-            }
-        }
-
-        return true;
+        // for (uint32_t i = 1U; i < dir_toogle_index; i++)
+        // {
+        //     seq[i] = static_cast<uint32_t>(step_period_tick);
+        // }
     }
 
     void run_mode1_turn_cycle_test()
     {
-        fill_single_direction_sequence(arr_seq_cycle, full_turn_sequence_count);
-
-        const bool cycle_ok = validate_step_sequence(arr_seq_cycle, full_turn_sequence_count);
-
-#if ENABLE_UART_DEBUG
-        if (cycle_ok)
-        {
-            uart_send_str("[TMR TEST] full-turn guard + pulse width schedule VALID\r\n");
-        }
-        else
-        {
-            uart_send_str("[TMR TEST] full-turn guard + pulse width schedule INVALID\r\n");
-        }
-#endif
+        generate_step_sequence(arr_seq_cycle, seq_count);
+        add_dir_to_step_sequence(arr_seq_cycle, seq_count, dir_toogle_index, not current_direction);
     }
+
 
     void dma_reload_arr_sequence(uint32_t *seq, uint32_t count)
     {
@@ -179,12 +151,10 @@ namespace
 
     void pwm_overflow_dma_config()
     {
-        fill_single_direction_sequence(arr_seq_cycle, full_turn_sequence_count);
-
         reverse_phase = false;
         dir_is_forward = true;
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
-        dma_reload_arr_sequence(arr_seq_cycle, full_turn_sequence_count);
+        dma_reload_arr_sequence(arr_seq_cycle, dir_toogle_index);
 
     #if (PWM_SEQ_ONE_SHOT_MODE == 1U)
         dma_interrupt_enable(DMA1_CHANNEL2, DMA_FDT_INT, TRUE);
@@ -315,8 +285,8 @@ extern "C" void DMA1_Channel2_IRQHandler(void)
             reverse_phase = true;
             dir_is_forward = false;
             // 方向切换前后都保留一段保护时间，确保 DIR 在 STEP 上升沿前后稳定。
-            tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, step_period_tick);
-            dma_reload_arr_sequence(arr_seq_cycle, full_turn_sequence_count);
+            tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0xFFFFFFFF);
+            dma_reload_arr_sequence(arr_seq_cycle, dir_toogle_index);
             return;
         }
 
