@@ -92,8 +92,6 @@ namespace
 
     bool current_direction = true;
 
-    void timer_pwm_dma_config();
-
     void generate_step_sequence(uint32_t *seq, uint32_t seq_count) {
         for (uint32_t i = 1; i < seq_count - 1; i+=1){  //头尾一个是用来换向的，不是脉冲用的
             // 这里就贪方便匀速，实际测试要改成各种匀加速，S加速
@@ -159,13 +157,6 @@ namespace
         dma_channel_enable(DMA1_CHANNEL2, TRUE);
     }
 
-    void start_step_sequence(uint32_t *seq, uint32_t seq_count)
-    {
-        stop_timer_dma_for_reload();
-        dma_reload_arr_sequence(seq, seq_count);
-        timer_pwm_dma_config();
-    }
-
     void pwm_overflow_dma_config()
     {
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
@@ -179,7 +170,7 @@ namespace
     #endif
     }
 
-    void timer_pwm_dma_config()
+    void timer_pwm_dma_config(bool direction)
     {
         tmr_counter_enable(TMR2, FALSE);
         tmr_output_enable(TMR2, FALSE);
@@ -212,7 +203,7 @@ namespace
         dir_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
         dir_config.oc_output_state = TRUE;
         tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_4, &dir_config);
-        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
+        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, direction? 0U: 0xFFFFFFFF);
         tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_4, TRUE);
 
         tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, TRUE);
@@ -285,6 +276,13 @@ namespace
         uart_send_str(buf);
     }
 #endif
+
+    void start_step_sequence(uint32_t *seq, uint32_t seq_count, bool direction)
+    {
+        stop_timer_dma_for_reload();
+        dma_reload_arr_sequence(seq, seq_count);
+        timer_pwm_dma_config(direction);
+    }
 }
 
 // #if (PWM_SEQ_ONE_SHOT_MODE >= 1U)
@@ -329,7 +327,7 @@ int main(void)
 
     run_mode1_turn_cycle_test();
     pwm_overflow_dma_config();
-    timer_pwm_dma_config();
+    timer_pwm_dma_config(current_direction);
 
 #if ENABLE_UART_DEBUG
     uart_send_str("PR init = ");
@@ -370,10 +368,7 @@ int main(void)
         generate_step_sequence(my_arr_seq_cycle, seq_count);
         add_dir_to_step_sequence(my_arr_seq_cycle, seq_count, dir_toogle_index, next_dir);
 
-        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
-        // tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0xFFFFFFFF);
-
-        start_step_sequence(my_arr_seq_cycle, seq_count);
+        start_step_sequence(my_arr_seq_cycle, seq_count, 0);
 
 #if ENABLE_UART_DEBUG
         uart_send_str("shit\n");
