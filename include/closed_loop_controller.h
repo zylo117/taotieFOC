@@ -244,6 +244,13 @@ public:
     uint32_t getVelocityLoopHz() const;
     uint32_t getCurrentLoopHz() const;
 
+    // 硬件定时器TMR和DMA
+    uint32_t F_APB = 125 * 1e6; // cpu主频的一半，125Mhz
+    uint32_t target_tick_time = 8; // ns
+    uint32_t target_pulse_width = 200; // ns, 需要保证足够宽的高电平，避免丢步
+    uint32_t dir_to_step_setup_time = 20; // ns, DIR to STEP 最小提前时间
+    uint32_t dir_to_step_hold_time = 20; // ns, DIR to STEP 最小保持时间
+
 private:
     void updateLoopFrequencyStats(uint64_t time_ns);
     StepperDriver* driver_;
@@ -287,7 +294,6 @@ private:
     volatile uint32_t motion_last_ramp_time_us_;
     volatile uint32_t motion_steps_emitted_;
     volatile uint32_t motion_dma_pending_steps_;
-    stepper_common::StepPulseScheduleEntry captured_step_schedule_[stepper_common::kStepDirCaptureRingDepth];
     volatile double motion_step_accumulator_;
     volatile int8_t motion_direction_;
     volatile bool motion_step_high_;
