@@ -1,5 +1,4 @@
 #include "closed_loop_controller.h"
-#include <cmath>
 #include "at32f403a_407_board.h"
 
 #define STEP_EDGE_TIMEOUT_US    200U
@@ -871,10 +870,6 @@ void ClosedLoopController::startMotion()
 
         uint32_t total_req_steps = motion_pulse_count_;
 
-        printf("total_req_steps: %lu\n", total_req_steps);
-        printf("accel_total_steps_: %lu\n", accel_total_steps_);
-        printf("decel_total_steps_: %lu\n", decel_total_steps_);
-
         // 判断：行程够不够跑完整梯形（加速+匀速+减速），不够就退化成三角曲线（无匀速段）
         if (accel_total_steps_ + decel_total_steps_ <= total_req_steps)
         {
@@ -898,9 +893,10 @@ void ClosedLoopController::startMotion()
 
             printf("v_peak_sq: %.6f\n", v_peak_sq);
             printf("v_peak: %.6f\n", v_peak);
-            printf("accel_total_steps_: %lu\n", accel_total_steps_);
-            printf("decel_total_steps_: %lu\n", decel_total_steps_);
         }
+        printf("total_req_steps: %lu\n", total_req_steps);
+        printf("accel_total_steps_: %lu\n", accel_total_steps_);
+        printf("decel_total_steps_: %lu\n", decel_total_steps_);
         printf("cruise_total_steps_: %lu\n", cruise_total_steps_);
 
         // 关键标记：剩余步数 <= steps_to_decel_ 就进入减速阶段
@@ -915,6 +911,67 @@ void ClosedLoopController::startMotion()
         motion_first_run_ = true;
         motion_running_ = true;
     }
+}
+
+void generate_constant_speed_step_sequence(uint32_t *seq, uint32_t seq_count, uint32_t arr) {
+    for (uint32_t i = 1; i < seq_count - 1; i+=1){  //头尾一个是用来换向的，不是脉冲用的
+        // 这里就贪方便匀速，实际测试要改成各种匀加速，S加速
+        seq[i] = arr;
+    }
+}
+
+void add_dir_to_step_sequence(uint32_t *seq, uint32_t seq_count, uint32_t guard_tick, bool switch_direction)
+{
+    // 如果开局和上一次方向相同则不必加额外换向等待，否则等一个guard_tick
+    // 但是末端一定要加，避免这一局最后一步脉冲结束不到guard_tick就进入下一局开局换向
+    // 注意换向后要外面自己维护方向这个状态
+    if (not switch_direction) {
+        seq[0] = 1;  // 这1tick至关紧要，初始化的ARR如果是0就永久卡住了
+    } else {
+        seq[0] = guard_tick;
+    }
+    seq[seq_count - 1U] = guard_tick;
+}
+
+
+void stop_timer_dma_for_reload()
+{
+    tmr_counter_enable(TMR2, FALSE);
+    tmr_output_enable(TMR2, FALSE);
+    tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, FALSE);
+    dma_channel_enable(DMA1_CHANNEL2, FALSE);
+    dma_flag_clear(DMA1_FDT2_FLAG);
+    tmr_counter_value_set(TMR2, 0U);
+}
+
+void dma_reload_arr_sequence(uint32_t *seq, uint32_t seq_count)
+{
+    dma_init_type dma_conf;
+    dma_default_para_init(&dma_conf);
+    dma_conf.direction             = DMA_DIR_MEMORY_TO_PERIPHERAL;
+    dma_conf.buffer_size           = static_cast<uint16_t>(seq_count);
+    dma_conf.peripheral_inc_enable  = FALSE;
+    dma_conf.memory_inc_enable      = TRUE;
+    dma_conf.peripheral_data_width  = DMA_PERIPHERAL_DATA_WIDTH_WORD;
+    dma_conf.memory_data_width      = DMA_MEMORY_DATA_WIDTH_WORD;
+    dma_conf.loop_mode_enable      = FALSE;
+    dma_conf.priority              = DMA_PRIORITY_HIGH;
+
+    dma_conf.peripheral_base_addr  = reinterpret_cast<uint32_t>(&TMR2->pr);
+    dma_conf.memory_base_addr      = reinterpret_cast<uint32_t>(seq);
+    dma_flexible_config(DMA1, FLEX_CHANNEL2, DMA_FLEXIBLE_TMR2_OVERFLOW);
+    dma_init(DMA1_CHANNEL2, &dma_conf);
+
+    dma_flag_clear(DMA1_FDT2_FLAG);
+    tmr_counter_value_set(TMR2, 0U);
+    dma_channel_enable(DMA1_CHANNEL2, TRUE);
+}
+
+void start_step_sequence(uint32_t *seq, uint32_t seq_count, uint32_t k_psc, uint32_t k_step_pulse_ticks, bool direction)
+{
+    stop_timer_dma_for_reload();
+    dma_reload_arr_sequence(seq, seq_count);
+    stepper_common::stepper_init_motion_timer(k_psc, k_step_pulse_ticks, direction);
 }
 
 /**
@@ -1044,23 +1101,53 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     // while循环一次性输出多个脉冲，做到调度抖动下不丢脉冲
 
     // 获取两次脉冲生成之间真实流逝的纳秒
-    uint64_t delta_step_ns = now_ns - motion_last_step_time_ns_;
+    const uint64_t delta_step_ns = now_ns - motion_last_step_time_ns_;
     // 时间单位换算：纳秒 → 秒
-    double dt_step_s = static_cast<double>(delta_step_ns) / 1.0e9f;
+    const double dt_step_s = static_cast<double>(delta_step_ns) / 1.0e9f;
 
     // 累加本次时间内应该产生的步数（浮点数，允许小数累积）
     motion_step_accumulator_ += current_step_speed_ * dt_step_s;
 
     // 只要累加器≥1，代表需要输出1个step脉冲；循环批量输出，直到没有脉冲待输出或者全部脉冲发完
     // cpu软脉冲实现，效率低
-    while ((motion_step_accumulator_ >= 1.0f) && (motion_steps_emitted_ < motion_pulse_count_))
+    // while ((motion_step_accumulator_ >= 1.0f) && (motion_steps_emitted_ < motion_pulse_count_))
+    // {
+    //     // 调用驱动输出STEP脉冲；脉冲高电平宽度固定为step_pulse_width_ns_，底层实现ns延时
+    //     driver_->sendStepPulse(step_pulse_width_ns_);
+    //     // 已经发出的脉冲计数+1
+    //     motion_steps_emitted_++;
+    //     // 已经消耗1步，累加器减去1，小数部分保留，留给下一次调度
+    //     motion_step_accumulator_ -= 1.0f;
+    // }
+
+    // TMR2 是 32 位计数器，因此 ARR 序列必须是 32 位。
+    // 这里复用同一份周期表，正转和反转都只需要切换 DIR 输出 + 重新装载同一块 RAM，
+    // 这样既能完成“正转一圈 -> 反转一圈”，又不会把 RAM 翻倍消耗掉。
+
+    if ((motion_step_accumulator_ >= 1.0f) && (motion_steps_emitted_ < motion_pulse_count_))
     {
-        // 调用驱动输出STEP脉冲；脉冲高电平宽度固定为step_pulse_width_ns_，底层实现ns延时
-        driver_->sendStepPulse(step_pulse_width_ns_);
-        // 已经发出的脉冲计数+1
-        motion_steps_emitted_++;
-        // 已经消耗1步，累加器减去1，小数部分保留，留给下一次调度
-        motion_step_accumulator_ -= 1.0f;
+        // 人为规定第一个和最后arr周期是用来提前和延后换向的，
+        // 如果是同向，这两个的arr周期为0，否则arr为guard_tick
+        uint32_t num_steps = floor(motion_step_accumulator_);
+        uint32_t seq_count = num_steps + 2;  // 乘2是因为脉冲必须先高后低，高是一个ARR周期，低也是一个ARR周期
+        uint32_t arr_seq_cycle[seq_count];
+        const bool current_direction = motion_direction_ > 0;
+        uint32_t step_ticks = stepper_common::F_APB / current_step_speed_;
+
+        uint64_t max_iter_time_ns = (2 * stepper_common::guard_tick + step_ticks * num_steps) * stepper_common::target_tick_time;
+
+        // 因为硬件TMR定时器+DMA工作是异步的，耗时必须短于软件定时器迭代时间，否则就会输出延迟
+        // if (delta_step_ns < max_iter_time_ns)
+        // {
+        //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
+        //     printf("shitfuck, delta_step_ns: %.6f us < max_iter_time_ns: %.6f us, lower your iter rate.\n", delta_step_ns / 1000.f, max_iter_time_ns / 1000.f);
+        // }
+        generate_constant_speed_step_sequence(arr_seq_cycle, seq_count, step_ticks);
+        add_dir_to_step_sequence(arr_seq_cycle, seq_count, stepper_common::guard_tick, false);
+        start_step_sequence(arr_seq_cycle, seq_count, stepper_common::k_psc, step_ticks, true);
+
+        motion_steps_emitted_ += num_steps;
+        motion_step_accumulator_ -= num_steps;
     }
 
     // 更新脉冲模块的时间戳

@@ -1,7 +1,8 @@
 #ifndef CLOSED_LOOP_CONTROLLER_H
 #define CLOSED_LOOP_CONTROLLER_H
 
-#include <stdint.h>
+#include <cstdint>
+#include <cmath>
 
 #include "angle_encoder.h"
 #include "closed_loop_protocol.h"
@@ -10,6 +11,8 @@
 #ifndef USE_HARD_FLOAT_ACCELERATION
 #define USE_HARD_FLOAT_ACCELERATION 1
 #endif
+
+#include <cmath>
 
 #include "core_cm4.h"
 // AT32F403A system_core_clock 是内核时钟，例如 240000000UL
@@ -126,6 +129,7 @@ struct LoopFrequencyStats
 class ClosedLoopController
 {
 public:
+
     enum FaultFlags : uint32_t
     {
         FAULT_ENCODER_READ_FAILED = 1UL << 0,
@@ -243,13 +247,6 @@ public:
     uint32_t getPositionLoopHz() const;
     uint32_t getVelocityLoopHz() const;
     uint32_t getCurrentLoopHz() const;
-
-    // 硬件定时器TMR和DMA
-    uint32_t F_APB = 125 * 1e6; // cpu主频的一半，125Mhz
-    uint32_t target_tick_time = 8; // ns
-    uint32_t target_pulse_width = 200; // ns, 需要保证足够宽的高电平，避免丢步
-    uint32_t dir_to_step_setup_time = 20; // ns, DIR to STEP 最小提前时间
-    uint32_t dir_to_step_hold_time = 20; // ns, DIR to STEP 最小保持时间
 
 private:
     void updateLoopFrequencyStats(uint64_t time_ns);
