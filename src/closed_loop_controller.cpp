@@ -914,7 +914,7 @@ void ClosedLoopController::startMotion()
 }
 
 void generate_constant_speed_step_sequence(uint32_t *seq, uint32_t seq_count, uint32_t arr) {
-    for (uint32_t i = 1; i < seq_count - 1; i+=1){  //头尾一个是用来换向的，不是脉冲用的
+    for (uint32_t i = 1; i < seq_count - 1; i++){  //头尾一个是用来换向的，不是脉冲用的
         // 这里就贪方便匀速，实际测试要改成各种匀加速，S加速
         seq[i] = arr;
     }
@@ -1128,23 +1128,25 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     {
         // 人为规定第一个和最后arr周期是用来提前和延后换向的，
         // 如果是同向，这两个的arr周期为0，否则arr为guard_tick
-        uint32_t num_steps = floor(motion_step_accumulator_);
+        // uint32_t num_steps = floor(motion_step_accumulator_);
+        uint32_t num_steps = 1;
         uint32_t seq_count = num_steps + 2;  // 乘2是因为脉冲必须先高后低，高是一个ARR周期，低也是一个ARR周期
         uint32_t arr_seq_cycle[seq_count];
         const bool current_direction = motion_direction_ > 0;
-        uint32_t step_ticks = stepper_common::F_APB / current_step_speed_;
+        // uint32_t step_ticks = stepper_common::F_APB / current_step_speed_;
+        uint32_t step_ticks = stepper_common::k_step_pulse_ticks * 2;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
 
         uint64_t max_iter_time_ns = (2 * stepper_common::guard_tick + step_ticks * num_steps) * stepper_common::target_tick_time;
 
         // 因为硬件TMR定时器+DMA工作是异步的，耗时必须短于软件定时器迭代时间，否则就会输出延迟
-        // if (delta_step_ns < max_iter_time_ns)
-        // {
-        //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
-        //     printf("shitfuck, delta_step_ns: %.6f us < max_iter_time_ns: %.6f us, lower your iter rate.\n", delta_step_ns / 1000.f, max_iter_time_ns / 1000.f);
-        // }
+        if (delta_step_ns < max_iter_time_ns)
+        {
+            printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
+            printf("shitfuck, delta_step_ns: %.6f us < max_iter_time_ns: %.6f us, lower your iter rate.\n", delta_step_ns / 1000.f, max_iter_time_ns / 1000.f);
+        }
         generate_constant_speed_step_sequence(arr_seq_cycle, seq_count, step_ticks);
         add_dir_to_step_sequence(arr_seq_cycle, seq_count, stepper_common::guard_tick, false);
-        start_step_sequence(arr_seq_cycle, seq_count, stepper_common::k_psc, step_ticks, true);
+        start_step_sequence(arr_seq_cycle, seq_count, stepper_common::k_psc, stepper_common::k_step_pulse_ticks, current_direction);
 
         motion_steps_emitted_ += num_steps;
         motion_step_accumulator_ -= num_steps;

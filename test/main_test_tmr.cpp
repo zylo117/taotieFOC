@@ -78,7 +78,6 @@ namespace
     // 也就是说可以通过这个来调整步进电机的转速/加速度
     // 200步/圈 * 64细分 = 12800个STEP脉冲；要求模式1执行：正转一圈 -> 反转一圈。
     constexpr uint32_t pulse_count = 1UL * 200UL * 64UL;
-    constexpr uint32_t dir_toogle_index = pulse_count;
     // 125 MHz / (9765 + 1) = about 12800 STEP/s = 60 rpm at 64 microsteps.
     constexpr uint32_t step_period_tick = 9765UL;  // 匀速的话，每一周期（一个周期有且只有一步，每一周期就是每一步）就有那么多个tick
 
@@ -88,7 +87,7 @@ namespace
 
     // 人为规定第一个和最后arr周期是用来提前和延后换向的，
     // 如果是同向，这两个的arr周期为0，否则arr为guard_tick
-    constexpr uint32_t seq_count = pulse_count + 2;  // 乘2是因为脉冲必须先高后低，高是一个ARR周期，低也是一个ARR周期
+    constexpr uint32_t seq_count = pulse_count + 2;
     uint32_t arr_seq_cycle[seq_count];  
 
     bool current_direction = true;
@@ -105,7 +104,7 @@ namespace
         // 如果开局和上一次方向相同则不必加额外换向等待，否则等一个guard_tick
         // 但是末端一定要加，避免这一局最后一步脉冲结束不到guard_tick就进入下一局开局换向
         if (direction == current_direction) {
-            seq[0] = 0;
+            seq[0] = 1;  // 这1tick至关紧要，初始化的ARR如果是0就永久卡住了
         } else {
             seq[0] = guard_tick;
             current_direction = not current_direction;
@@ -116,7 +115,7 @@ namespace
     void run_mode1_turn_cycle_test()
     {
         generate_step_sequence(arr_seq_cycle, seq_count);
-        add_dir_to_step_sequence(arr_seq_cycle, seq_count, not current_direction);
+        add_dir_to_step_sequence(arr_seq_cycle, seq_count,  current_direction);
     }
 
 
@@ -325,7 +324,7 @@ int main(void)
         uart_send_str("fuck1\n");
 #endif
     run_mode1_turn_cycle_test();
-    pwm_overflow_dma_config();
+    // pwm_overflow_dma_config();
     timer_pwm_dma_config(current_direction);
 
 #if ENABLE_UART_DEBUG
@@ -366,7 +365,7 @@ delay_ms(1500);
         // 匀速的话，每一周期（一个周期有且只有一步，每一周期就是每一步）就有那么多个tick
         uint32_t step_ticks = k_step_pulse_ticks * 2;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
 
-        uint32_t seq_count = pulse_count + 2;  // 乘2是因为脉冲必须先高后低，高是一个ARR周期，低也是一个ARR周期
+        uint32_t seq_count = pulse_count + 2;
 
         uint32_t max_iter_time_ns = (2 * guard_tick + step_ticks * pulse_count) * target_tick_time;
 
