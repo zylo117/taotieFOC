@@ -1,5 +1,6 @@
 #include "kth7823_encoder.h"
 #include <math.h>
+#include <string.h>
 #include "at32f403a_407_board.h"
 
 namespace
@@ -15,8 +16,9 @@ namespace
 }
 
 Kth7823Encoder::Kth7823Encoder()
-    : zero_angle_(0U), last_raw_frame_(0U), last_tx_frame_(0U), read_count_(0U),
-      all_ones_count_(0U), all_zeros_count_(0U)
+    : zero_angle_(0U), filtered_raw_angle_(0U), filter_window_{0U}, filter_window_size_(EncoderFilterConfig::kDefaultWindow),
+      filter_index_(0U), filter_count_(0U), filter_sum_(0U), filter_config_{EncoderFilterConfig::kDefaultWindow},
+      last_raw_frame_(0U), last_tx_frame_(0U), read_count_(0U), all_ones_count_(0U), all_zeros_count_(0U)
 {
 }
 
@@ -65,12 +67,22 @@ bool Kth7823Encoder::init()
     spi_init(KTH7823_SPI, &spi_init_struct);
     spi_enable(KTH7823_SPI, TRUE);
 
+    memset(filter_window_, 0, sizeof(filter_window_));
+    filter_config_ = {EncoderFilterConfig::kDefaultWindow,};
+    filter_window_size_ = filter_config_.window_size;
+    filter_index_ = 0U;
+    filter_count_ = 0U;
+    filter_sum_ = 0U;
+    filtered_raw_angle_ = 0U;
+
     uint32_t zero_sum = 0U;
-    for (uint8_t sample = 0U; sample < 8U; ++sample)
+    for (uint8_t sample = 0U; sample < filter_window_size_; ++sample)
     {
         zero_sum += readRawAngle();
+        updateFilteredSample();
     }
-    zero_angle_ = static_cast<uint16_t>(zero_sum / 8U);
+    zero_angle_ = static_cast<uint16_t>(zero_sum / filter_window_size_);
+    filtered_raw_angle_ = zero_angle_;
     return true;
 }
 
@@ -82,6 +94,7 @@ uint16_t Kth7823Encoder::readRawAngle()
     raw = encoder_common::encoder_spi2_rw16(last_tx_frame_);
     encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, true);
     last_raw_frame_ = raw;
+    last_frame_theta_ = static_cast<float>(raw) * 2.0F * static_cast<float>(M_PI) / 65536.0F;
     read_count_++;
     if (raw == 0xFFFFU)
     {
@@ -94,9 +107,86 @@ uint16_t Kth7823Encoder::readRawAngle()
     return raw;
 }
 
+uint16_t Kth7823Encoder::readFilteredRawAngle()
+{
+    return filtered_raw_angle_;
+}
+
+bool Kth7823Encoder::updateFilteredSample()
+{
+    const uint16_t raw = readRawAngle();
+    if (raw == 0xFFFFU)
+    {
+        return false;
+    }
+
+    if (filter_window_size_ == 0U)
+    {
+        filtered_raw_angle_ = raw;
+        return true;
+    }
+
+    if (filter_count_ < filter_window_size_)
+    {
+        filter_window_[filter_count_] = raw;
+        filter_sum_ += raw;
+        ++filter_count_;
+        filter_index_ = (filter_count_ < filter_window_size_) ? filter_count_ : 0U;
+    }
+    else
+    {
+        const uint16_t old_value = filter_window_[filter_index_];
+        filter_sum_ -= old_value;
+        filter_window_[filter_index_] = raw;
+        filter_sum_ += raw;
+        filter_index_ = (filter_index_ + 1U) % filter_window_size_;
+    }
+
+    // for (uint8_t i = 0U; i < filter_window_size_; ++i)
+    //     printf("%d ", filter_window_[i]);
+    // printf("\n");
+
+    const uint8_t active_count = (filter_count_ < filter_window_size_) ? filter_count_ : filter_window_size_;
+    filtered_raw_angle_ = static_cast<uint16_t>(filter_sum_ / static_cast<uint32_t>(active_count));
+    return true;
+}
+
+void Kth7823Encoder::setFilterWindowSize(uint8_t window_size)
+{
+    configureFilter({window_size,});
+}
+
+void Kth7823Encoder::configureFilter(const EncoderFilterConfig& config)
+{
+    const uint8_t window_size = config.window_size;
+
+    filter_config_ = config;
+    filter_window_size_ = window_size;
+    memset(filter_window_, 0, sizeof(filter_window_));
+    filter_index_ = 0U;
+    filter_count_ = 0U;
+    filter_sum_ = 0U;
+    filtered_raw_angle_ = 0U;
+}
+
+EncoderFilterConfig Kth7823Encoder::filterConfig() const
+{
+    return filter_config_;
+}
+
 uint16_t Kth7823Encoder::lastRawFrame() const
 {
     return last_raw_frame_;
+}
+
+float Kth7823Encoder::lastFrameTheta() const
+{
+    return last_frame_theta_;
+}
+
+float Kth7823Encoder::lastFrameAngle() const
+{
+    return last_frame_theta_ * 180.0F / static_cast<float>(M_PI);
 }
 
 uint16_t Kth7823Encoder::lastTxFrame() const

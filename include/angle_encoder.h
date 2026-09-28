@@ -52,12 +52,28 @@ namespace encoder_common
     uint16_t encoder_spi2_rw16(uint16_t tx_data);
 }
 
+struct EncoderFilterConfig
+{
+    static constexpr uint8_t kDefaultWindow = 1;
+
+    uint8_t window_size = kDefaultWindow;
+};
+
 class AngleEncoder
 {
 public:
     virtual ~AngleEncoder() = default;
     virtual bool init() = 0;
     virtual uint16_t readRawAngle() = 0;
+    virtual uint16_t readFilteredRawAngle()
+    {
+        return readRawAngle();
+    }
+    virtual bool updateFilteredSample()
+    {
+        (void)readRawAngle();
+        return true;
+    }
     virtual bool magneticFieldHigh() const { return false; }
     virtual bool magneticFieldLow() const { return false; }
     virtual void setZero(uint16_t zero_angle) = 0;

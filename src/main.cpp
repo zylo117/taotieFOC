@@ -36,6 +36,22 @@ void control_task_function(void* pvParameters);
 void telemetry_task_function(void* pvParameters);
 void usb_task_function(void* pvParameters);
 
+static void encoder_timer_init(void)
+{
+    constexpr uint32_t k_encoder_sample_us = 10U;
+    constexpr uint32_t k_tick_per_us = 250U;  // 每us的tick数，clock那里设置了分频为2，导致apb的定时器频率等于主频（at32特殊，看文档17页）
+    constexpr uint32_t k_arr_value = (k_encoder_sample_us * k_tick_per_us) - 1U;
+
+    crm_periph_clock_enable(CRM_TMR3_PERIPH_CLOCK, TRUE);
+    tmr_base_init(TMR3, static_cast<uint16_t>(k_arr_value), 0U);
+    tmr_cnt_dir_set(TMR3, TMR_COUNT_UP);
+    tmr_clock_source_div_set(TMR3, TMR_CLOCK_DIV1);
+    tmr_period_buffer_enable(TMR3, TRUE);
+    tmr_interrupt_enable(TMR3, TMR_OVF_INT, TRUE);
+    nvic_irq_enable(TMR3_GLOBAL_IRQn, 2U, 0U);
+    tmr_counter_value_set(TMR3, 0U);
+    tmr_counter_enable(TMR3, TRUE);
+}
 
 static void control_timer_init(void)
 {
@@ -86,6 +102,15 @@ extern "C" void TMR4_GLOBAL_IRQHandler(void)
     }
 }
 
+extern "C" void TMR3_GLOBAL_IRQHandler(void)
+{
+    if (tmr_interrupt_flag_get(TMR3, TMR_OVF_FLAG) != RESET)
+    {
+        tmr_flag_clear(TMR3, TMR_OVF_FLAG);
+        g_encoder.updateFilteredSample();
+    }
+}
+
 extern "C" void usb_delay_ms(uint32_t ms)
 {
     delay_ms(ms);
@@ -126,6 +151,7 @@ int main(void)
     g_controller.init(&g_driver, &g_encoder);
     g_usb_bridge.init(&g_controller, &g_usb_core);
     control_timer_init();
+    encoder_timer_init();
 
     taskENTER_CRITICAL();
 
@@ -167,6 +193,7 @@ int main(void)
     {
         printf("USB task could not be created as there was insufficient heap memory remaining.\r\n");
     }
+
     taskEXIT_CRITICAL();
     vTaskStartScheduler();
 }
@@ -206,11 +233,10 @@ void telemetry_task_function(void* pvParameters)
         g_usb_bridge.sendTelemetry();
         if ((xTaskGetTickCount() - last_log_tick) >= pdMS_TO_TICKS(500))
         {
-            const uint32_t angle_mdeg = (static_cast<uint32_t>(g_encoder.lastRawFrame()) * 360000UL) / 65536UL;
-            printf("KTH7823: tx=0x%04X raw=0x%04X angle=%lu.%03lu MISO=%u MGH=%u MGL=%u reads=%lu ff=%lu 00=%lu\r\n",
+            const float angle_mdeg = g_encoder.lastFrameAngle();
+            printf("KTH7823: tx=0x%04X raw=0x%04X angle=%.3f MISO=%u MGH=%u MGL=%u reads=%lu ff=%lu 00=%lu\r\n",
                    g_encoder.lastTxFrame(), g_encoder.lastRawFrame(),
-                   static_cast<unsigned long>(angle_mdeg / 1000UL),
-                   static_cast<unsigned long>(angle_mdeg % 1000UL),
+                   angle_mdeg,
                    g_encoder.misoLevel(), g_encoder.magneticFieldHigh() ? 1U : 0U,
                    g_encoder.magneticFieldLow() ? 1U : 0U,
                    static_cast<unsigned long>(g_encoder.readCount()),
