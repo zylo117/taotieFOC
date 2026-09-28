@@ -229,7 +229,7 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
     if (encoder_ != nullptr)
     {
         encoder_->init();
-        encoder_zero_ = encoder_->readRawAngle();
+        encoder_zero_ = encoder_->readFilteredAngle();
     }
 
     if (driver_ != nullptr)
@@ -996,7 +996,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     // 更新编码器信息
     if (encoder_ != nullptr)
     {
-        uint16_t encoder_raw = encoder_->readRawAngle();
+        uint16_t encoder_raw = encoder_->readFilteredAngle();
         encoder_raw_angle_ = encoder_raw;
         magnetic_field_high_ = encoder_->magneticFieldHigh();
         magnetic_field_low_ = encoder_->magneticFieldLow();

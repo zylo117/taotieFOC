@@ -58,6 +58,9 @@ namespace stepper_common
     void stepper_init_uart_gpio(gpio_type* port, uint16_t pin);
 
     // at32的定时器的外部时钟频率fTMRxCLK（我简称fT）是cpu频率除以2（APB总线），250Mhz就是125Mhz
+    // 但是对于定时器如果APB1预分频系数=1，则频率不变，否则频率*2（mcu文档17页）
+    // at32f403a_407_clock.c已经设置分频2，所以就是250Mhz
+    // 所以fTMRxCLK=250Mhz
     // PSC决定了定时器计数频率，越大计数越快，fC = fT/(PSC+1)
     // ARR指计数到多少就重置，指数到多少归零（周期），事件触发间隔T = (PSC+1)*(ARR+1) / fT
     // CCR指数到多少触发通道动作（翻转 / 高低电平）
@@ -67,15 +70,15 @@ namespace stepper_common
     // 而在PWM模式下，是会重置的，不会继承！！！
 
     // 原始参数
-    constexpr uint32_t F_APB = 125 * 1e6; // cpu主频的一半，125Mhz
-    constexpr uint32_t target_tick_time = 8; // ns
+    constexpr uint32_t F_APB = HEXT_VALUE; // cpu主频的一半，125Mhz
+    constexpr uint32_t target_tick_time = 4; // ns
     constexpr uint32_t target_pulse_width = 200; // ns, 需要保证足够宽的高电平，避免丢步
     constexpr uint32_t dir_to_step_setup_time = 20; // ns, DIR to STEP 最小提前时间
     constexpr uint32_t dir_to_step_hold_time = 20; // ns, DIR to STEP 最小保持时间
 
     // 推导参数
-    // PSC=0 → tick = (0+1)/125M = 8ns
-    constexpr uint32_t k_psc = ceil(target_tick_time * (F_APB / 1.0e9)) - 1;  // 8ns @ 125Mhz
+    // PSC=0 → tick = (0+1)/250M = 4ns
+    constexpr uint32_t k_psc = ceil(target_tick_time * (F_APB / 1.0e9)) - 1;  // 4ns @ 250Mhz
 
     // 脉宽tick数/ARR都不可以大于计数器最大范围，比如16位就是2^16，32位就2^32
     // ARR需要大于脉宽tick数
@@ -83,7 +86,7 @@ namespace stepper_common
 
     // CCR
     // 脉宽或负脉宽（取决于你，先触发就脉宽，先等待后触发就是负脉宽）
-    // 脉宽tick 25, 200ns @ 125Mhz
+    // 脉宽tick 50, 200ns @ 250Mhz
     // 负脉宽tick数，每个周期等多久就开始触发上升沿
     constexpr uint32_t k_step_pulse_ticks = ceil(target_pulse_width / (float) target_tick_time);
     constexpr uint32_t k_dir_guard_ticks = ceil((dir_to_step_setup_time > dir_to_step_hold_time ? dir_to_step_setup_time : dir_to_step_hold_time) / (float) target_tick_time);
