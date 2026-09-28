@@ -185,7 +185,7 @@ ClosedLoopController::ClosedLoopController()
       motion_last_step_time_us_(0U), motion_last_ramp_time_us_(0U), motion_steps_emitted_(0U),
       motion_step_accumulator_(0.0f), motion_direction_(1),
       motion_step_high_(false), step_pulse_width_ns_(DEFAULT_STEP_PULSE_NS),
-      step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), encoder_raw_angle_(0U),
+      step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), encoder_filtered_angle_(0U),
       magnetic_field_high_(false), magnetic_field_low_(false), last_process_time_us_(0U),
       last_step_state_(0U), last_dir_state_(0U), last_en_state_(0U),
       stop_on_encoder_fault_(true), stop_on_magnetic_fault_(true), encoder_fault_active_(false),
@@ -327,8 +327,8 @@ void ClosedLoopController::syncProtocolTelemetry()
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_TARGET_POSITION, static_cast<uint32_t>(target_step_));
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_ACTUAL_POSITION, static_cast<uint32_t>(actual_step_));
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_FOLLOW_ERROR, static_cast<uint32_t>(follow_error_));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_RAW, encoder_raw_angle_);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG, getEncoderAngleMilliDegrees());
+    protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_RAW, encoder_filtered_angle_);
+    protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG, static_cast<uint32_t>(static_cast<int32_t>(getEncoderAngleMilliDegrees() * 1000.0f)));
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_HIGH, magnetic_field_high_ ? 1U : 0U);
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_LOW, magnetic_field_low_ ? 1U : 0U);
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_START_RPM, static_cast<uint32_t>(motion_start_rpm_));
@@ -505,7 +505,7 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     }
     if (reg == TMC2209_REG_MSCNT)
     {
-        *value = encoder_raw_angle_;
+        *value = encoder_filtered_angle_;
         return true;
     }
     if (reg == TMC2209_REG_DRV_STATUS)
@@ -996,13 +996,12 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     // 更新编码器信息
     if (encoder_ != nullptr)
     {
-        uint16_t encoder_raw = encoder_->readFilteredAngle();
-        encoder_raw_angle_ = encoder_raw;
+        encoder_filtered_angle_ = encoder_->readFilteredAngle();
         magnetic_field_high_ = encoder_->magneticFieldHigh();
         magnetic_field_low_ = encoder_->magneticFieldLow();
         reportMagneticFieldAlarm(magnetic_field_high_ || magnetic_field_low_);
 
-        motion_position_deg_ = static_cast<float>(encoder_zero_ - encoder_raw) * 360.0f / 65536.0f;
+        motion_position_deg_ = encoder_zero_ - encoder_filtered_angle_;
         if (motion_position_deg_ > 180.0f)
         {
             motion_position_deg_ -= 360.0f;
@@ -1272,7 +1271,7 @@ void ClosedLoopController::calibrateEncoder(const EncoderCalibrationConfig& conf
 
     if (result.offset_ok)
     {
-        encoder_zero_ = static_cast<uint16_t>(encoder_zero_ + static_cast<uint16_t>(result.offset_correction));
+        encoder_zero_ = static_cast<float>(encoder_zero_ + static_cast<float>(result.offset_correction));
         encoder_->setZero(encoder_zero_);
     }
 }
@@ -1326,12 +1325,12 @@ int32_t ClosedLoopController::getTargetSteps() const
     return target_step_;
 }
 
-uint16_t ClosedLoopController::getEncoderZero() const
+float ClosedLoopController::getEncoderZero() const
 {
     return encoder_zero_;
 }
 
-void ClosedLoopController::setEncoderZero(uint16_t zero_angle)
+void ClosedLoopController::setEncoderZero(float zero_angle)
 {
     encoder_zero_ = zero_angle;
     if (encoder_ != nullptr)
@@ -1345,14 +1344,14 @@ float ClosedLoopController::getFollowError() const
     return follow_error_;
 }
 
-uint16_t ClosedLoopController::getEncoderRawAngle() const
+float ClosedLoopController::getEncoderFilteredAngle() const
 {
-    return encoder_raw_angle_;
+    return encoder_filtered_angle_;
 }
 
-uint32_t ClosedLoopController::getEncoderAngleMilliDegrees() const
+float ClosedLoopController::getEncoderAngleMilliDegrees() const
 {
-    return static_cast<uint32_t>((static_cast<uint64_t>(encoder_raw_angle_) * 360000ULL) / 65536ULL);
+    return encoder_filtered_angle_;
 }
 
 bool ClosedLoopController::isMagneticFieldHigh() const

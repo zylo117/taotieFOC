@@ -231,10 +231,10 @@ public:
 
     // 读取目标位置步数。
     int32_t getTargetSteps() const;
-    uint16_t getEncoderZero() const;
-    void setEncoderZero(uint16_t zero_angle);
-    uint16_t getEncoderRawAngle() const;
-    uint32_t getEncoderAngleMilliDegrees() const;
+    float getEncoderZero() const;
+    void setEncoderZero(float zero_angle);
+    float getEncoderFilteredAngle() const;
+    float getEncoderAngleMilliDegrees() const;
     bool isMagneticFieldHigh() const;
     bool isMagneticFieldLow() const;
 
@@ -296,8 +296,8 @@ private:
     volatile bool motion_step_high_;
     volatile uint64_t step_pulse_width_ns_;
     volatile uint32_t step_period_us_;
-    volatile uint16_t encoder_zero_;
-    volatile uint16_t encoder_raw_angle_;
+    volatile float encoder_zero_;
+    volatile float encoder_filtered_angle_;
     volatile bool magnetic_field_high_;
     volatile bool magnetic_field_low_;
     volatile uint32_t last_process_time_us_;

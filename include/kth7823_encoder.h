@@ -20,7 +20,7 @@ public:
     uint32_t allOnesCount() const;
     uint32_t allZerosCount() const;
     uint8_t misoLevel() const;
-    void setZero(uint16_t zero_angle) override;
+    void setZero(float zero_angle) override;
     bool calibrate(const EncoderCalibrationConfig& config, EncoderCalibrationResult* result) override;
     void setFilterWindowSize(uint8_t window_size);
     void configureFilter(const EncoderFilterConfig& config);

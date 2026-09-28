@@ -281,7 +281,7 @@ bool Kth7823Encoder::magneticFieldLow() const
     return gpio_input_data_bit_read(KTH7823_MGL_PORT, KTH7823_MGL_PIN) != 0U;
 }
 
-void Kth7823Encoder::setZero(uint16_t zero_angle)
+void Kth7823Encoder::setZero(float zero_angle)
 {
     zero_angle_ = zero_angle;
 }

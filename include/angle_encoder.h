@@ -74,7 +74,7 @@ public:
     }
     virtual bool magneticFieldHigh() const { return false; }
     virtual bool magneticFieldLow() const { return false; }
-    virtual void setZero(uint16_t zero_angle) = 0;
+    virtual void setZero(float zero_angle) = 0;
     virtual bool calibrate(const EncoderCalibrationConfig& config, EncoderCalibrationResult* result) = 0;
 };
 
