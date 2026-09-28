@@ -77,7 +77,7 @@ bool Kth7823Encoder::init()
 uint16_t Kth7823Encoder::readRawAngle()
 {
     uint16_t raw = 0U;
-    last_tx_frame_ = 0x0300U;
+    last_tx_frame_ = 0x0000U;
     encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, false);
     raw = encoder_common::encoder_spi2_rw16(last_tx_frame_);
     encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, true);
