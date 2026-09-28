@@ -38,7 +38,7 @@ void usb_task_function(void* pvParameters);
 
 static void encoder_timer_init(void)
 {
-    constexpr uint32_t k_encoder_sample_us = 10U;
+    constexpr uint32_t k_encoder_sample_us = 50U;
     constexpr uint32_t k_tick_per_us = 250U;  // 每us的tick数，clock那里设置了分频为2，导致apb的定时器频率等于主频（at32特殊，看文档17页）
     constexpr uint32_t k_arr_value = (k_encoder_sample_us * k_tick_per_us) - 1U;
 
@@ -234,9 +234,9 @@ void telemetry_task_function(void* pvParameters)
         if ((xTaskGetTickCount() - last_log_tick) >= pdMS_TO_TICKS(500))
         {
             const float angle_mdeg = g_encoder.lastFrameAngle();
-            printf("KTH7823: tx=0x%04X raw=0x%04X angle=%.3f MISO=%u MGH=%u MGL=%u reads=%lu ff=%lu 00=%lu\r\n",
+            printf("KTH7823: tx=0x%04X raw=0x%04X angle=%.3f, filter_angle=%.3f MISO=%u MGH=%u MGL=%u reads=%lu ff=%lu 00=%lu\r\n",
                    g_encoder.lastTxFrame(), g_encoder.lastRawFrame(),
-                   angle_mdeg,
+                   angle_mdeg, g_encoder.readFilteredAngle(),
                    g_encoder.misoLevel(), g_encoder.magneticFieldHigh() ? 1U : 0U,
                    g_encoder.magneticFieldLow() ? 1U : 0U,
                    static_cast<unsigned long>(g_encoder.readCount()),

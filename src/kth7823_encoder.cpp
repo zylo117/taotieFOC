@@ -16,10 +16,16 @@ namespace
 }
 
 Kth7823Encoder::Kth7823Encoder()
-    : zero_angle_(0U), filtered_raw_angle_(0U), filter_window_{0U}, filter_window_size_(EncoderFilterConfig::kDefaultWindow),
-      filter_index_(0U), filter_count_(0U), filter_sum_(0U), filter_config_{EncoderFilterConfig::kDefaultWindow},
-      last_raw_frame_(0U), last_tx_frame_(0U), read_count_(0U), all_ones_count_(0U), all_zeros_count_(0U)
+    : zero_angle_(0U),
+      sum_s_(0.0F), sum_c_(0.0F),
+      filter_window_size_(EncoderFilterConfig::kDefaultWindow),
+      filter_index_(0U), filter_count_(0U),
+      filter_config_{EncoderFilterConfig::kDefaultWindow},
+      last_frame_raw_(0U), last_frame_theta_(0.0F), filtered_theta_(0.0F), last_tx_frame_(0U),
+      read_count_(0U), all_ones_count_(0U), all_zeros_count_(0U)
 {
+    memset(win_s_, 0, sizeof(win_s_));
+    memset(win_c_, 0, sizeof(win_c_));
 }
 
 bool Kth7823Encoder::init()
@@ -67,33 +73,25 @@ bool Kth7823Encoder::init()
     spi_init(KTH7823_SPI, &spi_init_struct);
     spi_enable(KTH7823_SPI, TRUE);
 
-    memset(filter_window_, 0, sizeof(filter_window_));
-    filter_config_ = {EncoderFilterConfig::kDefaultWindow,};
-    filter_window_size_ = filter_config_.window_size;
-    filter_index_ = 0U;
-    filter_count_ = 0U;
-    filter_sum_ = 0U;
-    filtered_raw_angle_ = 0U;
+    configureFilter({EncoderFilterConfig::kDefaultWindow,});
 
-    uint32_t zero_sum = 0U;
     for (uint8_t sample = 0U; sample < filter_window_size_; ++sample)
     {
-        zero_sum += readRawAngle();
         updateFilteredSample();
     }
-    zero_angle_ = static_cast<uint16_t>(zero_sum / filter_window_size_);
-    filtered_raw_angle_ = zero_angle_;
+    zero_angle_ = readFilteredAngle();
     return true;
 }
 
-uint16_t Kth7823Encoder::readRawAngle()
+uint16_t Kth7823Encoder::readRaw()
 {
     uint16_t raw = 0U;
     last_tx_frame_ = 0x0000U;
     encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, false);
     raw = encoder_common::encoder_spi2_rw16(last_tx_frame_);
     encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, true);
-    last_raw_frame_ = raw;
+    last_frame_raw_ = raw;
+    // 原始raw转为弧度
     last_frame_theta_ = static_cast<float>(raw) * 2.0F * static_cast<float>(M_PI) / 65536.0F;
     read_count_++;
     if (raw == 0xFFFFU)
@@ -107,25 +105,83 @@ uint16_t Kth7823Encoder::readRawAngle()
     return raw;
 }
 
-uint16_t Kth7823Encoder::readFilteredRawAngle()
+float Kth7823Encoder::readFilteredAngle()
 {
-    return filtered_raw_angle_;
+    auto angle = filtered_theta_ * 180.0F / static_cast<float>(M_PI);
+    return angle < 0 ? angle + 360.0F : angle;
 }
 
+/**
+ * @brief 【圆周角度矢量滑动平均滤波】
+ * 问题背景：编码器raw是0‑65535环形角度；0与65535物理上是相邻。
+ * 不能直接对uint16原始值算术平均：跨过0点会算到对面半圆，结果错误。
+ * 算法原理：极坐标转直角坐标
+ *      theta = raw * 2π /65536
+ *      X = cos(theta) 单位圆X坐标
+ *      Y = sin(theta) 单位圆Y坐标
+ *      对X、Y分别做环形滑动窗口平均；
+ *      使用atan2(Yavg, Xavg)把平均后的坐标还原回弧度角度；
+ *      再换算回uint16_t(0~65535)。
+ *
+ * @warning 本函数内部会调用readRawAngle()执行SPI读取，有浮点sin/cos/atan2开销
+ * @retval false 读到0xFFFF通信错误，滤波器维持旧值；true样本有效完成更新
+*/
 bool Kth7823Encoder::updateFilteredSample()
 {
-    const uint16_t raw = readRawAngle();
+    const uint16_t raw = readRaw();
     if (raw == 0xFFFFU)
     {
+        // SPI通信错误：丢弃样本，滤波器保持上一次有效输出，上层用allOnesCount判断故障
         return false;
     }
 
+    // 窗口大小0：关闭滤波，直接输出原始值
     if (filter_window_size_ == 0U)
     {
-        filtered_raw_angle_ = raw;
+        filtered_theta_ = last_frame_theta_;
         return true;
     }
 
+    //===== 1、原始角度转为单位圆 X(cos), Y(sin) =====
+    float theta = last_frame_theta_;
+    float s = sinf(theta);  // Y
+    float c = cosf(theta);  // X
+
+    if (filter_count_ < filter_window_size_)
+    {
+        // -------- 窗口填充阶段，还没有填满 --------
+        win_s_[filter_count_] = s;
+        win_c_[filter_count_] = c;
+        sum_s_ += s;
+        sum_c_ += c;
+        filter_count_++;
+        filter_index_ = 0U;
+    }
+    else
+    {
+        // -------- 窗口已满：O(1)环形滑动，减去被淘汰旧样本，加入新样本 --------
+        sum_s_ -= win_s_[filter_index_];
+        sum_c_ -= win_c_[filter_index_];
+
+        win_s_[filter_index_] = s;
+        win_c_[filter_index_] = c;
+
+        sum_s_ += s;
+        sum_c_ += c;
+
+        filter_index_ = (filter_index_ + 1U) % filter_window_size_;
+    }
+
+    //=====2、求X、Y坐标平均值 =====
+    uint8_t active_cnt = (filter_count_ < filter_window_size_) ? filter_count_ : filter_window_size_;
+    float avg_s = sum_s_ / static_cast<float>(active_cnt);
+    float avg_c = sum_c_ / static_cast<float>(active_cnt);
+
+    //=====3、由平均XY坐标还原得到角度弧度 atan2(Y,X) =====
+    filtered_theta_ = atan2f(avg_s, avg_c);
+
+    /*
+    ====================【废弃旧算术滑动平均，仅留参考】====================
     if (filter_count_ < filter_window_size_)
     {
         filter_window_[filter_count_] = raw;
@@ -141,13 +197,11 @@ bool Kth7823Encoder::updateFilteredSample()
         filter_sum_ += raw;
         filter_index_ = (filter_index_ + 1U) % filter_window_size_;
     }
-
-    // for (uint8_t i = 0U; i < filter_window_size_; ++i)
-    //     printf("%d ", filter_window_[i]);
-    // printf("\n");
-
     const uint8_t active_count = (filter_count_ < filter_window_size_) ? filter_count_ : filter_window_size_;
     filtered_raw_angle_ = static_cast<uint16_t>(filter_sum_ / static_cast<uint32_t>(active_count));
+    ！！警告：算术平均只适合电机不会跨过0°；跨0‑65535边界滤波结果完全错误。
+    =====================================================================
+    */
     return true;
 }
 
@@ -159,14 +213,17 @@ void Kth7823Encoder::setFilterWindowSize(uint8_t window_size)
 void Kth7823Encoder::configureFilter(const EncoderFilterConfig& config)
 {
     const uint8_t window_size = config.window_size;
-
     filter_config_ = config;
     filter_window_size_ = window_size;
-    memset(filter_window_, 0, sizeof(filter_window_));
+
+    memset(win_s_, 0, sizeof(win_s_));
+    memset(win_c_, 0, sizeof(win_c_));
+
     filter_index_ = 0U;
     filter_count_ = 0U;
-    filter_sum_ = 0U;
-    filtered_raw_angle_ = 0U;
+    sum_s_ = 0.0F;
+    sum_c_ = 0.0F;
+    filtered_theta_ = 0.0F;
 }
 
 EncoderFilterConfig Kth7823Encoder::filterConfig() const
@@ -176,7 +233,7 @@ EncoderFilterConfig Kth7823Encoder::filterConfig() const
 
 uint16_t Kth7823Encoder::lastRawFrame() const
 {
-    return last_raw_frame_;
+    return last_frame_raw_;
 }
 
 float Kth7823Encoder::lastFrameTheta() const
@@ -241,13 +298,11 @@ bool Kth7823Encoder::calibrate(const EncoderCalibrationConfig& config, EncoderCa
         result->noise_rms = 0.0f;
         result->walk_peak = 0.0f;
     }
-
     if (!config.enable_offset_calibration && !config.enable_direction_calibration &&
         !config.enable_noise_calibration && !config.enable_walk_calibration)
     {
         return false;
     }
-
     if (result != nullptr)
     {
         result->offset_ok = true;
@@ -256,37 +311,34 @@ bool Kth7823Encoder::calibrate(const EncoderCalibrationConfig& config, EncoderCa
         result->walk_ok = true;
         result->offset_correction = config.offset_correction;
     }
-
     if (config.enable_direction_calibration)
     {
-        uint16_t base = readRawAngle();
-        uint16_t next = readRawAngle();
+        uint16_t base = readRaw();
+        uint16_t next = readRaw();
         if (result != nullptr)
         {
             result->direction_ok = normalize_angle(next, base) < config.sample_count;
         }
     }
-
     if (config.enable_noise_calibration && result != nullptr)
     {
         result->noise_rms = 0.0f;
         for (uint16_t i = 0U; i < config.sample_count; ++i)
         {
-            const uint16_t raw = readRawAngle();
+            const uint16_t raw = readRaw();
             const uint16_t diff = normalize_angle(raw, zero_angle_);
             result->noise_rms += static_cast<float>(diff * diff);
         }
         result->noise_rms = sqrt(result->noise_rms / static_cast<float>(config.sample_count));
         result->noise_ok = result->noise_rms <= config.noise_threshold;
     }
-
     if (config.enable_walk_calibration && result != nullptr)
     {
         result->walk_peak = 0.0f;
-        uint16_t previous = readRawAngle();
+        uint16_t previous = readRaw();
         for (uint16_t i = 0U; i < config.sample_count; ++i)
         {
-            const uint16_t current = readRawAngle();
+            const uint16_t current = readRaw();
             const uint16_t delta = normalize_angle(current, previous);
             if (delta > result->walk_peak)
             {
@@ -296,6 +348,5 @@ bool Kth7823Encoder::calibrate(const EncoderCalibrationConfig& config, EncoderCa
         }
         result->walk_ok = result->walk_peak <= config.walk_threshold;
     }
-
     return true;
 }

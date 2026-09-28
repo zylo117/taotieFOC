@@ -54,7 +54,7 @@ namespace encoder_common
 
 struct EncoderFilterConfig
 {
-    static constexpr uint8_t kDefaultWindow = 1;
+    static constexpr uint8_t kDefaultWindow = 5;
 
     uint8_t window_size = kDefaultWindow;
 };
@@ -64,14 +64,12 @@ class AngleEncoder
 public:
     virtual ~AngleEncoder() = default;
     virtual bool init() = 0;
-    virtual uint16_t readRawAngle() = 0;
-    virtual uint16_t readFilteredRawAngle()
-    {
-        return readRawAngle();
-    }
+    // 读取原始值raw，并非真正的角度
+    virtual uint16_t readRaw() = 0;
+    virtual float readFilteredAngle();
     virtual bool updateFilteredSample()
     {
-        (void)readRawAngle();
+        (void)readRaw();
         return true;
     }
     virtual bool magneticFieldHigh() const { return false; }

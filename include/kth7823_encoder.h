@@ -1,6 +1,5 @@
 #ifndef KTH7823_ENCODER_H
 #define KTH7823_ENCODER_H
-
 #include "angle_encoder.h"
 
 class Kth7823Encoder : public AngleEncoder
@@ -8,8 +7,8 @@ class Kth7823Encoder : public AngleEncoder
 public:
     Kth7823Encoder();
     bool init() override;
-    uint16_t readRawAngle() override;
-    uint16_t readFilteredRawAngle() override;
+    uint16_t readRaw() override;
+    float readFilteredAngle() override;
     bool updateFilteredSample() override;
     bool magneticFieldHigh() const override;
     bool magneticFieldLow() const override;
@@ -28,20 +27,26 @@ public:
     EncoderFilterConfig filterConfig() const;
 
 private:
-    uint16_t zero_angle_;
-    volatile uint16_t filtered_raw_angle_;
-    uint16_t filter_window_[EncoderFilterConfig::kDefaultWindow];
+    float zero_angle_;
+
+    //==== 【极坐标XY滑动平均（圆周角度正确滤波）】====
+    // 将角度转为单位圆坐标: X = cosθ , Y = sinθ
+    // 对X、Y分别做环形滑动平均，再atan2(Xavg,Yavg)还原角度，解决0<->65535跨圈跳变问题
+    float win_s_[EncoderFilterConfig::kDefaultWindow];  // Y = sinθ 窗口缓存
+    float win_c_[EncoderFilterConfig::kDefaultWindow];  // X = cosθ 窗口缓存
+    float sum_s_;                                        // Y坐标累加和
+    float sum_c_;                                        // X坐标累加和
+
     uint8_t filter_window_size_;
     uint8_t filter_index_;
     uint8_t filter_count_;
-    uint32_t filter_sum_;
     EncoderFilterConfig filter_config_;
-    volatile uint16_t last_raw_frame_;
-    volatile float last_frame_theta_;
+    volatile uint16_t last_frame_raw_;
+    volatile float last_frame_theta_;   //单次原始raw对应的弧度
+    volatile float filtered_theta_;
     volatile uint16_t last_tx_frame_;
     volatile uint32_t read_count_;
     volatile uint32_t all_ones_count_;
     volatile uint32_t all_zeros_count_;
 };
-
 #endif
