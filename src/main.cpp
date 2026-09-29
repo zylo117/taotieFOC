@@ -38,7 +38,7 @@ void usb_task_function(void* pvParameters);
 
 static void encoder_timer_init(void)
 {
-    constexpr uint32_t k_encoder_sample_us = 50U;
+    constexpr uint32_t k_encoder_sample_us = 25U;
     constexpr uint32_t k_tick_per_us = 250U;  // 每us的tick数，clock那里设置了分频为2，导致apb的定时器频率等于主频（at32特殊，看文档17页）
     constexpr uint32_t k_arr_value = (k_encoder_sample_us * k_tick_per_us) - 1U;
 
@@ -56,7 +56,7 @@ static void encoder_timer_init(void)
 static void control_timer_init(void)
 {
     crm_periph_clock_enable(CRM_TMR4_PERIPH_CLOCK, TRUE);
-    tmr_base_init(TMR4, 1000U - 1U, system_core_clock / 20000000U - 1U);
+    tmr_base_init(TMR4, 1000U - 1U, system_core_clock / 25000000U - 1U);
     tmr_cnt_dir_set(TMR4, TMR_COUNT_UP);
     tmr_clock_source_div_set(TMR4, TMR_CLOCK_DIV1);
     tmr_interrupt_enable(TMR4, TMR_OVF_INT, TRUE);
