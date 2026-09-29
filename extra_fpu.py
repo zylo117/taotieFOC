@@ -10,6 +10,8 @@ env = DefaultEnvironment()
 
 env.Append(
     LINKFLAGS=[
+        "-DARM_MATH_CM4=1",
+        "-D__FPU_PRESENT=1U",
         "-mcpu=cortex-m4",
         "-mfloat-abi=hard",
         "-mfpu=fpv4-sp-d16"
