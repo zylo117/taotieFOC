@@ -632,10 +632,6 @@
                         <div class="value" id="encoderAngleValue">0.00°</div>
                     </div>
                     <div class="status-item">
-                        <div class="label">编码器原始帧</div>
-                        <div class="value" id="encoderRawValue">0x0000</div>
-                    </div>
-                    <div class="status-item">
                         <div class="label">磁场状态 MGH / MGL</div>
                         <div class="value" id="magneticLevelValue">正常 / 正常</div>
                     </div>
@@ -1004,7 +1000,6 @@
             document.getElementById('curLoopRateValue').textContent = `${state.curLoopHz} Hz`;
             document.getElementById('faultSummaryValue').textContent = state.faultSummary;
             document.getElementById('encoderAngleValue').textContent = `${state.encoderAngleDeg.toFixed(2)}°`;
-            document.getElementById('encoderRawValue').textContent = `0x${state.encoderRaw.toString(16).padStart(4, '0').toUpperCase()}`;
             document.getElementById('magneticLevelValue').textContent = `${state.magneticHigh ? '报警' : '正常'} / ${state.magneticLow ? '报警' : '正常'}`;
             document.getElementById('speedValue').textContent = Number(state.motionSpeedRpm || 0).toFixed(2);
             document.getElementById('accelValue').textContent = (state.accel || 0).toFixed(2);
