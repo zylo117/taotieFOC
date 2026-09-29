@@ -182,6 +182,8 @@ ClosedLoopController::ClosedLoopController()
       motion_pulse_count_(0U), motion_window_ms_(2000U), motion_mode_(MOTION_MODE_POSITION_FORWARD),
       motion_running_(false), motion_paused_(false), motion_speed_rpm_(0.0f), encoder_speed_rpm_(0.0f),
       motion_position_deg_(0.0f),
+    motion_follow_error_deg_(0.0f), motion_commanded_travel_deg_(0.0f), motion_encoder_travel_deg_(0.0f),
+    motion_encoder_previous_angle_(0.0f), motion_encoder_reference_valid_(false),
       motion_last_step_time_us_(0U), motion_last_ramp_time_us_(0U), motion_steps_emitted_(0U),
       motion_step_accumulator_(0.0f), motion_direction_(1),
       motion_step_high_(false), step_pulse_width_ns_(DEFAULT_STEP_PULSE_NS),
@@ -340,7 +342,7 @@ void ClosedLoopController::syncProtocolTelemetry()
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_SPEED_RPM,
                                   static_cast<uint32_t>(static_cast<int32_t>(encoder_speed_rpm_)));
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_POSITION_DEG,
-                                  static_cast<uint32_t>(static_cast<int32_t>(motion_position_deg_ * 1000.0f)));
+                                  static_cast<uint32_t>(static_cast<int32_t>(motion_follow_error_deg_ * 1000.0f)));
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS, motion_window_ms_);
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, step_pulse_width_ns_);
 }
@@ -483,9 +485,9 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
         *value = static_cast<uint32_t>(static_cast<int32_t>(encoder_speed_rpm_));
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_POSITION_DEG)
+    if (reg == TMC2209_EXT_PARAM_POSITION_DEG)  // 实际是跟随误差
     {
-        *value = static_cast<uint32_t>(motion_position_deg_ * 1000.0f);
+        *value = static_cast<uint32_t>(static_cast<int32_t>(motion_follow_error_deg_ * 1000.0f));
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS)
@@ -827,6 +829,14 @@ void ClosedLoopController::startMotion()
     motion_steps_emitted_ = 0U;
     motion_step_accumulator_ = 0.0f;
     motion_step_high_ = false;
+    motion_commanded_travel_deg_ = 0.0f;
+    motion_encoder_travel_deg_ = 0.0f;
+    motion_follow_error_deg_ = 0.0f;
+    motion_encoder_reference_valid_ = encoder_ != nullptr;
+    if (motion_encoder_reference_valid_)
+    {
+        motion_encoder_previous_angle_ = encoder_->readFilteredAngle();
+    }
     if (motion_mode_ == MOTION_MODE_POSITION_REVERSE ||
         motion_mode_ == MOTION_MODE_VELOCITY_REVERSE ||
         motion_mode_ == MOTION_MODE_HOME_REVERSE)
@@ -1010,6 +1020,22 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         {
             motion_position_deg_ += 360.0f;
         }
+
+        if (motion_running_ && motion_encoder_reference_valid_)
+        {
+            float encoder_delta = motion_encoder_previous_angle_ - encoder_filtered_angle_;
+            if (encoder_delta > 180.0f)
+            {
+                encoder_delta -= 360.0f;
+            }
+            else if (encoder_delta < -180.0f)
+            {
+                encoder_delta += 360.0f;
+            }
+            motion_encoder_travel_deg_ += encoder_delta;
+            motion_follow_error_deg_ = motion_commanded_travel_deg_ - motion_encoder_travel_deg_;
+        }
+        motion_encoder_previous_angle_ = encoder_filtered_angle_;
     }
 
     // 同步上传信息到串口
@@ -1148,6 +1174,9 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         start_step_sequence(arr_seq_cycle, seq_count, stepper_common::k_psc, stepper_common::k_step_pulse_ticks, current_direction);
 
         motion_steps_emitted_ += num_steps;
+        const float step_angle_deg = 360.0f / static_cast<float>(getMicroStepsPerRound(driver_));
+        motion_commanded_travel_deg_ += static_cast<float>(motion_direction_) * step_angle_deg * static_cast<float>(num_steps);
+        motion_follow_error_deg_ = motion_commanded_travel_deg_ - motion_encoder_travel_deg_;
         motion_step_accumulator_ -= num_steps;
     }
 

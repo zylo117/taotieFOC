@@ -285,6 +285,11 @@ private:
     volatile float motion_speed_rpm_;
     volatile float encoder_speed_rpm_;
     volatile float motion_position_deg_;
+    volatile float motion_follow_error_deg_;
+    volatile float motion_commanded_travel_deg_;
+    volatile float motion_encoder_travel_deg_;
+    volatile float motion_encoder_previous_angle_;
+    volatile bool motion_encoder_reference_valid_;
     volatile uint64_t motion_last_step_time_ns_;
     volatile uint64_t motion_last_ramp_time_ns_;
     volatile uint32_t motion_last_step_time_us_;

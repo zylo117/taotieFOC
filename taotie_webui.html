@@ -855,7 +855,7 @@
             , lastEncoderLogAt: 0
             , rxBuffer: new Uint8Array(0)
             , motionSpeedRpm: 0
-            , motionPositionDeg: 0
+            , motionFollowErrorDeg: 0
             , waveHistory: []
             , wavePaused: false
             , wavePausedAt: 0
@@ -953,7 +953,7 @@
             , [0x11E, ['0x011E', 'MOTION_MODE', '运动模式：0位置正转 1位置反转 2速度正转 3速度反转 4正转归零 5反转归零']]
             , [0x11F, ['0x011F', 'MOTION_CMD', '运动命令：0停止 1启动']]
             , [0x120, ['0x0120', 'SPEED_RPM', '当前测速转速，单位 RPM']]
-            , [0x121, ['0x0121', 'POSITION_DEG', '当前位置，单位 0.001°']]
+            , [0x121, ['0x0121', 'FOLLOW_ERROR_DEG', '位置跟随误差：理论累计行程 - 编码器累计行程，单位 0.001°']]
             , [0x122, ['0x0122', 'WAVE_WINDOW_MS', '波形窗口长度，单位 ms']]
             , [0x123, ['0x0123', 'STEP_PULSE_WIDTH_NS', 'STEP 高电平脉宽，单位 ns']]
             , [0x124, ['0x0124', 'MOTOR_ENABLE', '电机使能，EN 输出低电平']]
@@ -1442,7 +1442,7 @@
             const sample = {
                 t: now,
                 rpm: Number(state.motionSpeedRpm || 0),
-                pos: Number(state.motionPositionDeg || 0)
+                followError: Number(state.motionFollowErrorDeg || 0)
             };
             state.waveHistory.push(sample);
             const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
@@ -1492,21 +1492,25 @@
             const speedLine = (rpm) => {
                 return plotBottom - ((rpm + 3000) / 6000) * (plotBottom - plotTop);
             };
-            const posLine = (deg) => {
-                return plotBottom - ((deg + 20) / 40) * (plotBottom - plotTop);
+            const points = state.waveHistory.length ? state.waveHistory : [{t: now - windowMs, rpm: 0, followError: 0}];
+            const filtered = points.filter((entry) => now - entry.t <= windowMs);
+            const peakFollowError = filtered.reduce((peak, entry) => Math.max(peak, Math.abs(entry.followError)), 0);
+            const followErrorRange = Math.max(0.02, Math.ceil(peakFollowError * 100) / 100);
+            const followErrorLine = (error) => {
+                return plotBottom - ((error + followErrorRange) / (2 * followErrorRange)) * (plotBottom - plotTop);
             };
 
             ctx.strokeStyle = 'rgba(56,189,248,0.7)';
             ctx.fillStyle = '#e2e8f0';
             ctx.font = '12px sans-serif';
             ctx.fillText('RPM', 10, 14);
-            ctx.fillText('位置°', width - 48, 14);
+            ctx.fillText('误差°', width - 48, 14);
             ctx.fillText('3000', 4, plotTop + 4);
             ctx.fillText('0', 18, plotBottom - 2);
             ctx.fillText('-3000', 2, plotBottom + 14);
-            ctx.fillText('20°', width - 42, plotTop + 4);
+            ctx.fillText(`${followErrorRange.toFixed(2)}°`, width - 48, plotTop + 4);
             ctx.fillText('0°', width - 34, plotBottom - 2);
-            ctx.fillText('-20°', width - 42, plotBottom + 14);
+            ctx.fillText(`-${followErrorRange.toFixed(2)}°`, width - 48, plotBottom + 14);
 
             ctx.strokeStyle = '#38bdf8';
             ctx.lineWidth = 3;
@@ -1522,7 +1526,7 @@
             ctx.lineTo(plotLeft + 190, plotTop + 12);
             ctx.stroke();
             ctx.fillStyle = '#22c55e';
-            ctx.fillText('编码器位置 °', plotLeft + 196, plotTop + 16);
+            ctx.fillText('跟随误差 °', plotLeft + 196, plotTop + 16);
 
             ctx.beginPath();
             ctx.moveTo(plotLeft, plotTop);
@@ -1530,8 +1534,6 @@
             ctx.lineTo(plotRight, plotBottom);
             ctx.stroke();
 
-            const points = state.waveHistory.length ? state.waveHistory : [{t: now - windowMs, rpm: 0, pos: 0}];
-            const filtered = points.filter((entry) => now - entry.t <= windowMs);
             if (filtered.length > 1) {
                 ctx.beginPath();
                 filtered.forEach((entry, i) => {
@@ -1547,7 +1549,7 @@
                 ctx.beginPath();
                 filtered.forEach((entry, i) => {
                     const x = plotLeft + ((now - entry.t) / windowMs) * (plotRight - plotLeft);
-                    const y = posLine(entry.pos);
+                    const y = followErrorLine(entry.followError);
                     if (i === 0) ctx.moveTo(x, y);
                     else ctx.lineTo(x, y);
                 });
@@ -1681,7 +1683,7 @@
                 state.motionSpeedRpm = frame.value | 0;
             }
             if (frame.reg === 0x121) {
-                state.motionPositionDeg = Number((frame.value || 0) / 1000.0);
+                state.motionFollowErrorDeg = (frame.value | 0) / 1000.0;
             }
             if (frame.reg === 0x122) {
                 const windowValue = clamp(Number(frame.value || 2000), 2000, 2000);
