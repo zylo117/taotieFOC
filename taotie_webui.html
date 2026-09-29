@@ -423,6 +423,77 @@
             color: var(--muted);
         }
 
+                .wave-popup {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            width: min(54vw, 760px);
+            height: auto;
+            max-width: calc(100vw - 32px);
+            min-width: 320px;
+            background: rgba(15, 23, 42, 0.96);
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            box-shadow: 0 24px 60px rgba(2, 6, 23, 0.72);
+            z-index: 999;
+            display: none;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        .wave-popup.visible {
+            display: block;
+        }
+
+        .wave-popup.maximized {
+            width: calc(100vw - 48px);
+            height: calc(100vh - 48px);
+            right: 24px;
+            bottom: 24px;
+        }
+
+        .wave-popup-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--line);
+            background: rgba(15, 23, 42, 0.8);
+            cursor: move;
+            user-select: none;
+        }
+
+        .wave-popup-header h3 {
+            margin: 0;
+            font-size: 1rem;
+        }
+
+        .wave-popup-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .wave-popup-body {
+            padding: 12px;
+            background: rgba(2, 6, 23, 0.76);
+            height: calc(100% - 56px);
+        }
+
+        .wave-popup canvas {
+            display: block;
+            width: 100%;
+            height: min(54vw, 360px);
+            border-radius: 12px;
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            background: rgba(2, 6, 23, 0.7);
+        }
+
+        .wave-popup.maximized canvas {
+            height: calc(100vh - 170px);
+        }
+
         input[readonly],
         input:disabled,
         textarea[readonly] {
@@ -543,8 +614,8 @@
                             </select>
                         </div>
                         <div class="field">
-                            <label>窗口长度</label>
-                            <input id="waveWindowMsInput" max="2000" min="2000" step="50" type="number" value="2000"/>
+                            <label>窗口长度（10 秒）</label>
+                            <input id="waveWindowMsInput" max="10000" min="10000" step="100" type="number" value="10000"/>
                         </div>
                         <div class="field">
                             <label>STEP 脉宽（ns）</label>
@@ -566,6 +637,7 @@
                         <button id="motorDisableBtn">电机失能（EN=1）</button>
                         <button class="warn" id="singleStepBtn">半圈正向脉冲</button>
                         <button id="pauseWaveBtn">暂停查看</button>
+                        <button id="popWaveBtn">弹出波形</button>
                     </div>
                     <div class="tiny mt">说明：脉冲数固定按 256 细分角度基准计算，1.8° 电机每转 51200 个
                         STEP，与驱动器微步和插值设置无关。
@@ -576,6 +648,19 @@
                 </div>
             </div>
         </section>
+
+        <div class="wave-popup" id="wavePopup">
+            <div class="wave-popup-header" id="wavePopupHeader">
+                <h3>测速波形（独立窗口）</h3>
+                <div class="wave-popup-actions">
+                    <button id="maximizeWavePopupBtn">最大化</button>
+                    <button id="closeWavePopupBtn">关闭</button>
+                </div>
+            </div>
+            <div class="wave-popup-body">
+                <canvas height="320" id="motionWavePopupCanvas" width="820"></canvas>
+            </div>
+        </div>
 
         <aside class="panel">
             <div class="panel-header">
@@ -1445,7 +1530,7 @@
                 followError: Number(state.motionFollowErrorDeg || 0)
             };
             state.waveHistory.push(sample);
-            const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
+            const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 10000), 10000, 10000);
             const cutoff = now - windowMs;
             state.waveHistory = state.waveHistory.filter((entry) => entry.t >= cutoff);
             if (state.waveHistory.length > 2000) {
@@ -1453,8 +1538,9 @@
             }
         }
 
-        function drawWaveform() {
-            const canvas = document.getElementById('motionWaveCanvas');
+        function drawWaveform(canvasId = 'motionWaveCanvas') {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
             const ctx = canvas.getContext('2d');
             const width = canvas.width;
             const height = canvas.height;
@@ -1464,7 +1550,7 @@
             const plotRight = width - rightPad;
             const plotTop = 18;
             const plotBottom = height - 24;
-            const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
+            const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 10000), 10000, 10000);
             const now = state.wavePaused ? state.wavePausedAt : performance.now();
 
             ctx.clearRect(0, 0, width, height);
@@ -1473,7 +1559,7 @@
 
             ctx.strokeStyle = 'rgba(148,163,184,0.24)';
             ctx.lineWidth = 1;
-            const gridCount = Math.floor(windowMs / 50);
+            const gridCount = Math.floor(windowMs / 100);
             for (let i = 0; i <= gridCount; i++) {
                 const x = plotLeft + ((plotRight - plotLeft) * i) / gridCount;
                 ctx.beginPath();
@@ -1559,7 +1645,58 @@
             }
 
             ctx.fillStyle = 'rgba(148,163,184,0.75)';
-            ctx.fillText('2 s / 50 ms grid', plotRight - 92, height - 6);
+            ctx.fillText('10 s / 100 ms grid', plotRight - 110, height - 6);
+        }
+
+        function toggleWavePopup(forceOpen) {
+            const popup = document.getElementById('wavePopup');
+            if (!popup) return;
+            const nextVisible = typeof forceOpen === 'boolean' ? forceOpen : !popup.classList.contains('visible');
+            popup.classList.toggle('visible', nextVisible);
+            if (nextVisible) {
+                drawWaveform('motionWavePopupCanvas');
+            }
+        }
+
+        function toggleWavePopupMaximize() {
+            const popup = document.getElementById('wavePopup');
+            const button = document.getElementById('maximizeWavePopupBtn');
+            if (!popup || !button) return;
+            const isMaximized = popup.classList.toggle('maximized');
+            button.textContent = isMaximized ? '还原' : '最大化';
+            drawWaveform('motionWavePopupCanvas');
+        }
+
+        function bindWavePopupDrag() {
+            const popup = document.getElementById('wavePopup');
+            const header = document.getElementById('wavePopupHeader');
+            if (!popup || !header) return;
+
+            let dragState = null;
+
+            header.addEventListener('mousedown', (event) => {
+                if (popup.classList.contains('maximized')) return;
+                dragState = {
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    left: popup.offsetLeft,
+                    top: popup.offsetTop
+                };
+            });
+
+            window.addEventListener('mousemove', (event) => {
+                if (!dragState) return;
+                const dx = event.clientX - dragState.startX;
+                const dy = event.clientY - dragState.startY;
+                popup.style.left = `${dragState.left + dx}px`;
+                popup.style.top = `${dragState.top + dy}px`;
+                popup.style.right = 'auto';
+                popup.style.bottom = 'auto';
+            });
+
+            window.addEventListener('mouseup', () => {
+                dragState = null;
+            });
         }
 
         async function startMotionTest() {
@@ -1568,7 +1705,7 @@
             const accelRpm = Number(document.getElementById('accelRpmSelect').value || 600);
             const motionMode = Number(document.getElementById('motionModeSelect').value || 0);
             const pulseCount = Math.max(2, Math.round(getEffectivePulseCount()));
-            const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 2000), 2000, 2000);
+            const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 10000), 10000, 10000);
             const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 200), 200, 20000);
             const simulationMode = Number(document.getElementById('simulationModeSelect').value || 1);
             document.getElementById('waveWindowMsInput').value = String(windowMs);
@@ -1656,6 +1793,9 @@
                 await sendManualMotionCommand(0x126, `${simulationMode ? '模拟' : '真实'}半圈正向脉冲：DIR=1（已同步速度/加速度参数）`);
             });
             document.getElementById('pauseWaveBtn').addEventListener('click', toggleWavePause);
+            document.getElementById('popWaveBtn').addEventListener('click', () => toggleWavePopup());
+            document.getElementById('maximizeWavePopupBtn').addEventListener('click', toggleWavePopupMaximize);
+            document.getElementById('closeWavePopupBtn').addEventListener('click', () => toggleWavePopup(false));
             ['startRpmSelect', 'maxRpmSelect', 'accelRpmSelect', 'pulseCountInput', 'microsteps'].forEach((id) => {
                 document.getElementById(id).addEventListener('change', updateMotionDurationEstimate);
             });
@@ -1665,7 +1805,7 @@
                 log('[INFO] 已应用整定结果到 PID 参数');
             });
             document.getElementById('waveWindowMsInput').addEventListener('change', function () {
-                const value = clamp(Number(this.value || 2000), 2000, 2000);
+                const value = clamp(Number(this.value || 10000), 10000, 10000);
                 this.value = String(value);
                 if (state.connected) {
                     writeRegister(0x122, value);
@@ -1686,12 +1826,13 @@
                 state.motionFollowErrorDeg = (frame.value | 0) / 1000.0;
             }
             if (frame.reg === 0x122) {
-                const windowValue = clamp(Number(frame.value || 2000), 2000, 2000);
+                const windowValue = clamp(Number(frame.value || 10000), 10000, 10000);
                 document.getElementById('waveWindowMsInput').value = String(windowValue);
             }
         }
 
         bindDialDrag();
+        bindWavePopupDrag();
         bindControls();
         buildMotionControlOptions();
         renderRegisterMap();
@@ -1702,6 +1843,9 @@
         state.motionWaveTimer = window.setInterval(() => {
             pushWaveSample();
             drawWaveform();
+            if (document.getElementById('wavePopup')?.classList.contains('visible')) {
+                drawWaveform('motionWavePopupCanvas');
+            }
         }, 40);
 
         setInterval(() => {
