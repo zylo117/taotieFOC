@@ -130,6 +130,11 @@ extern "C" void usb_usart_config(linecoding_type linecoding)
 
 int main(void)
 {
+    // 开启Cortex‑M4 FPU
+    SCB->CPACR |= ((3UL << 10*2)|(3UL << 11*2));
+    __asm volatile ("DSB");
+    __asm volatile ("ISB");
+
     nvic_priority_group_config(NVIC_PRIORITY_GROUP_4);
     system_clock_config();
 

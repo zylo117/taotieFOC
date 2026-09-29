@@ -1,6 +1,8 @@
 #include "kth7823_encoder.h"
 #include <math.h>
 #include <string.h>
+#include <dsp/fast_math_functions.h>
+
 #include "at32f403a_407_board.h"
 
 namespace
@@ -91,7 +93,7 @@ uint16_t Kth7823Encoder::readRaw()
     raw = encoder_common::encoder_spi2_rw16(last_tx_frame_);
     encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, true);
     last_frame_raw_ = raw;
-    // 原始raw转为弧度
+    // 原始raw转为极坐标theta（0-2pi）
     last_frame_theta_ = static_cast<float>(raw) * 2.0F * static_cast<float>(M_PI) / 65536.0F;
     read_count_++;
     if (raw == 0xFFFFU)
@@ -144,8 +146,8 @@ bool Kth7823Encoder::updateFilteredSample()
 
     //===== 1、原始角度转为单位圆 X(cos), Y(sin) =====
     float theta = last_frame_theta_;
-    float s = sinf(theta);  // Y
-    float c = cosf(theta);  // X
+    float s = arm_sin_f32(theta);
+    float c = arm_cos_f32(theta);
 
     if (filter_count_ < filter_window_size_)
     {
@@ -178,7 +180,9 @@ bool Kth7823Encoder::updateFilteredSample()
     float avg_c = sum_c_ / static_cast<float>(active_cnt);
 
     //=====3、由平均XY坐标还原得到角度弧度 atan2(Y,X) =====
-    filtered_theta_ = atan2f(avg_s, avg_c);
+    float result;
+    arm_atan2_f32(avg_s, avg_c, &result);
+    filtered_theta_ = result;
 
     /*
     ====================【废弃旧算术滑动平均，仅留参考】====================
@@ -241,6 +245,7 @@ float Kth7823Encoder::lastFrameTheta() const
     return last_frame_theta_;
 }
 
+// 极坐标theta转0-360度角度
 float Kth7823Encoder::lastFrameAngle() const
 {
     return last_frame_theta_ * 180.0F / static_cast<float>(M_PI);
