@@ -56,7 +56,7 @@ static void encoder_timer_init(void)
 static void control_timer_init(void)
 {
     crm_periph_clock_enable(CRM_TMR4_PERIPH_CLOCK, TRUE);
-    tmr_base_init(TMR4, 1000U - 1U, system_core_clock / 25000000U - 1U);
+    tmr_base_init(TMR4, 1000U - 1U, system_core_clock / 30000000U - 1U);
     tmr_cnt_dir_set(TMR4, TMR_COUNT_UP);
     tmr_clock_source_div_set(TMR4, TMR_CLOCK_DIV1);
     tmr_interrupt_enable(TMR4, TMR_OVF_INT, TRUE);
