@@ -130,6 +130,7 @@ float Kth7823Encoder::readFilteredAngle()
 */
 bool Kth7823Encoder::updateFilteredSample()
 {
+    // 不要用O(1)环形滑动平均，会引入浮点计算的累积误差，必须每次全部重计算
     const uint16_t raw = readRaw();
     if (raw == 0xFFFFU)
     {
@@ -154,58 +155,34 @@ bool Kth7823Encoder::updateFilteredSample()
         // -------- 窗口填充阶段，还没有填满 --------
         win_s_[filter_count_] = s;
         win_c_[filter_count_] = c;
-        sum_s_ += s;
-        sum_c_ += c;
         filter_count_++;
         filter_index_ = 0U;
     }
     else
     {
-        // -------- 窗口已满：O(1)环形滑动，减去被淘汰旧样本，加入新样本 --------
-        sum_s_ -= win_s_[filter_index_];
-        sum_c_ -= win_c_[filter_index_];
-
         win_s_[filter_index_] = s;
         win_c_[filter_index_] = c;
-
-        sum_s_ += s;
-        sum_c_ += c;
-
         filter_index_ = (filter_index_ + 1U) % filter_window_size_;
     }
 
     //=====2、求X、Y坐标平均值 =====
+    float sum_s = 0.0F;
+    float sum_c = 0.0F;
     uint8_t active_cnt = (filter_count_ < filter_window_size_) ? filter_count_ : filter_window_size_;
-    float avg_s = sum_s_ / static_cast<float>(active_cnt);
-    float avg_c = sum_c_ / static_cast<float>(active_cnt);
+    for(uint8_t i = 0U; i < active_cnt; i++)
+    {
+        sum_s += win_s_[i];
+        sum_c += win_c_[i];
+    }
+
+    float avg_s = sum_s / static_cast<float>(active_cnt);
+    float avg_c = sum_c / static_cast<float>(active_cnt);
 
     //=====3、由平均XY坐标还原得到角度弧度 atan2(Y,X) =====
     float result;
     arm_atan2_f32(avg_s, avg_c, &result);
     filtered_theta_ = result;
 
-    /*
-    ====================【废弃旧算术滑动平均，仅留参考】====================
-    if (filter_count_ < filter_window_size_)
-    {
-        filter_window_[filter_count_] = raw;
-        filter_sum_ += raw;
-        ++filter_count_;
-        filter_index_ = (filter_count_ < filter_window_size_) ? filter_count_ : 0U;
-    }
-    else
-    {
-        const uint16_t old_value = filter_window_[filter_index_];
-        filter_sum_ -= old_value;
-        filter_window_[filter_index_] = raw;
-        filter_sum_ += raw;
-        filter_index_ = (filter_index_ + 1U) % filter_window_size_;
-    }
-    const uint8_t active_count = (filter_count_ < filter_window_size_) ? filter_count_ : filter_window_size_;
-    filtered_raw_angle_ = static_cast<uint16_t>(filter_sum_ / static_cast<uint32_t>(active_count));
-    ！！警告：算术平均只适合电机不会跨过0°；跨0‑65535边界滤波结果完全错误。
-    =====================================================================
-    */
     return true;
 }
 
