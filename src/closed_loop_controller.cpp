@@ -522,49 +522,49 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     return protocol_->readRegister(reg, value);
 }
 
-void ClosedLoopController::syncStepDirection()
-{
-    if (driver_ == nullptr)
-    {
-        return;
-    }
-
-    gpio_type* step_port = GPIOB;
-    gpio_type* dir_port = GPIOA;
-    gpio_type* en_port = GPIOA;
-
-    uint8_t step_state = gpio_input_data_bit_read(step_port, GPIO_PINS_3);
-    uint8_t dir_state = gpio_input_data_bit_read(dir_port, GPIO_PINS_15);
-    uint8_t en_state = gpio_input_data_bit_read(en_port, EN_OUT_PIN);
-
-    if (motion_running_)
-    {
-        return;
-    }
-
-    if (step_state != last_step_state_)
-    {
-        if (step_state != 0U)
-        {
-            command_step_ += (dir_state != 0U) ? 1 : -1;
-            target_step_ = command_step_;
-            driver_->sendStepPulse(step_pulse_width_ns_);
-        }
-        last_step_state_ = step_state;
-    }
-
-    if (dir_state != last_dir_state_)
-    {
-        driver_->setDirection(dir_state != 0U);
-        last_dir_state_ = dir_state;
-    }
-
-    if (en_state != last_en_state_)
-    {
-        driver_->setEnable(en_state != 0U);
-        last_en_state_ = en_state;
-    }
-}
+// void ClosedLoopController::syncStepDirection()
+// {
+//     if (driver_ == nullptr)
+//     {
+//         return;
+//     }
+//
+//     gpio_type* step_port = GPIOB;
+//     gpio_type* dir_port = GPIOA;
+//     gpio_type* en_port = GPIOA;
+//
+//     uint8_t step_state = gpio_input_data_bit_read(step_port, GPIO_PINS_3);
+//     uint8_t dir_state = gpio_input_data_bit_read(dir_port, GPIO_PINS_15);
+//     uint8_t en_state = gpio_input_data_bit_read(en_port, EN_OUT_PIN);
+//
+//     if (motion_running_)
+//     {
+//         return;
+//     }
+//
+//     if (step_state != last_step_state_)
+//     {
+//         if (step_state != 0U)
+//         {
+//             command_step_ += (dir_state != 0U) ? 1 : -1;
+//             target_step_ = command_step_;
+//             driver_->sendStepPulse(step_pulse_width_ns_);
+//         }
+//         last_step_state_ = step_state;
+//     }
+//
+//     if (dir_state != last_dir_state_)
+//     {
+//         driver_->setDirection(dir_state != 0U);
+//         last_dir_state_ = dir_state;
+//     }
+//
+//     if (en_state != last_en_state_)
+//     {
+//         driver_->setEnable(en_state != 0U);
+//         last_en_state_ = en_state;
+//     }
+// }
 
 void ClosedLoopController::updateLoopFrequencyStats(uint64_t time_ns)
 {
@@ -861,6 +861,8 @@ void ClosedLoopController::startMotion()
         // step_pulse_width_ns_是脉宽，固定且不可随便改，虽然短，但是也要考虑它可能存在的的影响
         // 每一圈有micro_steps_per_round个细分微步
 
+        k_step_pulse_ticks = std::ceil(static_cast<float>(step_pulse_width_ns_) / static_cast<float>(stepper_common::target_tick_time));
+
         // 单位换算 RPM → step/s；RPM/s加速度 → step/s²
         // f_step(step/s) = RPM * micro_steps_per_round / 60，每秒多少微步
         const float rpm2step = static_cast<float>(micro_steps_per_round) / 60.0f;
@@ -873,10 +875,13 @@ void ClosedLoopController::startMotion()
         const float v0 = motion_start_step_s_;
         const float vmax = motion_max_step_s_;
         const float a = motion_accel_step_s2_;
+        printf("v0: %.6f, vmax: %.6f, a: %.6f\n", v0, vmax, a);
         accel_total_steps_ = static_cast<uint32_t>((vmax * vmax - v0 * v0) / (2.0f * a));
 
         // 减速段：从vmax减速到0，加速度大小同样a
         decel_total_steps_ = static_cast<uint32_t>((vmax * vmax) / (2.0f * a));
+        printf("original accel_total_steps_: %lu\n", accel_total_steps_);
+        printf("original decel_total_steps_: %lu\n", decel_total_steps_);
 
         uint32_t total_req_steps = motion_pulse_count_;
 
@@ -1152,21 +1157,31 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     {
         // 人为规定第一个和最后arr周期是用来提前和延后换向的，
         // 如果是同向，这两个的arr周期为0，否则arr为guard_tick
-        // uint32_t num_steps = floor(motion_step_accumulator_);
-        uint32_t num_steps = 1;
+        uint32_t num_steps = floor(motion_step_accumulator_);
         uint32_t seq_count = num_steps + 2;  // 乘2是因为脉冲必须先高后低，高是一个ARR周期，低也是一个ARR周期
         uint32_t arr_seq_cycle[seq_count];
         const bool current_direction = motion_direction_ > 0;
         // uint32_t step_ticks = stepper_common::F_APB / current_step_speed_;
-        uint32_t step_ticks = stepper_common::k_step_pulse_ticks * 2;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
 
-        uint64_t max_iter_time_ns = (2 * stepper_common::guard_tick + step_ticks * num_steps) * stepper_common::target_tick_time;
+        const uint64_t direction_switch_guard_time_ns = 2 * stepper_common::guard_tick * stepper_common::target_tick_time;
+        const uint64_t reserved_time_ns = 5;
+        uint64_t remaining_time = delta_step_ns - reserved_time_ns - direction_switch_guard_time_ns;
+        uint32_t remaining_ticks = remaining_time / stepper_common::target_tick_time;
 
-        // 因为硬件TMR定时器+DMA工作是异步的，耗时必须短于软件定时器迭代时间，否则就会输出延迟
-        if (delta_step_ns < max_iter_time_ns)
+        // uint32_t step_ticks = k_step_pulse_ticks * 2;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
+        // uint64_t max_iter_time_ns = (2 * stepper_common::guard_tick + step_ticks * num_steps) * stepper_common::target_tick_time;
+        // // 因为硬件TMR定时器+DMA工作是异步的，耗时必须短于软件定时器迭代时间，否则就会输出延迟
+        // if (delta_step_ns < max_iter_time_ns)
+        // {
+        //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
+        //     printf("shitfuck, delta_step_ns: %.6f us < max_iter_time_ns: %.6f us, lower your iter rate.\n", delta_step_ns / 1000.f, max_iter_time_ns / 1000.f);
+        // }
+
+        uint32_t step_ticks = remaining_ticks / num_steps;
+        if (step_ticks < stepper_common::k_step_pulse_ticks * 2)
         {
             printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
-            printf("shitfuck, delta_step_ns: %.6f us < max_iter_time_ns: %.6f us, lower your iter rate.\n", delta_step_ns / 1000.f, max_iter_time_ns / 1000.f);
+            printf("shitfuck, delta_step_ns: %.6f us, step_ticks < 2*min_k_step_pulse_ticks %lu us, lower your iter rate.\n", delta_step_ns / 1000.f, stepper_common::k_step_pulse_ticks * 2);
         }
         generate_constant_speed_step_sequence(arr_seq_cycle, seq_count, step_ticks);
         add_dir_to_step_sequence(arr_seq_cycle, seq_count, stepper_common::guard_tick, false);
