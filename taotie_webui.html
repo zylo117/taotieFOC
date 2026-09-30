@@ -423,6 +423,25 @@
             color: var(--muted);
         }
 
+        .wave-readouts {
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 12px 32px;
+            margin-top: 8px;
+            font-size: 0.82rem;
+            text-align: center;
+        }
+
+        .wave-readouts span {
+            color: var(--muted);
+        }
+
+        .wave-readouts strong {
+            color: var(--text);
+            font-variant-numeric: tabular-nums;
+        }
+
                 .wave-popup {
             position: fixed;
             right: 24px;
@@ -643,9 +662,12 @@
                         STEP，与驱动器微步和插值设置无关。
                     </div>
                     <div class="tiny mt" id="motionDurationEstimate">预计时间：等待参数</div>
-                    <canvas height="220" id="motionWaveCanvas" style="width:100%;height:220px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"
+                    <canvas height="260" id="motionWaveCanvas" style="width:100%;height:260px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"
                             width="620"></canvas>
-                    <div class="tiny mt" id="motionWaveCurrentError">瞬时跟随误差：0.000°</div>
+                    <div class="wave-readouts">
+                        <span>即时转速 <strong id="waveSpeedReadout">0.00 RPM</strong></span>
+                        <span>跟随误差 <strong id="waveErrorReadout">0.000°</strong></span>
+                    </div>
                 </div>
             </div>
         </section>
@@ -660,6 +682,10 @@
             </div>
             <div class="wave-popup-body">
                 <canvas height="320" id="motionWavePopupCanvas" width="820"></canvas>
+                <div class="wave-readouts">
+                    <span>即时转速 <strong id="wavePopupSpeedReadout">0.00 RPM</strong></span>
+                    <span>跟随误差 <strong id="wavePopupErrorReadout">0.000°</strong></span>
+                </div>
             </div>
         </div>
 
@@ -946,6 +972,11 @@
             , wavePaused: false
             , wavePausedAt: 0
             , motionWaveTimer: null
+            , waveCaptureActive: false
+            , waveCaptureStartedAt: 0
+            , waveMotionObserved: false
+            , lastWaveMotionPollAt: 0
+            , waveFrozenAt: 0
             , lastWaveStamp: 0
         };
 
@@ -1426,6 +1457,7 @@
         }
 
         async function stopMotor() {
+            stopWaveCapture();
             log('[WARN] 发送停止命令，建议先关闭闭环并切断输出');
             if (state.connected) {
                 await writeRegister(0x107, 0);
@@ -1523,7 +1555,7 @@
         updateMotionDurationEstimate();
 
         function pushWaveSample() {
-            if (state.wavePaused) return;
+            if (!state.waveCaptureActive || state.wavePaused) return;
             const now = performance.now();
             const sample = {
                 t: now,
@@ -1539,6 +1571,50 @@
             }
         }
 
+        function startWaveCapture() {
+            if (state.motionWaveTimer !== null) {
+                window.clearInterval(state.motionWaveTimer);
+            }
+            state.waveHistory = [];
+            state.motionSpeedRpm = 0;
+            state.motionFollowErrorDeg = 0;
+            state.wavePaused = false;
+            state.wavePausedAt = 0;
+            state.waveCaptureStartedAt = performance.now();
+            state.lastWaveMotionPollAt = state.waveCaptureStartedAt;
+            state.waveMotionObserved = false;
+            state.waveFrozenAt = 0;
+            state.waveCaptureActive = true;
+            document.getElementById('pauseWaveBtn').textContent = '暂停查看';
+            state.motionWaveTimer = window.setInterval(() => {
+                if (!state.waveCaptureActive) return;
+                pushWaveSample();
+                drawWaveform();
+                if (document.getElementById('wavePopup').classList.contains('visible')) {
+                    drawWaveform('motionWavePopupCanvas');
+                }
+
+                const now = performance.now();
+                if (state.connected && now - state.lastWaveMotionPollAt >= 100) {
+                    state.lastWaveMotionPollAt = now;
+                    readRegister(0x11F);
+                }
+            }, 40);
+        }
+
+        function stopWaveCapture() {
+            if (!state.waveCaptureActive) return;
+            state.waveFrozenAt = state.wavePaused ? state.wavePausedAt : performance.now();
+            state.waveCaptureActive = false;
+            state.wavePaused = false;
+            state.wavePausedAt = 0;
+            if (state.motionWaveTimer !== null) {
+                window.clearInterval(state.motionWaveTimer);
+                state.motionWaveTimer = null;
+            }
+            document.getElementById('pauseWaveBtn').textContent = '暂停查看';
+        }
+
         function drawWaveform(canvasId = 'motionWaveCanvas') {
             const canvas = document.getElementById(canvasId);
             if (!canvas) return;
@@ -1552,7 +1628,9 @@
             const plotTop = 18;
             const plotBottom = height - 24;
             const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 10000), 10000, 10000);
-            const now = state.wavePaused ? state.wavePausedAt : performance.now();
+            if (!state.waveCaptureActive && state.waveHistory.length === 0) return;
+            const now = state.wavePaused ? state.wavePausedAt :
+                state.waveCaptureActive ? performance.now() : state.waveFrozenAt;
 
             ctx.clearRect(0, 0, width, height);
             ctx.fillStyle = 'rgba(2,6,23,0.82)';
@@ -1563,17 +1641,32 @@
             const gridCount = Math.floor(windowMs / 100);
             for (let i = 0; i <= gridCount; i++) {
                 const x = plotLeft + ((plotRight - plotLeft) * i) / gridCount;
+                const isMajorGrid = i % 10 === 0;
+                ctx.strokeStyle = isMajorGrid ? 'rgba(148,163,184,0.32)' : 'rgba(148,163,184,0.14)';
+                ctx.lineWidth = isMajorGrid ? 1 : 0.7;
                 ctx.beginPath();
                 ctx.moveTo(x, plotTop);
                 ctx.lineTo(x, plotBottom);
                 ctx.stroke();
             }
-            for (let i = 0; i <= 4; i++) {
-                const y = plotTop + ((plotBottom - plotTop) / 4) * i;
+            ctx.textBaseline = 'middle';
+            ctx.font = '11px sans-serif';
+            for (let i = 0; i <= 12; i++) {
+                const y = plotTop + ((plotBottom - plotTop) / 12) * i;
+                const isMajorGrid = i % 3 === 0;
+                const rpmTick = 3000 - (i * 500);
+                const errorTick = 30 - (i * 5);
+                ctx.strokeStyle = isMajorGrid ? 'rgba(148,163,184,0.36)' : 'rgba(148,163,184,0.2)';
+                ctx.lineWidth = isMajorGrid ? 1 : 0.7;
                 ctx.beginPath();
                 ctx.moveTo(plotLeft, y);
                 ctx.lineTo(plotRight, y);
                 ctx.stroke();
+                ctx.fillStyle = 'rgba(226,232,240,0.78)';
+                ctx.textAlign = 'right';
+                ctx.fillText(String(rpmTick), plotLeft - 6, y);
+                ctx.textAlign = 'left';
+                ctx.fillText(`${errorTick > 0 ? '+' : ''}${errorTick}°`, plotRight + 6, y);
             }
 
             const speedLine = (rpm) => {
@@ -1585,20 +1678,20 @@
             const followErrorLine = (error) => {
                 return plotBottom - ((error + followErrorRange) / (2 * followErrorRange)) * (plotBottom - plotTop);
             };
-            document.getElementById('motionWaveCurrentError').textContent =
-                `瞬时跟随误差：${Number(state.motionFollowErrorDeg || 0).toFixed(3)}°`;
+            const speedReadoutId = canvasId === 'motionWavePopupCanvas' ? 'wavePopupSpeedReadout' : 'waveSpeedReadout';
+            const errorReadoutId = canvasId === 'motionWavePopupCanvas' ? 'wavePopupErrorReadout' : 'waveErrorReadout';
+            document.getElementById(speedReadoutId).textContent = `${Number(state.motionSpeedRpm || 0).toFixed(2)} RPM`;
+            document.getElementById(errorReadoutId).textContent = `${Number(state.motionFollowErrorDeg || 0).toFixed(3)}°`;
 
             ctx.strokeStyle = 'rgba(56,189,248,0.7)';
             ctx.fillStyle = '#e2e8f0';
             ctx.font = '12px sans-serif';
+            ctx.textBaseline = 'alphabetic';
+            ctx.textAlign = 'left';
             ctx.fillText('RPM', 10, 14);
-            ctx.fillText('瞬时位置误差°', width - 86, 14);
-            ctx.fillText('3000', 4, plotTop + 4);
-            ctx.fillText('0', 18, plotBottom - 2);
-            ctx.fillText('-3000', 2, plotBottom + 14);
-            ctx.fillText('+30°', width - 48, plotTop + 4);
-            ctx.fillText('0°', width - 34, plotBottom - 2);
-            ctx.fillText('-30°', width - 48, plotBottom + 14);
+            ctx.textAlign = 'right';
+            ctx.fillText('瞬时位置误差°', width - 4, 14);
+            ctx.textAlign = 'left';
 
             ctx.strokeStyle = '#38bdf8';
             ctx.lineWidth = 3;
@@ -1651,7 +1744,9 @@
             }
 
             ctx.fillStyle = 'rgba(148,163,184,0.75)';
-            ctx.fillText('10 s / 100 ms grid', plotRight - 110, height - 6);
+            ctx.textAlign = 'right';
+            ctx.fillText('10 s / 100 ms grid', plotRight, height - 6);
+            ctx.textAlign = 'left';
         }
 
         function toggleWavePopup(forceOpen) {
@@ -1659,7 +1754,7 @@
             if (!popup) return;
             const nextVisible = typeof forceOpen === 'boolean' ? forceOpen : !popup.classList.contains('visible');
             popup.classList.toggle('visible', nextVisible);
-            if (nextVisible) {
+            if (nextVisible && (state.waveCaptureActive || state.waveHistory.length > 0)) {
                 drawWaveform('motionWavePopupCanvas');
             }
         }
@@ -1670,7 +1765,9 @@
             if (!popup || !button) return;
             const isMaximized = popup.classList.toggle('maximized');
             button.textContent = isMaximized ? '还原' : '最大化';
-            drawWaveform('motionWavePopupCanvas');
+            if (state.waveCaptureActive || state.waveHistory.length > 0) {
+                drawWaveform('motionWavePopupCanvas');
+            }
         }
 
         function bindWavePopupDrag() {
@@ -1706,6 +1803,10 @@
         }
 
         async function startMotionTest() {
+            if (!state.connected) {
+                log('[WARN] 尚未连接串口，无法启动测速运动');
+                return;
+            }
             const startRpm = Number(document.getElementById('startRpmSelect').value || 120);
             const maxRpm = Number(document.getElementById('maxRpmSelect').value || 1000);
             const accelRpm = Number(document.getElementById('accelRpmSelect').value || 600);
@@ -1717,24 +1818,21 @@
             document.getElementById('waveWindowMsInput').value = String(windowMs);
             document.getElementById('stepPulseWidthNsInput').value = String(stepPulseWidthNs);
 
-            if (state.connected) {
-                await writeRegister(CUSTOM_REGS.HOST_SIMULATE, simulationMode);
-                await writeRegister(0x11A, startRpm);
-                await writeRegister(0x11B, maxRpm);
-                await writeRegister(0x11C, accelRpm);
-                await writeRegister(0x11D, pulseCount);
-                await writeRegister(0x11E, motionMode);
-                await writeRegister(0x123, stepPulseWidthNs);
-                await writeRegister(0x11F, 1);
-                await writeRegister(0x122, windowMs);
-            }
-
-            state.motionSpeedRpm = 0;
-            state.waveHistory = [];
+            await writeRegister(CUSTOM_REGS.HOST_SIMULATE, simulationMode);
+            await writeRegister(0x11A, startRpm);
+            await writeRegister(0x11B, maxRpm);
+            await writeRegister(0x11C, accelRpm);
+            await writeRegister(0x11D, pulseCount);
+            await writeRegister(0x11E, motionMode);
+            await writeRegister(0x123, stepPulseWidthNs);
+            await writeRegister(0x122, windowMs);
+            startWaveCapture();
+            await writeRegister(0x11F, 1);
             log(`[INFO] ${simulationMode ? '上位机模拟' : '真实 STEP/DIR'}：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms step=${stepPulseWidthNs}ns`);
         }
 
         async function stopMotionTest() {
+            stopWaveCapture();
             if (state.connected) {
                 await writeRegister(0x11F, 0);
             }
@@ -1746,6 +1844,11 @@
             if (!state.connected) {
                 log('[WARN] 尚未连接串口，无法发送电机测试命令');
                 return;
+            }
+            if (reg === 0x126) {
+                startWaveCapture();
+            } else if (reg === 0x124 || reg === 0x125) {
+                stopWaveCapture();
             }
             await writeRegister(reg, 1);
             log('[INFO] ' + message);
@@ -1835,6 +1938,13 @@
                 const windowValue = clamp(Number(frame.value || 10000), 10000, 10000);
                 document.getElementById('waveWindowMsInput').value = String(windowValue);
             }
+            if (frame.reg === 0x11F && (frame.cmd === 0x10 || frame.cmd === 0x81) && state.waveCaptureActive) {
+                if ((frame.value | 0) !== 0) {
+                    state.waveMotionObserved = true;
+                } else if (state.waveMotionObserved || performance.now() - state.waveCaptureStartedAt >= 150) {
+                    stopWaveCapture();
+                }
+            }
         }
 
         bindDialDrag();
@@ -1845,14 +1955,6 @@
         updateDialVisual();
         updateFaultStatus();
         updateTelemetryDisplay();
-
-        state.motionWaveTimer = window.setInterval(() => {
-            pushWaveSample();
-            drawWaveform();
-            if (document.getElementById('wavePopup')?.classList.contains('visible')) {
-                drawWaveform('motionWavePopupCanvas');
-            }
-        }, 40);
 
         setInterval(() => {
             updateTelemetryDisplay();
