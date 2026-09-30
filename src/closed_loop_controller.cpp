@@ -1038,12 +1038,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_encoder_previous_angle_ = encoder_filtered_angle_;
     }
 
-    // 同步上传信息到串口
-    syncProtocolTelemetry();
-
     // 如果当前没有运动在运行，直接退出
     if (!motion_running_)
     {
+        syncProtocolTelemetry();
         return;
     }
 
@@ -1063,6 +1061,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_ramp_stage_ = RAMP_STAGE_DONE; // 设置状态为运动完成
         current_step_speed_ = 0.0f; // 运动结束强制把当前速度清零，防止下次运动残留速度
         stopMotion();
+        syncProtocolTelemetry();
         return;
     }
 
@@ -1175,13 +1174,15 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
         motion_steps_emitted_ += num_steps;
         const float step_angle_deg = 360.0f / static_cast<float>(getMicroStepsPerRound(driver_));
-        motion_commanded_travel_deg_ += static_cast<float>(motion_direction_) * step_angle_deg * static_cast<float>(num_steps);
+        motion_commanded_travel_deg_ = static_cast<float>(motion_direction_) * step_angle_deg *
+                                       static_cast<float>(motion_steps_emitted_);
         motion_follow_error_deg_ = motion_commanded_travel_deg_ - motion_encoder_travel_deg_;
         motion_step_accumulator_ -= num_steps;
     }
 
     // 更新脉冲模块的时间戳
     motion_last_step_time_ns_ = now_ns;
+    syncProtocolTelemetry();
 }
 
 void ClosedLoopController::stopMotion()
