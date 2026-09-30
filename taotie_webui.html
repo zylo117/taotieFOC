@@ -349,9 +349,33 @@
             filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.7));
         }
 
+        .dial-target-line {
+            stroke: rgba(56, 189, 248, 1);
+            stroke-width: 3.5;
+            stroke-linecap: round;
+            filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.8));
+        }
+
+        .dial-actual-line {
+            stroke: rgba(250, 204, 21, 1);
+            stroke-width: 2.75;
+            stroke-linecap: round;
+            filter: drop-shadow(0 0 10px rgba(250, 204, 21, 0.8));
+        }
+
         .dial-pointer-dot {
             fill: rgba(56, 189, 248, 1);
             filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.7));
+        }
+
+        .dial-target-dot {
+            fill: rgba(56, 189, 248, 1);
+            filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.8));
+        }
+
+        .dial-actual-dot {
+            fill: rgba(250, 204, 21, 1);
+            filter: drop-shadow(0 0 10px rgba(250, 204, 21, 0.8));
         }
 
         .dial-pointer::after {
@@ -563,9 +587,13 @@
                             <div class="dial-grid"></div>
                             <svg aria-hidden="true" class="dial-pointer-svg" preserveAspectRatio="xMidYMid meet"
                                  viewBox="0 0 100 100">
-                                <g id="dialPointerGroup">
-                                    <line class="dial-pointer-line" x1="50" x2="50" y1="50" y2="18"></line>
-                                    <circle class="dial-pointer-dot" cx="50" cy="50" r="3.5"></circle>
+                                <g id="dialActualPointerGroup">
+                                    <line class="dial-actual-line" x1="50" x2="50" y1="50" y2="18"></line>
+                                    <circle class="dial-actual-dot" cx="50" cy="50" r="3.4"></circle>
+                                </g>
+                                <g id="dialTargetPointerGroup">
+                                    <line class="dial-target-line" x1="50" x2="50" y1="50" y2="22"></line>
+                                    <circle class="dial-target-dot" cx="50" cy="50" r="4.2"></circle>
                                 </g>
                             </svg>
                             <div class="dial-center"></div>
@@ -946,6 +974,7 @@
             currentAngle: 0,
             targetAngle: 0,
             targetPosition: 0,
+            targetWriteTimer: null,
             speed: 0,
             accel: 0,
             currentA: 0,
@@ -1029,6 +1058,7 @@
             , MAGNETIC_HIGH: 0x117
             , MAGNETIC_LOW: 0x118
             , ENCODER_ZERO: 0x119
+            , TARGET_ANGLE_DEG: 0x128
             , HOST_SIMULATE: 0x127
         };
 
@@ -1063,6 +1093,7 @@
             , [CUSTOM_REGS.MAGNETIC_HIGH, ['0x0117', 'MAGNETIC_HIGH', 'MGH 磁场过高输入']]
             , [CUSTOM_REGS.MAGNETIC_LOW, ['0x0118', 'MAGNETIC_LOW', 'MGL 磁场过低输入']]
             , [CUSTOM_REGS.ENCODER_ZERO, ['0x0119', 'ENCODER_ZERO', '编码器启动零点，原始角度值']]
+            , [CUSTOM_REGS.TARGET_ANGLE_DEG, ['0x0128', 'TARGET_ANGLE_DEG', '目标角度，单位 0.001°']]
             , [0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
             , [0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
             , [0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
@@ -1137,6 +1168,12 @@
             let v = value;
             while (v > 180) v -= 360;
             while (v < -180) v += 360;
+            return v;
+        }
+
+        function normalize360Angle(value) {
+            let v = value % 360;
+            if (v < 0) v += 360;
             return v;
         }
 
@@ -1314,29 +1351,50 @@
         }
 
         function updateDialVisual() {
-            const pointerGroup = document.getElementById('dialPointerGroup');
+            const targetPointerGroup = document.getElementById('dialTargetPointerGroup');
+            const actualPointerGroup = document.getElementById('dialActualPointerGroup');
             const valueText = document.getElementById('posValue');
             const currentPosDisplay = document.getElementById('currentPosDisplay');
             const targetPosReadout = document.getElementById('targetPosReadout');
             const currentPosReadout = document.getElementById('currentPosReadout');
 
-            const displayAngle = state.targetAngle;
-            pointerGroup.setAttribute('transform', `rotate(${displayAngle} 50 50)`);
-            valueText.textContent = `${Math.round(displayAngle)}°`;
-            currentPosDisplay.value = `${Math.round(state.currentAngle)}°`;
-            currentPosReadout.textContent = `${Math.round(state.currentAngle)}°`;
-            targetPosReadout.textContent = `${Math.round(displayAngle)}°`;
+            const targetDisplayAngle = normalize360Angle(state.targetAngle);
+            const currentDisplayAngle = normalize360Angle(state.currentAngle);
+
+            targetPointerGroup.setAttribute('transform', `rotate(${targetDisplayAngle} 50 50)`);
+            actualPointerGroup.setAttribute('transform', `rotate(${currentDisplayAngle} 50 50)`);
+            valueText.textContent = `${Math.round(targetDisplayAngle)}°`;
+            currentPosDisplay.value = `${Math.round(currentDisplayAngle)}°`;
+            currentPosReadout.textContent = `${Math.round(currentDisplayAngle)}°`;
+            targetPosReadout.textContent = `${Math.round(targetDisplayAngle)}°`;
         }
 
         function setCurrentAngle(angle) {
-            state.currentAngle = normalizeAngle(angle);
+            state.currentAngle = normalize360Angle(angle);
             updateDialVisual();
         }
 
         function setTargetAngle(angle) {
-            state.targetAngle = normalizeAngle(angle);
+            state.targetAngle = normalize360Angle(angle);
             document.getElementById('targetPosInput').value = Math.round(state.targetAngle);
             updateDialVisual();
+        }
+
+        function queueTargetAngleWrite() {
+            if (state.targetWriteTimer !== null) {
+                window.clearTimeout(state.targetWriteTimer);
+            }
+
+            state.targetWriteTimer = window.setTimeout(async () => {
+                state.targetWriteTimer = null;
+                const target = normalize360Angle(Number(document.getElementById('targetPosInput').value || 0));
+                setTargetAngle(target);
+                state.targetPosition = target;
+
+                if (state.connected) {
+                    await writeRegister(CUSTOM_REGS.TARGET_ANGLE_DEG, Math.round(target * 1000));
+                }
+            }, 100);
         }
 
         function bindDialDrag() {
@@ -1370,10 +1428,11 @@
                 let delta = angle - lastAngle;
                 if (delta > 180) delta -= 360;
                 if (delta < -180) delta += 360;
-                const nextTarget = normalizeAngle(state.targetAngle + delta);
+                const nextTarget = normalize360Angle(state.targetAngle + delta);
                 state.targetAngle = nextTarget;
                 document.getElementById('targetPosInput').value = Math.round(nextTarget);
                 updateDialVisual();
+                queueTargetAngleWrite();
                 lastAngle = angle;
             });
 
@@ -1381,7 +1440,7 @@
                 if (dragging) {
                     dragging = false;
                     state.dragging = false;
-                    sendTargetPosition();
+                    queueTargetAngleWrite();
                 }
             });
 
@@ -1389,18 +1448,18 @@
                 if (dragging) {
                     dragging = false;
                     state.dragging = false;
-                    sendTargetPosition();
+                    queueTargetAngleWrite();
                 }
             });
         }
 
         async function sendTargetPosition() {
-            const target = Number(document.getElementById('targetPosInput').value || 0);
+            const target = normalize360Angle(Number(document.getElementById('targetPosInput').value || 0));
             setTargetAngle(target);
             state.targetPosition = target;
             log('[INFO] 发送目标位置：' + target + '°');
             if (state.connected) {
-                await writeRegister(CUSTOM_REGS.TARGET_POSITION, Math.round(target));
+                await writeRegister(CUSTOM_REGS.TARGET_ANGLE_DEG, Math.round(target * 1000));
             }
         }
 
@@ -1922,8 +1981,15 @@
             });
 
             document.getElementById('targetPosInput').addEventListener('change', function () {
-                state.targetAngle = Number(this.value || 0);
+                state.targetAngle = normalize360Angle(Number(this.value || 0));
                 updateDialVisual();
+                queueTargetAngleWrite();
+            });
+
+            document.getElementById('targetPosInput').addEventListener('input', function () {
+                state.targetAngle = normalize360Angle(Number(this.value || 0));
+                updateDialVisual();
+                queueTargetAngleWrite();
             });
         }
 

@@ -100,6 +100,10 @@ void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)
         {
             controller_->setTargetStep(static_cast<int32_t>(value));
         }
+        else if (reg == TMC2209_EXT_PARAM_TARGET_ANGLE_DEG)
+        {
+            controller_->setTargetAngleDeg(static_cast<float>(value) / 1000.0f);
+        }
         controller_->writeParameter(reg, value);
         sendFrame(0x82U, reg, value);
     }

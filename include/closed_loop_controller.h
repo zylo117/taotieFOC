@@ -179,6 +179,11 @@ public:
     // 设置目标位置步数。
     void setTargetStep(int32_t target_step);
 
+    // 设定目标角度（0~360°），开启基于编码器反馈的闭环位置控制。
+    void setTargetAngleDeg(float angle_deg);
+    float getTargetAngleDeg() const;
+    float getTargetAngleErrorDeg() const;
+
     // 设置目标速度（转/秒）。
     void setTargetVelocity(float rps);
 
@@ -272,6 +277,10 @@ private:
     volatile float follow_error_;
     volatile float measured_velocity_rps_;
     volatile float target_velocity_rps_;
+    volatile float target_angle_deg_;
+    volatile float closed_loop_angle_error_deg_;
+    volatile bool closed_loop_angle_mode_enabled_;
+    volatile float angle_position_tolerance_deg_;
     volatile float motion_start_rpm_;
     volatile float motion_max_rpm_;
     volatile float motion_accel_rpm_s_;

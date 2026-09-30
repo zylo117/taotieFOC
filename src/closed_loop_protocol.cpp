@@ -108,6 +108,7 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_MOTOR_DISABLE:
     case TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS:
     case TMC2209_EXT_PARAM_HOST_SIMULATE:
+    case TMC2209_EXT_PARAM_TARGET_ANGLE_DEG:
         return true;
     default:
         return false;
@@ -315,7 +316,7 @@ bool Tmc2209ProtocolAdapter::setCustomParameter(uint16_t id, uint32_t value)
         return false;
     }
     const uint16_t index = static_cast<uint16_t>(id - 0x100U);
-    if (index >= 32U)
+    if (index >= 64U)
     {
         return false;
     }
@@ -377,6 +378,7 @@ bool Tmc2209ProtocolAdapter::setCustomParameter(uint16_t id, uint32_t value)
     case TMC2209_EXT_PARAM_MOTOR_ENABLE:
     case TMC2209_EXT_PARAM_MOTOR_DISABLE:
     case TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS:
+    case TMC2209_EXT_PARAM_TARGET_ANGLE_DEG:
         custom_parameters_[index] = value;
         break;
     default:
@@ -393,7 +395,7 @@ bool Tmc2209ProtocolAdapter::getCustomParameter(uint16_t id, uint32_t* value) co
         return false;
     }
     const uint16_t index = static_cast<uint16_t>(id - 0x100U);
-    if (index >= 32U)
+    if (index >= 64U)
     {
         return false;
     }
@@ -447,6 +449,7 @@ bool Tmc2209ProtocolAdapter::getCustomParameter(uint16_t id, uint32_t* value) co
     case TMC2209_EXT_PARAM_MOTOR_ENABLE:
     case TMC2209_EXT_PARAM_MOTOR_DISABLE:
     case TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS:
+    case TMC2209_EXT_PARAM_TARGET_ANGLE_DEG:
         *value = custom_parameters_[index];
         break;
     default:

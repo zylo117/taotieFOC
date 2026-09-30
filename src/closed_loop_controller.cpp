@@ -102,6 +102,22 @@ static inline float fast_clamp(float value, float min_value, float max_value)
 }
 #endif
 
+namespace
+{
+    float normalize_signed_angle_error_deg(float error_deg)
+    {
+        while (error_deg > 180.0f)
+        {
+            error_deg -= 360.0f;
+        }
+        while (error_deg < -180.0f)
+        {
+            error_deg += 360.0f;
+        }
+        return error_deg;
+    }
+}
+
 PidController::PidController()
     : kp(1.0f), ki(0.04f), kd(0.02f), integral(0.0f), last_error(0.0f),
       max_integral(MAX_I_TERM), max_output(MAX_PID_OUTPUT)
@@ -342,7 +358,9 @@ void ClosedLoopController::syncProtocolTelemetry()
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_SPEED_RPM,
                                   static_cast<uint32_t>(static_cast<int32_t>(encoder_speed_rpm_)));
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_POSITION_DEG,
-                                  static_cast<uint32_t>(static_cast<int32_t>(motion_follow_error_deg_ * 1000.0f)));
+                                  static_cast<uint32_t>(static_cast<int32_t>(closed_loop_angle_error_deg_ * 1000.0f)));
+    protocol_->setCustomParameter(TMC2209_EXT_PARAM_TARGET_ANGLE_DEG,
+                                  static_cast<uint32_t>(static_cast<int32_t>(target_angle_deg_ * 1000.0f)));
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS, motion_window_ms_);
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, step_pulse_width_ns_);
 }
@@ -401,6 +419,11 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
         step_pulse_width_ns_ = clampStepPulseWidthNs(value);
         return true;
     }
+    if (reg == TMC2209_EXT_PARAM_TARGET_ANGLE_DEG)
+    {
+        setTargetAngleDeg(static_cast<float>(value) / 1000.0f);
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_MOTOR_ENABLE)
     {
         stopMotion();
@@ -412,6 +435,7 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
     }
     if (reg == TMC2209_EXT_PARAM_MOTOR_DISABLE)
     {
+        closed_loop_angle_mode_enabled_ = false;
         stopMotion();
         if (driver_ != nullptr)
         {
@@ -498,6 +522,11 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS)
     {
         *value = step_pulse_width_ns_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_TARGET_ANGLE_DEG)
+    {
+        *value = static_cast<uint32_t>(static_cast<int32_t>(target_angle_deg_ * 1000.0f));
         return true;
     }
     if (reg == TMC2209_REG_TSTEP)
@@ -808,6 +837,48 @@ void ClosedLoopController::setTargetStep(int32_t target_step)
     target_step_ = target_step;
 }
 
+void ClosedLoopController::setTargetAngleDeg(float angle_deg)
+{
+    if (angle_deg < 0.0f)
+    {
+        angle_deg = 0.0f;
+    }
+    else if (angle_deg > 360.0f)
+    {
+        angle_deg = 360.0f;
+    }
+
+    target_angle_deg_ = angle_deg;
+    closed_loop_angle_mode_enabled_ = true;
+    angle_position_tolerance_deg_ = 1.0f;
+    closed_loop_angle_error_deg_ = 0.0f;
+    position_pid_.resetIntegral();
+    position_pid_.resetDeriv();
+    velocity_pid_.resetIntegral();
+    velocity_pid_.resetDeriv();
+    motion_running_ = true;
+    motion_paused_ = false;
+    motion_first_run_ = true;
+    motion_steps_emitted_ = 0U;
+    motion_step_accumulator_ = 0.0f;
+    motion_encoder_previous_angle_ = encoder_ != nullptr ? encoder_->readFilteredAngle() : encoder_filtered_angle_;
+    motion_encoder_reference_valid_ = encoder_ != nullptr;
+    if (driver_ != nullptr)
+    {
+        driver_->setEnable(true);
+    }
+}
+
+float ClosedLoopController::getTargetAngleDeg() const
+{
+    return target_angle_deg_;
+}
+
+float ClosedLoopController::getTargetAngleErrorDeg() const
+{
+    return closed_loop_angle_error_deg_;
+}
+
 void ClosedLoopController::setTargetVelocity(float rps)
 {
     target_velocity_rps_ = rps;
@@ -1008,22 +1079,25 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         return;
     }
 
+    float encoder_delta_deg = 0.0f;
     // 更新编码器信息
     if (encoder_ != nullptr)
     {
+        const float previous_encoder_angle = encoder_filtered_angle_;
         encoder_filtered_angle_ = encoder_->readFilteredAngle();
         magnetic_field_high_ = encoder_->magneticFieldHigh();
         magnetic_field_low_ = encoder_->magneticFieldLow();
         reportMagneticFieldAlarm(magnetic_field_high_ || magnetic_field_low_);
 
-        motion_position_deg_ = encoder_zero_ - encoder_filtered_angle_;
-        if (motion_position_deg_ > 180.0f)
+        motion_position_deg_ = encoder_filtered_angle_;
+        encoder_delta_deg = encoder_filtered_angle_ - previous_encoder_angle;
+        if (encoder_delta_deg > 180.0f)
         {
-            motion_position_deg_ -= 360.0f;
+            encoder_delta_deg -= 360.0f;
         }
-        else if (motion_position_deg_ < -180.0f)
+        else if (encoder_delta_deg < -180.0f)
         {
-            motion_position_deg_ += 360.0f;
+            encoder_delta_deg += 360.0f;
         }
 
         if (motion_running_ && motion_encoder_reference_valid_)
@@ -1044,7 +1118,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     }
 
     // 如果当前没有运动在运行，直接退出
-    if (!motion_running_)
+    if (!motion_running_ && !closed_loop_angle_mode_enabled_)
     {
         syncProtocolTelemetry();
         return;
@@ -1058,64 +1132,94 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_first_run_ = false;
     }
 
-    // 条件：已经输出全部需要的脉冲，运动正常结束
-    if (motion_steps_emitted_ >= motion_pulse_count_)
-    {
-        printf("motion_steps_emitted_: %lu, motion_pulse_count_: %lu\n", motion_steps_emitted_, motion_pulse_count_);
-        motion_running_ = false; // 标记运动停止
-        motion_ramp_stage_ = RAMP_STAGE_DONE; // 设置状态为运动完成
-        current_step_speed_ = 0.0f; // 运动结束强制把当前速度清零，防止下次运动残留速度
-        stopMotion();
-        syncProtocolTelemetry();
-        return;
-    }
-
-    // 计算还剩余多少微步脉冲有待输出
-    uint32_t remaining_steps = motion_pulse_count_ - motion_steps_emitted_;
-
-    // ========== 1.加减速阶段的速度积分更新 ==========
-    // 计算距离上一次rampUpdate调用的时间差(纳秒)
     uint64_t delta_ramp_ns = now_ns - motion_last_ramp_time_ns_;
-    // 纳秒转换为秒，用于加速度公式计算
-    float dt_ramp_s = static_cast<float>(delta_ramp_ns) / 1.0e9f;
-
-    if (motion_ramp_stage_ == RAMP_STAGE_ACCEL)
+    if (delta_ramp_ns > 0U && encoder_ != nullptr)
     {
-        // 【加速阶段】速度 = 当前速度 + 加速度 * 时间
-        current_step_speed_ += motion_accel_step_s2_ * dt_ramp_s;
-
-        // 速度限幅：到达设定最大速度，切换到匀速阶段
-        if (current_step_speed_ >= motion_max_step_s_)
-        {
-            current_step_speed_ = motion_max_step_s_;
-            motion_ramp_stage_ = RAMP_STAGE_CRUISE;
-        }
-
-        // 关键判断：剩余步数 <= 减速需要的总步数 → 必须立刻切入减速，防止冲过目标位置
-        // 短行程三角曲线模式下会直接从加速转入减速，不会经过匀速
-        if (remaining_steps <= steps_to_decel_)
-        {
-            motion_ramp_stage_ = RAMP_STAGE_DECEL;
-        }
+        const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
+        encoder_speed_rpm_ = (encoder_delta_deg / 360.0f) * (60.0f / dt);
     }
-    else if (motion_ramp_stage_ == RAMP_STAGE_CRUISE)
-    {
-        // 【匀速阶段】速度保持不变，只监控剩余步数，判断何时开启减速
-        // steps_to_decel_为极大值时不会触发切换到减速
-        if ((steps_to_decel_ != 0xFFFFFFFFU) && (remaining_steps <= steps_to_decel_))
-        {
-            motion_ramp_stage_ = RAMP_STAGE_DECEL;
-        }
-    }
-    else if (motion_ramp_stage_ == RAMP_STAGE_DECEL)
-    {
-        // 【减速阶段】速度 = 当前速度 - 加速度 * 时间（减速加速度大小与加速一致）
-        current_step_speed_ -= motion_accel_step_s2_ * dt_ramp_s;
 
-        // 速度下限保护，不能出现负速度
-        if (current_step_speed_ < 0.0f)
+    if (closed_loop_angle_mode_enabled_)
+    {
+        const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
+        const float desired_error_deg = normalize_signed_angle_error_deg(target_angle_deg_ - motion_position_deg_);
+        closed_loop_angle_error_deg_ = desired_error_deg;
+
+        if (dt > 0.0f)
+        {
+            const float position_error_rev = desired_error_deg / 360.0f;
+            const float position_reference_rps = position_pid_.update(position_error_rev, dt);
+            const float velocity_error_rps = position_reference_rps - (encoder_speed_rpm_ / 60.0f);
+            const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt);
+            const float max_rps = (motion_max_rpm_ > 0.0f) ? (motion_max_rpm_ / 60.0f) : 2.0f;
+            const float desired_rps = fast_clamp(position_reference_rps + velocity_correction_rps,
+                                                 -max_rps,
+                                                 max_rps);
+            const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
+            current_step_speed_ = desired_rps * static_cast<float>(micro_steps_per_round);
+            motion_speed_rpm_ = desired_rps * 60.0f;
+            motion_direction_ = desired_rps >= 0.0f ? 1 : -1;
+            if (driver_ != nullptr)
+            {
+                driver_->setDirection(motion_direction_ > 0);
+            }
+        }
+
+        if (fast_abs(closed_loop_angle_error_deg_) <= angle_position_tolerance_deg_)
         {
             current_step_speed_ = 0.0f;
+            motion_speed_rpm_ = 0.0f;
+            motion_step_accumulator_ = 0.0f;
+        }
+    }
+    else
+    {
+        // 条件：已经输出全部需要的脉冲，运动正常结束
+        if (motion_steps_emitted_ >= motion_pulse_count_)
+        {
+            printf("motion_steps_emitted_: %lu, motion_pulse_count_: %lu\n", motion_steps_emitted_, motion_pulse_count_);
+            motion_running_ = false; // 标记运动停止
+            motion_ramp_stage_ = RAMP_STAGE_DONE; // 设置状态为运动完成
+            current_step_speed_ = 0.0f; // 运动结束强制把当前速度清零，防止下次运动残留速度
+            stopMotion();
+            syncProtocolTelemetry();
+            return;
+        }
+    }
+
+    if (!closed_loop_angle_mode_enabled_)
+    {
+        // 计算还剩余多少微步脉冲有待输出
+        const uint32_t remaining_steps = motion_pulse_count_ - motion_steps_emitted_;
+        const float dt_ramp_s = static_cast<float>(delta_ramp_ns) / 1.0e9f;
+
+        if (motion_ramp_stage_ == RAMP_STAGE_ACCEL)
+        {
+            current_step_speed_ += motion_accel_step_s2_ * dt_ramp_s;
+            if (current_step_speed_ >= motion_max_step_s_)
+            {
+                current_step_speed_ = motion_max_step_s_;
+                motion_ramp_stage_ = RAMP_STAGE_CRUISE;
+            }
+            if (remaining_steps <= steps_to_decel_)
+            {
+                motion_ramp_stage_ = RAMP_STAGE_DECEL;
+            }
+        }
+        else if (motion_ramp_stage_ == RAMP_STAGE_CRUISE)
+        {
+            if ((steps_to_decel_ != 0xFFFFFFFFU) && (remaining_steps <= steps_to_decel_))
+            {
+                motion_ramp_stage_ = RAMP_STAGE_DECEL;
+            }
+        }
+        else if (motion_ramp_stage_ == RAMP_STAGE_DECEL)
+        {
+            current_step_speed_ -= motion_accel_step_s2_ * dt_ramp_s;
+            if (current_step_speed_ < 0.0f)
+            {
+                current_step_speed_ = 0.0f;
+            }
         }
     }
 
@@ -1135,7 +1239,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     const double dt_step_s = static_cast<double>(delta_step_ns) / 1.0e9f;
 
     // 累加本次时间内应该产生的步数（浮点数，允许小数累积）
-    motion_step_accumulator_ += current_step_speed_ * dt_step_s;
+    motion_step_accumulator_ += fast_abs(current_step_speed_) * dt_step_s;
 
     // 只要累加器≥1，代表需要输出1个step脉冲；循环批量输出，直到没有脉冲待输出或者全部脉冲发完
     // cpu软脉冲实现，效率低
@@ -1153,7 +1257,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     // 这里复用同一份周期表，正转和反转都只需要切换 DIR 输出 + 重新装载同一块 RAM，
     // 这样既能完成“正转一圈 -> 反转一圈”，又不会把 RAM 翻倍消耗掉。
 
-    if ((motion_step_accumulator_ >= 1.0f) && (motion_steps_emitted_ < motion_pulse_count_))
+    if ((motion_step_accumulator_ >= 1.0f) &&
+        (closed_loop_angle_mode_enabled_ || motion_steps_emitted_ < motion_pulse_count_))
     {
         // 人为规定第一个和最后arr周期是用来提前和延后换向的，
         // 如果是同向，这两个的arr周期为0，否则arr为guard_tick
@@ -1188,11 +1293,14 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         add_dir_to_step_sequence(arr_seq_cycle, seq_count, stepper_common::guard_tick, false);
         start_step_sequence(arr_seq_cycle, seq_count, stepper_common::k_psc, stepper_common::k_step_pulse_ticks, current_direction);
 
-        motion_steps_emitted_ += num_steps;
-        const float step_angle_deg = 360.0f / static_cast<float>(getMicroStepsPerRound(driver_));
-        motion_commanded_travel_deg_ = static_cast<float>(motion_direction_) * step_angle_deg *
-                                       static_cast<float>(motion_steps_emitted_);
-        motion_follow_error_deg_ = motion_commanded_travel_deg_ - motion_encoder_travel_deg_;
+        if (!closed_loop_angle_mode_enabled_)
+        {
+            motion_steps_emitted_ += num_steps;
+            const float step_angle_deg = 360.0f / static_cast<float>(getMicroStepsPerRound(driver_));
+            motion_commanded_travel_deg_ = static_cast<float>(motion_direction_) * step_angle_deg *
+                                           static_cast<float>(motion_steps_emitted_);
+            motion_follow_error_deg_ = motion_commanded_travel_deg_ - motion_encoder_travel_deg_;
+        }
         motion_step_accumulator_ -= num_steps;
     }
 
