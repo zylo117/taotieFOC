@@ -212,6 +212,17 @@ namespace stepper_common
     //     motion_timer_pulse_width = 0U;
     // }
 
+    void stepper_stop_motion_timer(void)
+    {
+        tmr_counter_enable(TMR2, FALSE);
+        tmr_output_enable(TMR2, FALSE);
+        tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, FALSE);
+        dma_channel_enable(DMA1_CHANNEL2, FALSE);
+        dma_flag_clear(DMA1_FDT2_FLAG);
+        tmr_counter_value_set(TMR2, 0U);
+        stepper_write_gpio_low(STEP_OUTPUT_PORT, STEP_OUT_PIN);
+    }
+
     void stepper_init_step_gpio(void)
     {
         gpio_init_type gpio_init_struct;

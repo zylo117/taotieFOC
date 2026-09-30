@@ -367,6 +367,15 @@ void ClosedLoopController::syncProtocolTelemetry()
 
 bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
 {
+    if (reg == TMC2209_EXT_PARAM_CLOSED_LOOP_ENABLE)
+    {
+        if (value == 0U)
+        {
+            closed_loop_angle_mode_enabled_ = false;
+            stopMotion();
+        }
+        return protocol_ != nullptr && protocol_->writeRegister(reg, value);
+    }
     if (reg == TMC2209_EXT_PARAM_ENCODER_ZERO)
     {
         setEncoderZero(static_cast<uint16_t>(value));
@@ -1158,7 +1167,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
             current_step_speed_ = desired_rps * static_cast<float>(micro_steps_per_round);
             motion_speed_rpm_ = desired_rps * 60.0f;
-            motion_direction_ = desired_rps >= 0.0f ? 1 : -1;
+            motion_direction_ = desired_rps >= 0.0f ? -1 : 1;
             if (driver_ != nullptr)
             {
                 driver_->setDirection(motion_direction_ > 0);
@@ -1240,6 +1249,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
     // 累加本次时间内应该产生的步数（浮点数，允许小数累积）
     motion_step_accumulator_ += fast_abs(current_step_speed_) * dt_step_s;
+    if (closed_loop_angle_mode_enabled_ && motion_step_accumulator_ > 1.0)
+    {
+        motion_step_accumulator_ = 1.0;
+    }
 
     // 只要累加器≥1，代表需要输出1个step脉冲；循环批量输出，直到没有脉冲待输出或者全部脉冲发完
     // cpu软脉冲实现，效率低
@@ -1262,16 +1275,27 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     {
         // 人为规定第一个和最后arr周期是用来提前和延后换向的，
         // 如果是同向，这两个的arr周期为0，否则arr为guard_tick
-        uint32_t num_steps = floor(motion_step_accumulator_);
-        uint32_t seq_count = num_steps + 2;  // 乘2是因为脉冲必须先高后低，高是一个ARR周期，低也是一个ARR周期
-        uint32_t arr_seq_cycle[seq_count];
+        static uint32_t arr_seq_cycle[130];
+        uint32_t num_steps = static_cast<uint32_t>(floor(motion_step_accumulator_));
+        if (num_steps > 128U)
+        {
+            num_steps = 128U;
+        }
+        const uint32_t seq_count = num_steps + 2U;
         const bool current_direction = motion_direction_ > 0;
         // uint32_t step_ticks = stepper_common::F_APB / current_step_speed_;
 
         const uint64_t direction_switch_guard_time_ns = 2 * stepper_common::guard_tick * stepper_common::target_tick_time;
         const uint64_t reserved_time_ns = 5;
-        uint64_t remaining_time = delta_step_ns - reserved_time_ns - direction_switch_guard_time_ns;
-        uint32_t remaining_ticks = remaining_time / stepper_common::target_tick_time;
+        const uint64_t overhead_ns = reserved_time_ns + direction_switch_guard_time_ns;
+        if (delta_step_ns <= overhead_ns)
+        {
+            motion_last_step_time_ns_ = now_ns;
+            syncProtocolTelemetry();
+            return;
+        }
+        const uint64_t remaining_time = delta_step_ns - overhead_ns;
+        const uint64_t remaining_ticks = remaining_time / stepper_common::target_tick_time;
 
         // uint32_t step_ticks = k_step_pulse_ticks * 2;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
         // uint64_t max_iter_time_ns = (2 * stepper_common::guard_tick + step_ticks * num_steps) * stepper_common::target_tick_time;
@@ -1282,7 +1306,17 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         //     printf("shitfuck, delta_step_ns: %.6f us < max_iter_time_ns: %.6f us, lower your iter rate.\n", delta_step_ns / 1000.f, max_iter_time_ns / 1000.f);
         // }
 
-        uint32_t step_ticks = remaining_ticks / num_steps;
+        uint64_t step_ticks_wide = remaining_ticks / num_steps;
+        const uint32_t min_step_ticks = stepper_common::k_step_pulse_ticks * 2U;
+        if (step_ticks_wide < min_step_ticks)
+        {
+            step_ticks_wide = min_step_ticks;
+        }
+        if (step_ticks_wide > UINT32_MAX)
+        {
+            step_ticks_wide = UINT32_MAX;
+        }
+        const uint32_t step_ticks = static_cast<uint32_t>(step_ticks_wide);
         if (step_ticks < stepper_common::k_step_pulse_ticks * 2)
         {
             printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
@@ -1326,7 +1360,7 @@ void ClosedLoopController::stopMotion()
     motion_step_high_ = false;
     if (driver_ != nullptr)
     {
-        // stepper_common::stepper_stop_motion_timer();
+        stepper_common::stepper_stop_motion_timer();
         driver_->setStepState(false);
         driver_->setEnable(false);
     }
