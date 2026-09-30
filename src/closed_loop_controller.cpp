@@ -1183,6 +1183,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
             printf("shitfuck, delta_step_ns: %.6f us, step_ticks < 2*min_k_step_pulse_ticks %lu us, lower your iter rate.\n", delta_step_ns / 1000.f, stepper_common::k_step_pulse_ticks * 2);
         }
+
         generate_constant_speed_step_sequence(arr_seq_cycle, seq_count, step_ticks);
         add_dir_to_step_sequence(arr_seq_cycle, seq_count, stepper_common::guard_tick, false);
         start_step_sequence(arr_seq_cycle, seq_count, stepper_common::k_psc, stepper_common::k_step_pulse_ticks, current_direction);

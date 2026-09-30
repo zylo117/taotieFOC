@@ -300,6 +300,7 @@ private:
     volatile int8_t motion_direction_;
     volatile bool motion_step_high_;
     volatile uint64_t step_pulse_width_ns_;
+    volatile uint32_t k_step_pulse_ticks;
     volatile uint32_t step_period_us_;
     volatile float encoder_zero_;
     volatile float encoder_filtered_angle_;
