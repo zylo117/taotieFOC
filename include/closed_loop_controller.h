@@ -172,10 +172,6 @@ public:
     // 从 TMR2 捕获环形 buffer 中消费 STEP/DIR 事件，并按事件顺序更新控制器状态。
     void consumeQueuedStepDirEvents();
 
-    // 上位机模拟测试模式：不依赖真实输入捕获，而是生成事件并走同样的消费逻辑。
-    void setSimulationMode(bool enable);
-    bool isSimulationMode() const;
-
     // 设置目标位置步数。
     void setTargetStep(int32_t target_step);
 
@@ -289,7 +285,7 @@ private:
     volatile uint32_t motion_pulse_count_;
     volatile uint32_t motion_window_ms_;
     volatile MotionMode motion_mode_;
-    bool simulation_mode_;
+    volatile bool closed_loop_compensation_enabled_;
     volatile bool motion_running_;
     volatile bool motion_first_run_;
     volatile bool motion_paused_;

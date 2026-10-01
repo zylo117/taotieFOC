@@ -158,31 +158,41 @@ void UsbCdcProtocolBridge::sendTelemetry()
         TMC2209_EXT_PARAM_ACCEL_RPM_S,
         TMC2209_EXT_PARAM_PULSE_COUNT,
         TMC2209_EXT_PARAM_MOTION_MODE,
-        TMC2209_EXT_PARAM_MOTION_COMMAND,
         TMC2209_EXT_PARAM_SPEED_RPM,
-        TMC2209_EXT_PARAM_POSITION_DEG,
         TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS, TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, TMC2209_EXT_PARAM_MOTOR_ENABLE,
         TMC2209_EXT_PARAM_MOTOR_DISABLE, TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS
     };
-
-    uint32_t encoder_angle_mdeg = 0U;
-    if (controller_->readParameter(TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG, &encoder_angle_mdeg))
-    {
-        sendFrame(0x10U, TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG, encoder_angle_mdeg);
-    }
-
     static uint16_t telemetry_index = 0U;
-    const uint16_t telemetry_count = sizeof(telemetry_regs) / sizeof(telemetry_regs[0]);
-    for (uint16_t attempt = 0U; attempt < telemetry_count; ++attempt)
+
+    static uint8_t telemetry_phase = 0U;
+    uint16_t register_to_send = 0U;
+    uint32_t value_to_send = 0U;
+    bool should_send = false;
+    switch (telemetry_phase)
     {
-        uint32_t value = 0U;
-        const uint16_t reg = telemetry_regs[telemetry_index];
-        telemetry_index = static_cast<uint16_t>((telemetry_index + 1U) % telemetry_count);
-        if (controller_->readParameter(reg, &value))
-        {
-            sendFrame(0x10U, reg, value);
-            break;
-        }
+    case 0U:
+        register_to_send = TMC2209_EXT_PARAM_POSITION_DEG;
+        should_send = controller_->readParameter(register_to_send, &value_to_send);
+        break;
+    case 1U:
+        register_to_send = TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG;
+        should_send = controller_->readParameter(register_to_send, &value_to_send);
+        break;
+    case 2U:
+        register_to_send = TMC2209_EXT_PARAM_MOTION_COMMAND;
+        should_send = controller_->readParameter(register_to_send, &value_to_send);
+        break;
+    default:
+        register_to_send = telemetry_regs[telemetry_index];
+        telemetry_index = static_cast<uint16_t>((telemetry_index + 1U) %
+                                                  (sizeof(telemetry_regs) / sizeof(telemetry_regs[0])));
+        should_send = controller_->readParameter(register_to_send, &value_to_send);
+        break;
+    }
+    telemetry_phase = static_cast<uint8_t>((telemetry_phase + 1U) % 4U);
+    if (should_send)
+    {
+        sendFrame(0x10U, register_to_send, value_to_send);
     }
 }
 

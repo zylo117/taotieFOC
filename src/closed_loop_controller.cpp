@@ -189,10 +189,6 @@ void PidController::resetDeriv()
 
 ClosedLoopController::ClosedLoopController()
     : driver_(nullptr), encoder_(nullptr), protocol_(nullptr),
-      // 张大头的闭环 PID 原始寄存器值是 18000 / 10 / 18000，
-      // 对应工程值分别为 18.0 / 10.0 / 18.0，因为协议层会对增益值 ×1000 / 1000 处理。
-      // 但为了提高跟手性和大幅度快速跟随响应，本项目在高响应配置中继续放宽到更大范围，
-      // 让位置环和速度环都具备更强的瞬时响应能力。
       base_position_kp_(60.0f), base_position_ki_(20.0f), base_position_kd_(60.0f),
       base_velocity_kp_(30.0f), base_velocity_ki_(8.0f), base_velocity_kd_(20.0f),
       adaptive_pid_enabled_(false), adaptive_config_{0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
@@ -201,7 +197,8 @@ ClosedLoopController::ClosedLoopController()
     motion_start_rpm_(0.0f), motion_max_rpm_(0.0f), motion_accel_rpm_s_(0.0f),
     angle_max_rpm_(1200.0f), angle_accel_rpm_s_(6000.0f),
       motion_pulse_count_(0U), motion_window_ms_(2000U), motion_mode_(MOTION_MODE_POSITION_FORWARD),
-      motion_running_(false), motion_paused_(false), motion_speed_rpm_(0.0f), encoder_speed_rpm_(0.0f),
+    closed_loop_compensation_enabled_(false), motion_running_(false), motion_paused_(false),
+    motion_speed_rpm_(0.0f), encoder_speed_rpm_(0.0f),
       motion_position_deg_(0.0f),
     motion_follow_error_deg_(0.0f), motion_commanded_travel_deg_(0.0f), motion_encoder_travel_deg_(0.0f),
     motion_encoder_previous_angle_(0.0f), motion_encoder_reference_valid_(false),
@@ -376,11 +373,11 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
 {
     if (reg == TMC2209_EXT_PARAM_CLOSED_LOOP_ENABLE)
     {
-        if (value == 0U)
-        {
-            closed_loop_angle_mode_enabled_ = false;
-            stopMotion();
-        }
+        closed_loop_compensation_enabled_ = value != 0U;
+        position_pid_.resetIntegral();
+        position_pid_.resetDeriv();
+        velocity_pid_.resetIntegral();
+        velocity_pid_.resetDeriv();
         return protocol_ != nullptr && protocol_->writeRegister(reg, value);
     }
     if (reg == TMC2209_EXT_PARAM_ENCODER_ZERO)
@@ -431,6 +428,7 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
         }
         else
         {
+            closed_loop_angle_mode_enabled_ = false;
             stopMotion();
         }
         return true;
@@ -519,6 +517,11 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     if (value == nullptr)
     {
         return false;
+    }
+    if (reg == TMC2209_EXT_PARAM_CLOSED_LOOP_ENABLE)
+    {
+        *value = closed_loop_compensation_enabled_ ? 1U : 0U;
+        return true;
     }
     if (reg == TMC2209_EXT_PARAM_ENCODER_ZERO)
     {
@@ -987,6 +990,11 @@ void ClosedLoopController::setMotionConfig(float start_rpm, float max_rpm, float
 
 void ClosedLoopController::startMotion()
 {
+    closed_loop_angle_mode_enabled_ = false;
+    position_pid_.resetIntegral();
+    position_pid_.resetDeriv();
+    velocity_pid_.resetIntegral();
+    velocity_pid_.resetDeriv();
     motion_paused_ = false;
     motion_steps_emitted_ = 0U;
     motion_step_accumulator_ = 0.0f;
@@ -1153,8 +1161,7 @@ void start_step_sequence(uint32_t *seq, uint32_t seq_count, uint32_t k_psc, uint
 
 /**
  * @brief 梯形加减速速度规划更新函数，纳秒时间基准，在FreeRTOS控制任务中异步调用
- * rampUpdate应有两个模式，一个是网页上位机模拟测试（上位机命令闭环驱动自己模拟生成加减速信号），一个是纯外部模式（信号全部来自外面）
- * 前者的每一个循环中的rampUpdate的迭代中都视作匀速，后者以实际为准
+ * 依据运动规划、编码器反馈和 PID 补偿更新 STEP 脉冲速度
  * @param now_ns 系统高精度硬件时间戳(纳秒)，使用DWT CYCCNT获取真实硬件时间，禁止软件虚拟累加时间
  * @note 调用源：TMR4定时器中断通知唤醒control_task任务上下文；**禁止在中断内直接调用**
  * @note DDA微分累加器实现，任务调度延迟时依靠时间差批量补齐脉冲，保证不会丢失脉冲
@@ -1330,6 +1337,31 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
                 current_step_speed_ = 0.0f;
             }
         }
+    }
+
+    if (closed_loop_compensation_enabled_ && motion_running_ && !closed_loop_angle_mode_enabled_ &&
+        encoder_ != nullptr && delta_ramp_ns > 0U && motion_max_step_s_ > 0.0f)
+    {
+        const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
+        const float position_reference_rps = position_pid_.update(motion_follow_error_deg_ / 360.0f, dt);
+        const float measured_motion_rps = -encoder_speed_rpm_ / 60.0f;
+        const float velocity_error_rps = position_reference_rps - measured_motion_rps;
+        const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt);
+        const float max_correction_rps = motion_max_rpm_ / 60.0f;
+        const float correction_rps = fast_clamp(position_reference_rps + velocity_correction_rps,
+                                                -max_correction_rps,
+                                                max_correction_rps);
+        const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
+        const float correction_step_s = correction_rps * static_cast<float>(motion_direction_) *
+                                        static_cast<float>(micro_steps_per_round);
+        const float max_correction_step_s = motion_accel_step_s2_ * dt;
+        const float limited_correction_step_s = fast_clamp(correction_step_s,
+                                                           -max_correction_step_s,
+                                                           max_correction_step_s);
+        current_step_speed_ = fast_clamp(current_step_speed_ + limited_correction_step_s,
+                                         0.0f,
+                                         motion_max_step_s_);
+        motion_speed_rpm_ = current_step_speed_ * 60.0f / static_cast<float>(micro_steps_per_round);
     }
 
     // 更新本次的时间戳，作为下一次调用的“上一次时间点”

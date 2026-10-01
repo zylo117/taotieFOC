@@ -233,6 +233,22 @@
             color: var(--text);
         }
 
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text);
+            font-size: 0.84rem;
+        }
+
+        .checkbox-row input {
+            width: 18px;
+            height: 18px;
+            margin: 0;
+            padding: 0;
+            accent-color: var(--primary-2);
+        }
+
         .mt {
             margin-top: 4px;
         }
@@ -716,11 +732,11 @@
                                    value="200"/>
                         </div>
                         <div class="field">
-                            <label>控制路径</label>
-                            <select id="simulationModeSelect">
-                                <option value="1" selected>MCU 内部脉冲测试（真实输出）</option>
-                                <option value="0">MCU 运动规划输出（真实输出）</option>
-                            </select>
+                            <label for="closedLoopEnableInput">闭环使能</label>
+                            <label class="checkbox-row">
+                                <input id="closedLoopEnableInput" type="checkbox"/>
+                                <span>脉冲运动 PID 补偿</span>
+                            </label>
                         </div>
                     </div>
                     <div class="inline mt">
@@ -1046,7 +1062,6 @@
             , waveCaptureActive: false
             , waveCaptureStartedAt: 0
             , waveMotionObserved: false
-            , lastWaveMotionPollAt: 0
             , waveFrozenAt: 0
             , lastWaveStamp: 0
         };
@@ -1111,7 +1126,6 @@
             , ANGLE_ACCEL_RPM_S: 0x130
             , MAX_RPM: 0x11B
             , ACCEL_RPM_S: 0x11C
-            , HOST_SIMULATE: 0x127
         };
 
         const REGISTER_DESCRIPTIONS = new Map([
@@ -1167,7 +1181,6 @@
             , [0x124, ['0x0124', 'MOTOR_ENABLE', '电机使能，EN 输出低电平']]
             , [0x125, ['0x0125', 'MOTOR_DISABLE', '电机失能，EN 输出高电平']]
             , [0x126, ['0x0126', 'SINGLE_FORWARD_STEP', 'DIR 高电平并输出单个 STEP']]
-            , [CUSTOM_REGS.HOST_SIMULATE, ['0x0127', 'HOST_SIMULATE', '上位机模拟测试：1 开启，0 使用真实 STEP/DIR 输入']]
         ]);
 
         function log(message) {
@@ -1314,7 +1327,8 @@
                 frame.reg === CUSTOM_REGS.ENCODER_ANGLE_MDEG ||
                 frame.reg === CUSTOM_REGS.MAGNETIC_HIGH ||
                 frame.reg === CUSTOM_REGS.MAGNETIC_LOW;
-            if (!isTelemetry || !diagnosticRegister) {
+            const routineMotionStatus = isTelemetry && frame.reg === 0x11F;
+            if (!routineMotionStatus && (!isTelemetry || !diagnosticRegister)) {
                 log(`[RX] ${description ? description[0] : '0x' + frame.reg.toString(16).padStart(4, '0')} ${name} = ${frame.value}`);
             }
 
@@ -1323,6 +1337,9 @@
             if (frame.reg === CUSTOM_REGS.POSITION_LOOP_HZ) state.posLoopHz = frame.value;
             if (frame.reg === CUSTOM_REGS.VELOCITY_LOOP_HZ) state.velLoopHz = frame.value;
             if (frame.reg === CUSTOM_REGS.CURRENT_LOOP_HZ) state.curLoopHz = frame.value;
+            if (frame.reg === CUSTOM_REGS.CLOSED_LOOP_ENABLE) {
+                document.getElementById('closedLoopEnableInput').checked = frame.value !== 0;
+            }
             if (frame.reg === CUSTOM_REGS.ENCODER_FAULT) state.encoderFault = frame.value !== 0;
             if (frame.reg === CUSTOM_REGS.MAGNETIC_FAULT) state.magneticFault = frame.value !== 0;
             if (frame.reg === CUSTOM_REGS.OUTPUT_STOP) state.outputStopped = frame.value !== 0;
@@ -1634,6 +1651,7 @@
                 OFFICIAL_REGS.DRV_CONF,
                 OFFICIAL_REGS.TSTEP,
                 OFFICIAL_REGS.DRV_STATUS,
+                CUSTOM_REGS.CLOSED_LOOP_ENABLE,
                 CUSTOM_REGS.RUN_CURRENT_A,
                 CUSTOM_REGS.HOLD_CURRENT_A,
                 CUSTOM_REGS.ANGLE_MAX_RPM,
@@ -1663,7 +1681,7 @@
             }
             log('[WARN] 发送停止命令，释放闭环保持');
             if (state.connected) {
-                await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0);
+                await writeRegister(0x11F, 0);
             }
         }
 
@@ -1900,9 +1918,9 @@
                         }
                     }
                     try {
-                        await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0);
+                        await writeRegister(0x11F, 0);
                     } catch (error) {
-                        appendTuneLog(`发送失能命令失败：${error.message}`);
+                        appendTuneLog(`发送停止命令失败：${error.message}`);
                     }
                     try {
                         await writeRegister(CUSTOM_REGS.ANGLE_MAX_RPM, restoreMaxRpm);
@@ -2023,7 +2041,6 @@
             state.wavePaused = false;
             state.wavePausedAt = 0;
             state.waveCaptureStartedAt = performance.now();
-            state.lastWaveMotionPollAt = state.waveCaptureStartedAt;
             state.waveMotionObserved = false;
             state.waveFrozenAt = 0;
             state.waveCaptureActive = true;
@@ -2034,12 +2051,6 @@
                 drawWaveform();
                 if (document.getElementById('wavePopup').classList.contains('visible')) {
                     drawWaveform('motionWavePopupCanvas');
-                }
-
-                const now = performance.now();
-                if (state.connected && now - state.lastWaveMotionPollAt >= 100) {
-                    state.lastWaveMotionPollAt = now;
-                    readRegister(0x11F);
                 }
             }, 40);
         }
@@ -2260,11 +2271,9 @@
             const pulseCount = Math.max(2, Math.round(getEffectivePulseCount()));
             const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 10000), 10000, 10000);
             const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 200), 200, 20000);
-            const simulationMode = Number(document.getElementById('simulationModeSelect').value || 1);
             document.getElementById('waveWindowMsInput').value = String(windowMs);
             document.getElementById('stepPulseWidthNsInput').value = String(stepPulseWidthNs);
 
-            await writeRegister(CUSTOM_REGS.HOST_SIMULATE, simulationMode);
             await writeRegister(0x11A, startRpm);
             await writeRegister(0x11B, maxRpm);
             await writeRegister(0x11C, accelRpm);
@@ -2272,9 +2281,9 @@
             await writeRegister(0x11E, motionMode);
             await writeRegister(0x123, stepPulseWidthNs);
             await writeRegister(0x122, windowMs);
-            startWaveCapture();
             await writeRegister(0x11F, 1);
-            log(`[INFO] ${simulationMode ? '上位机模拟' : '真实 STEP/DIR'}：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms step=${stepPulseWidthNs}ns`);
+            startWaveCapture();
+            log(`[INFO] 脉冲运动：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms step=${stepPulseWidthNs}ns`);
         }
 
         async function stopMotionTest() {
@@ -2299,12 +2308,11 @@
                 log('[WARN] 尚未连接串口，无法发送电机测试命令');
                 return;
             }
-            if (reg === 0x126) {
-                startWaveCapture();
-            } else if (reg === 0x124 || reg === 0x125) {
+            if (reg === 0x124 || reg === 0x125) {
                 stopWaveCapture();
             }
             await writeRegister(reg, 1);
+            if (reg === 0x126) startWaveCapture();
             log('[INFO] ' + message);
         }
 
@@ -2341,10 +2349,8 @@
                 const maxRpm = Number(document.getElementById('maxRpmSelect').value);
                 const accelRpm = Number(document.getElementById('accelRpmSelect').value);
                 const motionMode = Number(document.getElementById('motionModeSelect').value);
-                const simulationMode = Number(document.getElementById('simulationModeSelect').value || 1);
 
                 // 下发运动相关参数寄存器
-                await writeRegister(CUSTOM_REGS.HOST_SIMULATE, simulationMode);
                 await writeRegister(0x11A, startRpm);
                 await writeRegister(0x11B, maxRpm);
                 await writeRegister(0x11C, accelRpm);
@@ -2353,7 +2359,7 @@
                 await writeRegister(0x123, stepPulseWidthNs);
 
                 // 再触发单步正向脉冲命令寄存器
-                await sendManualMotionCommand(0x126, `${simulationMode ? '模拟' : '真实'}半圈正向脉冲：DIR=1（已同步速度/加速度参数）`);
+                await sendManualMotionCommand(0x126, '半圈正向脉冲：DIR=1（已同步速度/加速度参数）');
             });
             document.getElementById('pauseWaveBtn').addEventListener('click', toggleWavePause);
             document.getElementById('popWaveBtn').addEventListener('click', () => toggleWavePopup());
@@ -2401,6 +2407,12 @@
                 if (state.connected) await writeRegister(CUSTOM_REGS.ANGLE_ACCEL_RPM_S, value);
             });
 
+            document.getElementById('closedLoopEnableInput').addEventListener('change', async function () {
+                if (state.connected) {
+                    await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, this.checked ? 1 : 0);
+                }
+            });
+
             ['posKp', 'posKi', 'posKd', 'velKp', 'velKi', 'velKd'].forEach((id) => {
                 document.getElementById(id).addEventListener('input', queuePidParameterWrite);
             });
@@ -2420,7 +2432,7 @@
             if (frame.reg === 0x11F && (frame.cmd === 0x10 || frame.cmd === 0x81) && state.waveCaptureActive) {
                 if ((frame.value | 0) !== 0) {
                     state.waveMotionObserved = true;
-                } else if (state.waveMotionObserved || performance.now() - state.waveCaptureStartedAt >= 150) {
+                } else if (state.waveMotionObserved || performance.now() - state.waveCaptureStartedAt >= 800) {
                     stopWaveCapture();
                 }
             }
