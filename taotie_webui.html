@@ -763,6 +763,8 @@
                                 <option value="3">速度反转</option>
                                 <option value="4">正转归零</option>
                                 <option value="5">反转归零</option>
+                                <option value="6">正向起步往返</option>
+                                <option value="7">反向起步往返</option>
                             </select>
                         </div>
                         <div class="field">
@@ -1241,7 +1243,7 @@
             , [0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
             , [0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
             , [0x11D, ['0x011D', 'PULSE_COUNT', '测速脉冲总数']]
-            , [0x11E, ['0x011E', 'MOTION_MODE', '运动模式：0位置正转 1位置反转 2速度正转 3速度反转 4正转归零 5反转归零']]
+            , [0x11E, ['0x011E', 'MOTION_MODE', '运动模式：0正转 1反转 2速度正转 3速度反转 4正转归零 5反转归零 6正向起步往返 7反向起步往返']]
             , [0x11F, ['0x011F', 'MOTION_CMD', '运动命令：0停止 1启动']]
             , [0x120, ['0x0120', 'SPEED_RPM', '当前测速转速，单位 RPM']]
             , [0x121, ['0x0121', 'FOLLOW_ERROR_DEG', '位置跟随误差：理论累计行程 - 编码器累计行程，单位 0.001°']]
@@ -1844,6 +1846,7 @@
             for (let index = 0; index < 4; index++) {
                 profiles.push({
                     direction: index % 2 === 0 ? 0 : 1,
+                    mode: index % 2 === 0 ? 6 : 7,
                     startRpm: Math.max(5, Math.round(maxSpeedRpm * 0.5)),
                     maxRpm: maxSpeedRpm,
                     accelRpmS: Math.min(12000, Math.max(fastAccelRpmS, accelRpmS * 2)),
@@ -1864,7 +1867,7 @@
                 state.tuneTrialStage = '等待固件运动状态变为运行';
                 const profile = state.tuneTrialProfile;
                 const profileDescription = profile
-                    ? `${profile.label}, dir=${profile.direction}, rpm=${profile.startRpm}->${profile.maxRpm}, accel=${profile.accelRpmS}, turns=${profile.turns}, pulses=${profile.pulseCount}`
+                    ? `${profile.label}, mode=${profile.mode ?? profile.direction}, dir=${profile.direction}, rpm=${profile.startRpm}->${profile.maxRpm}, accel=${profile.accelRpmS}, turnsPerDirection=${profile.turns}, pulses=${profile.pulseCount}`
                     : 'profile=unknown';
                 appendTuneLog(`[诊断] ${profileDescription}；等待 0x011F: 1->0，超时=${timeoutMs}ms`);
                 state.tuneMotionResolver = resolve;
@@ -1917,9 +1920,11 @@
         }
 
         async function runPulseTuneTrial(profile, stepsPerRevolution) {
-            const pulseCount = Math.max(2, Math.round(profile.turns * stepsPerRevolution));
+            const isAlternating = profile.mode === 6 || profile.mode === 7;
+            const totalTurns = profile.turns * (isAlternating ? 2 : 1);
+            const pulseCount = Math.max(2, Math.round(totalTurns * stepsPerRevolution));
             const accelTimeMs = Math.max(0, (profile.maxRpm - profile.startRpm) / profile.accelRpmS * 1000);
-            const timeoutMs = Math.max(5000, profile.turns * 60 / profile.maxRpm * 3000 + accelTimeMs * 3 + 3000);
+            const timeoutMs = Math.max(5000, totalTurns * 60 / profile.maxRpm * 3000 + accelTimeMs * (isAlternating ? 6 : 3) + 3000);
             state.tuneTrialProfile = {...profile, pulseCount};
             state.tuneTrialStage = '配置运动参数';
             appendTuneLog(`[试验] ${profile.label} 参数：方向=${profile.direction === 0 ? '正向' : '反向'}，起始=${profile.startRpm}RPM，最高=${profile.maxRpm}RPM，加速度=${profile.accelRpmS}RPM/s，脉冲数=${pulseCount}，完成超时=${Math.round(timeoutMs)}ms`);
@@ -1927,7 +1932,7 @@
             await writeRegister(0x11B, Math.round(profile.maxRpm));
             await writeRegister(0x11C, Math.round(profile.accelRpmS));
             await writeRegister(0x11D, pulseCount);
-            await writeRegister(0x11E, profile.direction);
+            await writeRegister(0x11E, profile.mode ?? profile.direction);
             state.tuneTrialStage = '启动前读取故障位图 0x0108';
             const faultFlags = await readRegisterValue(CUSTOM_REGS.FAULT_STATUS, 1000, 1);
             const encoderFault = (faultFlags & 0x01) !== 0;
@@ -1947,7 +1952,7 @@
                 state.tuneTrialStage = '发送运动启动命令 0x011F=1';
                 await writeRegister(0x11F, 1);
                 state.tuneTrialStage = '等待固件运行状态与完成状态';
-                appendTuneLog(`${profile.label}：${profile.turns.toFixed(2)} 圈，${profile.maxRpm.toFixed(0)} RPM，${profile.accelRpmS.toFixed(0)} RPM/s`);
+                appendTuneLog(`${profile.label}：${isAlternating ? `${profile.turns.toFixed(2)} 圈/方向，往返` : `${profile.turns.toFixed(2)} 圈`}，${profile.maxRpm.toFixed(0)} RPM，${profile.accelRpmS.toFixed(0)} RPM/s`);
                 await motionCompleted;
                 state.tuneTrialStage = '读取固件评分样本数 0x0133';
                 const sampleCount = await readRegisterValue(CUSTOM_REGS.PID_TUNE_SAMPLE_COUNT);
@@ -1991,7 +1996,10 @@
             state.tuneActionProfiles.forEach((profile, index) => {
                 const row = document.createElement('div');
                 row.className = 'tune-action-row';
-                row.innerHTML = `<div class="tune-action-name">${String(index + 1).padStart(2, '0')} · ${profile.label}</div><div class="tune-action-result" id="tuneActionResult${index}">${profile.direction === 0 ? '正向' : '反向'} · ${profile.startRpm}→${profile.maxRpm} RPM · ${profile.accelRpmS} RPM/s · ${profile.turns} 圈 · 等待执行</div><button class="tune-action-button" id="tuneActionButton${index}" type="button">执行</button>`;
+                const turnsDescription = profile.mode === 6 || profile.mode === 7
+                    ? `${profile.turns} 圈/方向，往返`
+                    : `${profile.turns} 圈`;
+                row.innerHTML = `<div class="tune-action-name">${String(index + 1).padStart(2, '0')} · ${profile.label}</div><div class="tune-action-result" id="tuneActionResult${index}">${profile.direction === 0 ? '正向' : '反向'} · ${profile.startRpm}→${profile.maxRpm} RPM · ${profile.accelRpmS} RPM/s · ${turnsDescription} · 等待执行</div><button class="tune-action-button" id="tuneActionButton${index}" type="button">执行</button>`;
                 container.appendChild(row);
                 row.querySelector('button').addEventListener('click', () => {
                     void executeTuneAction(index);
@@ -2028,6 +2036,36 @@
             return `P:${gains.posKp.toFixed(2)}/${gains.posKi.toFixed(2)}/${gains.posKd.toFixed(2)} V:${gains.velKp.toFixed(2)}/${gains.velKi.toFixed(2)}/${gains.velKd.toFixed(2)}`;
         }
 
+        async function runPulseTuneTrialWithRetries(profile, stepsPerRevolution, actionIndex = -1) {
+            for (let attempt = 0; ; attempt++) {
+                try {
+                    return await runPulseTuneTrial(profile, stepsPerRevolution);
+                } catch (error) {
+                    if (state.autoTuneCancelled) return null;
+                    const isMotionTimeout = error.message.includes('等待固件运动完成状态超时');
+                    if (!state.autoTuneActive || !isMotionTimeout || attempt >= 2) throw error;
+
+                    if (actionIndex >= 0) {
+                        setTuneActionState(actionIndex, '超时，正在恢复', `自动重试 ${attempt + 1}/2`);
+                    }
+                    appendTuneLog(`[自动重试] ${profile.label} 第 ${attempt + 1}/2 次：停止当前动作后重跑`);
+                    await writeRegister(0x11F, 0);
+                    let stopped = false;
+                    const stopDeadline = performance.now() + 2000;
+                    while (!stopped && performance.now() < stopDeadline) {
+                        try {
+                            stopped = (await readRegisterValue(0x11F, 500, 0)) === 0;
+                        } catch {
+                            stopped = false;
+                        }
+                        if (!stopped) await new Promise((resolve) => window.setTimeout(resolve, 100));
+                    }
+                    if (!stopped) throw new Error(`自动重试前无法确认运动已停止：${error.message}`);
+                    await new Promise((resolve) => window.setTimeout(resolve, 300));
+                }
+            }
+        }
+
         async function runTuneAction(index, options = {}) {
             if (state.tuneActionBusy || (state.autoTuneActive && !options.fromAuto)) return null;
             if (!state.connected) {
@@ -2058,7 +2096,7 @@
                 const gains = await readTuneGainsFromHardware();
                 await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 1);
                 document.getElementById('closedLoopEnableInput').checked = true;
-                const trialResult = await runPulseTuneTrial(profile, 200 * microsteps);
+                const trialResult = await runPulseTuneTrialWithRetries(profile, 200 * microsteps, index);
                 if (!trialResult) return null;
                 const details = `评分=${trialResult.score.toFixed(3)}°，样本=${trialResult.sampleCount}，${formatTuneGains(gains)}`;
                 setTuneActionState(index, '已完成', details, true);
@@ -2180,7 +2218,7 @@
                         if (state.autoTuneCancelled) return Number.POSITIVE_INFINITY;
                         const actionIndex = actionIndexForProfile(profile);
                         try {
-                            const trial = await runPulseTuneTrial(profile, 200 * microsteps);
+                            const trial = await runPulseTuneTrialWithRetries(profile, 200 * microsteps, actionIndex);
                             if (!trial || state.autoTuneCancelled) return Number.POSITIVE_INFINITY;
                             totalScore += trial.score;
                             if (actionIndex >= 0) {

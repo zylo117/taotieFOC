@@ -215,8 +215,9 @@ ClosedLoopController::ClosedLoopController()
       motion_position_deg_(0.0f),
     motion_follow_error_deg_(0.0f), motion_commanded_travel_deg_(0.0f), motion_encoder_travel_deg_(0.0f),
     motion_encoder_previous_angle_(0.0f), motion_encoder_reference_valid_(false),
-      motion_last_step_time_us_(0U), motion_last_ramp_time_us_(0U), motion_steps_emitted_(0U),
-      motion_step_accumulator_(0.0f), motion_direction_(1),
+    motion_last_step_time_us_(0U), motion_last_ramp_time_us_(0U), motion_steps_emitted_(0U),
+    motion_leg_pulse_count_(0U), motion_step_accumulator_(0.0f), motion_direction_(1),
+    motion_leg_reversed_(false), motion_direction_change_pending_(false),
       motion_step_high_(false), step_pulse_width_ns_(DEFAULT_STEP_PULSE_NS),
       step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), encoder_filtered_angle_(0U),
       magnetic_field_high_(false), magnetic_field_low_(false), last_process_time_us_(0U),
@@ -1046,6 +1047,8 @@ void ClosedLoopController::startMotion()
     motion_step_accumulator_ = 0.0f;
     motion_step_high_ = false;
     motion_zero_speed_recovery_logged_ = false;
+    motion_leg_reversed_ = false;
+    motion_direction_change_pending_ = true;
     motion_commanded_travel_deg_ = 0.0f;
     motion_encoder_travel_deg_ = 0.0f;
     motion_follow_error_deg_ = 0.0f;
@@ -1056,7 +1059,8 @@ void ClosedLoopController::startMotion()
     }
     if (motion_mode_ == MOTION_MODE_POSITION_REVERSE ||
         motion_mode_ == MOTION_MODE_VELOCITY_REVERSE ||
-        motion_mode_ == MOTION_MODE_HOME_REVERSE)
+        motion_mode_ == MOTION_MODE_HOME_REVERSE ||
+        motion_mode_ == MOTION_MODE_ALTERNATING_REVERSE)
     {
         motion_direction_ = -1;
     }
@@ -1064,7 +1068,7 @@ void ClosedLoopController::startMotion()
     {
         motion_direction_ = 1;
     }
-    motion_speed_rpm_ = motion_direction_ > 0 ? motion_start_rpm_ : -motion_start_rpm_;
+    motion_speed_rpm_ = motion_start_rpm_;
     const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
     const float rpm2step = static_cast<float>(micro_steps_per_round) / 60.0f;
 
@@ -1093,6 +1097,9 @@ void ClosedLoopController::startMotion()
         const float vmax = motion_max_step_s_;
         const float a = motion_accel_step_s2_;
         printf("v0: %.6f, vmax: %.6f, a: %.6f\n", v0, vmax, a);
+        const bool alternating_motion = motion_mode_ == MOTION_MODE_ALTERNATING_FORWARD ||
+                        motion_mode_ == MOTION_MODE_ALTERNATING_REVERSE;
+        motion_leg_pulse_count_ = alternating_motion ? (motion_pulse_count_ + 1U) / 2U : motion_pulse_count_;
         accel_total_steps_ = static_cast<uint32_t>((vmax * vmax - v0 * v0) / (2.0f * a));
 
         // 减速段：从vmax减速到0，加速度大小同样a
@@ -1100,7 +1107,7 @@ void ClosedLoopController::startMotion()
         printf("original accel_total_steps_: %lu\n", accel_total_steps_);
         printf("original decel_total_steps_: %lu\n", decel_total_steps_);
 
-        uint32_t total_req_steps = motion_pulse_count_;
+        uint32_t total_req_steps = motion_leg_pulse_count_;
 
         // 判断：行程够不够跑完整梯形（加速+匀速+减速），不够就退化成三角曲线（无匀速段）
         if (accel_total_steps_ + decel_total_steps_ <= total_req_steps)
@@ -1332,6 +1339,24 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     }
     else
     {
+        const bool alternating_motion = motion_mode_ == MOTION_MODE_ALTERNATING_FORWARD ||
+                                        motion_mode_ == MOTION_MODE_ALTERNATING_REVERSE;
+        if (alternating_motion && !motion_leg_reversed_ && motion_leg_pulse_count_ > 0U &&
+            motion_steps_emitted_ >= motion_leg_pulse_count_ &&
+            motion_steps_emitted_ < motion_pulse_count_)
+        {
+            motion_direction_ = static_cast<int8_t>(-motion_direction_);
+            motion_leg_reversed_ = true;
+            motion_direction_change_pending_ = true;
+            motion_ramp_stage_ = RAMP_STAGE_ACCEL;
+            current_step_speed_ = 0.0f;
+            motion_speed_rpm_ = 0.0f;
+            motion_step_accumulator_ = 0.0f;
+            printf("[MOTION] turnaround: leg_steps=%lu total=%lu dir=%d\r\n",
+                   static_cast<unsigned long>(motion_leg_pulse_count_),
+                   static_cast<unsigned long>(motion_pulse_count_),
+                   motion_direction_);
+        }
         // 条件：已经输出全部需要的脉冲，运动正常结束
         if (motion_steps_emitted_ >= motion_pulse_count_)
         {
@@ -1348,7 +1373,15 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     if (!closed_loop_angle_mode_enabled_)
     {
         // 计算还剩余多少微步脉冲有待输出
-        const uint32_t remaining_steps = motion_pulse_count_ - motion_steps_emitted_;
+        const uint32_t remaining_total_steps = motion_pulse_count_ - motion_steps_emitted_;
+        const bool alternating_motion = motion_mode_ == MOTION_MODE_ALTERNATING_FORWARD ||
+                                        motion_mode_ == MOTION_MODE_ALTERNATING_REVERSE;
+        const uint32_t leg_steps_emitted = alternating_motion && motion_leg_reversed_
+            ? motion_steps_emitted_ - motion_leg_pulse_count_
+            : motion_steps_emitted_;
+        const uint32_t remaining_steps = alternating_motion
+            ? (motion_leg_reversed_ ? remaining_total_steps : motion_leg_pulse_count_ - leg_steps_emitted)
+            : remaining_total_steps;
         const float dt_ramp_s = static_cast<float>(delta_ramp_ns) / 1.0e9f;
 
         if (motion_ramp_stage_ == RAMP_STAGE_ACCEL)
@@ -1408,7 +1441,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_speed_rpm_ = current_step_speed_ * 60.0f / static_cast<float>(micro_steps_per_round);
     }
 
-    if (!closed_loop_angle_mode_enabled_ && motion_running_ && motion_start_step_s_ > 0.0f &&
+    const bool alternating_motion = motion_mode_ == MOTION_MODE_ALTERNATING_FORWARD ||
+                                    motion_mode_ == MOTION_MODE_ALTERNATING_REVERSE;
+    if ((!alternating_motion || motion_ramp_stage_ == RAMP_STAGE_DECEL) &&
+        !closed_loop_angle_mode_enabled_ && motion_running_ && motion_start_step_s_ > 0.0f &&
         motion_steps_emitted_ < motion_pulse_count_ &&
         current_step_speed_ < motion_start_step_s_ * 0.05f)
     {
@@ -1424,6 +1460,12 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         }
         current_step_speed_ = motion_start_step_s_;
         motion_speed_rpm_ = static_cast<float>(motion_direction_) * motion_start_rpm_;
+    }
+
+    if (!closed_loop_angle_mode_enabled_ && driver_ != nullptr)
+    {
+        const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
+        motion_speed_rpm_ = current_step_speed_ * 60.0f / static_cast<float>(micro_steps_per_round);
     }
 
     // 更新本次的时间戳，作为下一次调用的“上一次时间点”
@@ -1471,7 +1513,13 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // 如果是同向，这两个的arr周期为0，否则arr为guard_tick
         static uint32_t arr_seq_cycle[130];
         uint32_t num_steps = static_cast<uint32_t>(floor(motion_step_accumulator_));
-        const uint32_t remaining_steps = motion_pulse_count_ - motion_steps_emitted_;
+        const uint32_t remaining_total_steps = motion_pulse_count_ - motion_steps_emitted_;
+        const uint32_t leg_steps_emitted = alternating_motion && motion_leg_reversed_
+            ? motion_steps_emitted_ - motion_leg_pulse_count_
+            : motion_steps_emitted_;
+        const uint32_t remaining_steps = alternating_motion
+            ? (motion_leg_reversed_ ? remaining_total_steps : motion_leg_pulse_count_ - leg_steps_emitted)
+            : remaining_total_steps;
         if (num_steps > remaining_steps)
         {
             num_steps = remaining_steps;
@@ -1523,15 +1571,17 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         }
 
         generate_constant_speed_step_sequence(arr_seq_cycle, seq_count, step_ticks);
-        add_dir_to_step_sequence(arr_seq_cycle, seq_count, stepper_common::guard_tick, false);
+        add_dir_to_step_sequence(arr_seq_cycle, seq_count, stepper_common::guard_tick,
+                     motion_direction_change_pending_);
         start_step_sequence(arr_seq_cycle, seq_count, stepper_common::k_psc, stepper_common::k_step_pulse_ticks, current_direction);
+        motion_direction_change_pending_ = false;
 
         if (!closed_loop_angle_mode_enabled_)
         {
             motion_steps_emitted_ += num_steps;
             const float step_angle_deg = 360.0f / static_cast<float>(getMicroStepsPerRound(driver_));
-            motion_commanded_travel_deg_ = static_cast<float>(motion_direction_) * step_angle_deg *
-                                           static_cast<float>(motion_steps_emitted_);
+            motion_commanded_travel_deg_ += static_cast<float>(motion_direction_) * step_angle_deg *
+                                            static_cast<float>(num_steps);
             motion_follow_error_deg_ = normalize_signed_angle_error_deg(
                 motion_commanded_travel_deg_ - motion_encoder_travel_deg_);
         }
@@ -1553,6 +1603,9 @@ void ClosedLoopController::stopMotion()
     encoder_speed_rpm_ = 0.0f;
     target_velocity_rps_ = 0.0f;
     motion_steps_emitted_ = 0U;
+    motion_leg_pulse_count_ = 0U;
+    motion_leg_reversed_ = false;
+    motion_direction_change_pending_ = false;
     motion_step_accumulator_ = 0.0f;
     motion_last_step_time_ns_ = 0ULL;
     motion_last_ramp_time_ns_ = 0ULL;

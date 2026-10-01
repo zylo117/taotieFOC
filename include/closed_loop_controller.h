@@ -191,7 +191,9 @@ public:
         MOTION_MODE_VELOCITY_FORWARD = 2U,
         MOTION_MODE_VELOCITY_REVERSE = 3U,
         MOTION_MODE_HOME_FORWARD = 4U,
-        MOTION_MODE_HOME_REVERSE = 5U
+        MOTION_MODE_HOME_REVERSE = 5U,
+        MOTION_MODE_ALTERNATING_FORWARD = 6U,
+        MOTION_MODE_ALTERNATING_REVERSE = 7U
     };
 
     void setMotionConfig(float start_rpm, float max_rpm, float accel_rpm_s, uint32_t pulse_count, MotionMode mode);
@@ -305,8 +307,11 @@ private:
     volatile uint32_t motion_last_ramp_time_us_;
     volatile uint32_t motion_steps_emitted_;
     volatile uint32_t motion_dma_pending_steps_;
+    volatile uint32_t motion_leg_pulse_count_;
     volatile double motion_step_accumulator_;
     volatile int8_t motion_direction_;
+    volatile bool motion_leg_reversed_;
+    volatile bool motion_direction_change_pending_;
     volatile bool motion_step_high_;
     volatile uint64_t step_pulse_width_ns_;
     volatile uint32_t k_step_pulse_ticks;
