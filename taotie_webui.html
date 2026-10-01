@@ -1013,7 +1013,8 @@
             currentAngle: 0,
             targetAngle: 0,
             targetPosition: 0,
-            targetWriteTimer: null,
+            pendingTargetAngle: null,
+            targetWriteInFlight: false,
             speed: 0,
             accel: 0,
             currentA: 0,
@@ -1410,6 +1411,7 @@
                 setConnBadge('已连接', true);
                 protoBadge.textContent = 'TMC 兼容';
                 log('[INFO] 串口已连接，开始监听返回数据');
+                if (state.pendingTargetAngle !== null) void flushTargetAngleWrites();
 
                 readLoop();
             } catch (err) {
@@ -1465,20 +1467,27 @@
 
         function queueTargetAngleWrite() {
             if (state.autoTuneActive) return;
-            if (state.targetWriteTimer !== null) {
-                window.clearTimeout(state.targetWriteTimer);
-            }
+            const target = normalize360Angle(Number(document.getElementById('targetPosInput').value || 0));
+            setTargetAngle(target);
+            state.targetPosition = target;
+            state.pendingTargetAngle = target;
+            if (state.connected) void flushTargetAngleWrites();
+        }
 
-            state.targetWriteTimer = window.setTimeout(async () => {
-                state.targetWriteTimer = null;
-                const target = normalize360Angle(Number(document.getElementById('targetPosInput').value || 0));
-                setTargetAngle(target);
-                state.targetPosition = target;
-
-                if (state.connected) {
+        async function flushTargetAngleWrites() {
+            if (state.targetWriteInFlight || !state.connected) return;
+            state.targetWriteInFlight = true;
+            try {
+                while (state.connected && !state.autoTuneActive && state.pendingTargetAngle !== null) {
+                    const target = state.pendingTargetAngle;
+                    state.pendingTargetAngle = null;
                     await writeRegister(CUSTOM_REGS.TARGET_ANGLE_DEG, Math.round(target * 1000));
                 }
-            }, 8);
+            } catch (error) {
+                log('[ERROR] 目标角度写入失败：' + error.message);
+            } finally {
+                state.targetWriteInFlight = false;
+            }
         }
 
         function bindDialDrag() {
@@ -1544,9 +1553,7 @@
             setTargetAngle(target);
             state.targetPosition = target;
             log('[INFO] 发送目标位置：' + target + '°');
-            if (state.connected) {
-                await writeRegister(CUSTOM_REGS.TARGET_ANGLE_DEG, Math.round(target * 1000));
-            }
+            queueTargetAngleWrite();
         }
 
         async function applyAllConfig() {
@@ -1661,13 +1668,17 @@
         }
 
         async function zeroEncoder() {
-            if (state.autoTuneActive) state.autoTuneCancelled = true;
+            const tuning = state.autoTuneActive;
+            if (tuning) state.autoTuneCancelled = true;
             state.targetAngle = 0;
             state.targetPosition = 0;
+            document.getElementById('targetPosInput').value = '0';
             updateDialVisual();
             log('[INFO] 已发送电机归零目标：0°');
-            if (state.connected) {
+            if (tuning && state.connected) {
                 await writeRegister(CUSTOM_REGS.TARGET_ANGLE_DEG, 0);
+            } else {
+                queueTargetAngleWrite();
             }
         }
 
@@ -1775,10 +1786,7 @@
 
             state.autoTuneActive = true;
             state.autoTuneCancelled = false;
-            if (state.targetWriteTimer !== null) {
-                window.clearTimeout(state.targetWriteTimer);
-                state.targetWriteTimer = null;
-            }
+            state.pendingTargetAngle = null;
             document.getElementById('startTuneBtn').textContent = '停止整定';
             document.getElementById('tuneState').textContent = '运行中';
             document.getElementById('tuneLogBadge').textContent = '整定中';
