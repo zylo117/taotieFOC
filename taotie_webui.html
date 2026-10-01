@@ -665,6 +665,17 @@
                     <span>电流：<strong id="currentValue">0.00</strong> A</span>
                 </div>
 
+                <div class="grid-2">
+                    <div class="field">
+                        <label for="angleMaxRpmInput">闭环最大速度（RPM）</label>
+                        <input id="angleMaxRpmInput" min="1" max="12000" step="1" type="number" value="1200"/>
+                    </div>
+                    <div class="field">
+                        <label for="angleAccelRpmSInput">闭环加速度（RPM/s）</label>
+                        <input id="angleAccelRpmSInput" min="1" max="12000" step="1" type="number" value="6000"/>
+                    </div>
+                </div>
+
                 <div class="card">
                     <h3 style="margin:0 0 12px;">测速控制</h3>
                     <div class="grid-2">
@@ -887,15 +898,15 @@
                             <h3 style="margin-top:0;">位置 PID</h3>
                             <div class="field">
                                 <label>Kp</label>
-                                <input id="posKp" min="0" max="1000" step="0.01" type="number" value="1.0"/>
+                                <input id="posKp" min="0" max="30000" step="0.01" type="number" value="60.0"/>
                             </div>
                             <div class="field mt">
                                 <label>Ki</label>
-                                <input id="posKi" min="0" max="100" step="0.01" type="number" value="0.04"/>
+                                <input id="posKi" min="0" max="3000" step="0.01" type="number" value="20.0"/>
                             </div>
                             <div class="field mt">
                                 <label>Kd</label>
-                                <input id="posKd" min="0" max="100" step="0.01" type="number" value="0.02"/>
+                                <input id="posKd" min="0" max="30000" step="0.01" type="number" value="60.0"/>
                             </div>
                         </div>
 
@@ -903,15 +914,15 @@
                             <h3 style="margin-top:0;">速度 PID</h3>
                             <div class="field">
                                 <label>Kp</label>
-                                <input id="velKp" min="0" max="100" step="0.01" type="number" value="0.7"/>
+                                <input id="velKp" min="0" max="3000" step="0.01" type="number" value="30.0"/>
                             </div>
                             <div class="field mt">
                                 <label>Ki</label>
-                                <input id="velKi" min="0" max="100" step="0.01" type="number" value="0.06"/>
+                                <input id="velKi" min="0" max="3000" step="0.01" type="number" value="8.0"/>
                             </div>
                             <div class="field mt">
                                 <label>Kd</label>
-                                <input id="velKd" min="0" max="100" step="0.01" type="number" value="0.01"/>
+                                <input id="velKd" min="0" max="3000" step="0.01" type="number" value="20.0"/>
                             </div>
                         </div>
                     </div>
@@ -933,11 +944,11 @@
                         <div class="card">
                             <div class="field">
                                 <label>最大速度（RPM）</label>
-                                <input id="tuneMaxSpeed" min="3" max="30" step="1" type="number" value="12"/>
+                                <input id="tuneMaxSpeed" min="3" max="600" step="1" type="number" value="60"/>
                             </div>
                             <div class="field mt">
                                 <label>加速度（RPM/s）</label>
-                                <input id="tuneAccel" min="6" max="120" step="1" type="number" value="30"/>
+                                <input id="tuneAccel" min="6" max="3000" step="1" type="number" value="180"/>
                             </div>
                             <div class="field mt">
                                 <label>增益步进</label>
@@ -1025,8 +1036,8 @@
             , rxBuffer: new Uint8Array(0)
             , motionSpeedRpm: 0
             , motionFollowErrorDeg: 0
-            , angleMaxRpm: 120
-            , angleAccelRpmS: 60
+            , angleMaxRpm: 1200
+            , angleAccelRpmS: 6000
             , waveHistory: []
             , wavePaused: false
             , wavePausedAt: 0
@@ -1342,6 +1353,12 @@
             }
             if (frame.reg === CUSTOM_REGS.ANGLE_MAX_RPM) state.angleMaxRpm = frame.value;
             if (frame.reg === CUSTOM_REGS.ANGLE_ACCEL_RPM_S) state.angleAccelRpmS = frame.value;
+            if (frame.reg === CUSTOM_REGS.ANGLE_MAX_RPM) {
+                document.getElementById('angleMaxRpmInput').value = frame.value;
+            }
+            if (frame.reg === CUSTOM_REGS.ANGLE_ACCEL_RPM_S) {
+                document.getElementById('angleAccelRpmSInput').value = frame.value;
+            }
             updateFaultStatus();
             updateTelemetryDisplay();
 
@@ -1461,7 +1478,7 @@
                 if (state.connected) {
                     await writeRegister(CUSTOM_REGS.TARGET_ANGLE_DEG, Math.round(target * 1000));
                 }
-            }, 100);
+            }, 8);
         }
 
         function bindDialDrag() {
@@ -1645,12 +1662,12 @@
 
         async function zeroEncoder() {
             if (state.autoTuneActive) state.autoTuneCancelled = true;
-            state.currentAngle = 0;
             state.targetAngle = 0;
+            state.targetPosition = 0;
             updateDialVisual();
-            log('[INFO] 已归零当前位置');
+            log('[INFO] 已发送电机归零目标：0°');
             if (state.connected) {
-                await writeRegister(0x107, 0);
+                await writeRegister(CUSTOM_REGS.TARGET_ANGLE_DEG, 0);
             }
         }
 
@@ -1677,17 +1694,21 @@
             const rmsError = Math.sqrt(errors.reduce((sum, error) => sum + error * error, 0) / errors.length);
             const overshoot = Math.max(0, Math.max(...progress) - testAngle);
             const finalError = Math.abs(errors[errors.length - 1]);
+            const finalProgress = Math.abs(progress[progress.length - 1]);
             let reversals = 0;
             let priorMotion = 0;
             for (let index = 1; index < progress.length; index++) {
                 const delta = progress[index] - progress[index - 1];
-                if (Math.abs(delta) < 0.03) continue;
+                if (Math.abs(delta) < 0.02) continue;
                 const motionSign = Math.sign(delta);
                 if (priorMotion !== 0 && motionSign !== priorMotion) reversals++;
                 priorMotion = motionSign;
             }
             const peakProgress = Math.max(...progress);
-            if (peakProgress < 0.5) return Number.POSITIVE_INFINITY;
+            const minimumValidProgress = clamp(testAngle * 0.0125, 0.04, 0.25);
+            if (peakProgress < minimumValidProgress && finalProgress < minimumValidProgress * 0.8) {
+                return Number.POSITIVE_INFINITY;
+            }
 
             return rmsError + overshoot * 2 + finalError * 1.5 + reversals * 0.5;
         }
@@ -1784,10 +1805,12 @@
                 restoreMaxRpm = state.angleMaxRpm;
                 restoreAccelRpmS = state.angleAccelRpmS;
                 bestGains = getPidParameters();
-                if (bestGains.posKp < 10) {
-                    bestGains.posKp = 10;
+                if (bestGains.posKp < 18) {
+                    bestGains.posKp = 18;
+                    bestGains.posKi = Math.max(bestGains.posKi, 10);
+                    bestGains.posKd = Math.max(bestGains.posKd, 18);
                     writeTuneGainsToInputs(bestGains);
-                    appendTuneLog('位置环 Kp 提升至 10.000 作为低速整定起始值');
+                    appendTuneLog('位置环起始增益提升至 18/10/18，避免低增益状态下整定被误判为无响应');
                 }
 
                 if (performance.now() - state.lastEncoderTelemetryAt > 500) {
@@ -1809,7 +1832,7 @@
                 for (const key of gainKeys) {
                     if (state.autoTuneCancelled) break;
                     const center = bestGains[key];
-                    const maxGain = key === 'posKp' ? 1000 : 100;
+                    const maxGain = key === 'posKp' || key === 'posKd' ? 30000 : 3000;
                     const candidates = [
                         Math.max(0, center * (1 - stepRatio)),
                         Math.min(maxGain, center * (1 + stepRatio))
@@ -2354,6 +2377,20 @@
                 state.targetAngle = normalize360Angle(Number(this.value || 0));
                 updateDialVisual();
                 queueTargetAngleWrite();
+            });
+
+            document.getElementById('angleMaxRpmInput').addEventListener('change', async function () {
+                const value = clamp(Math.round(Number(this.value) || 1), 1, 12000);
+                this.value = String(value);
+                state.angleMaxRpm = value;
+                if (state.connected) await writeRegister(CUSTOM_REGS.ANGLE_MAX_RPM, value);
+            });
+
+            document.getElementById('angleAccelRpmSInput').addEventListener('change', async function () {
+                const value = clamp(Math.round(Number(this.value) || 1), 1, 12000);
+                this.value = String(value);
+                state.angleAccelRpmS = value;
+                if (state.connected) await writeRegister(CUSTOM_REGS.ANGLE_ACCEL_RPM_S, value);
             });
 
             ['posKp', 'posKi', 'posKd', 'velKp', 'velKi', 'velKd'].forEach((id) => {

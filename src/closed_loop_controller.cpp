@@ -189,13 +189,17 @@ void PidController::resetDeriv()
 
 ClosedLoopController::ClosedLoopController()
     : driver_(nullptr), encoder_(nullptr), protocol_(nullptr),
-      base_position_kp_(1.0f), base_position_ki_(0.04f), base_position_kd_(0.02f),
-      base_velocity_kp_(0.7f), base_velocity_ki_(0.06f), base_velocity_kd_(0.01f),
+      // 张大头的闭环 PID 原始寄存器值是 18000 / 10 / 18000，
+      // 对应工程值分别为 18.0 / 10.0 / 18.0，因为协议层会对增益值 ×1000 / 1000 处理。
+      // 但为了提高跟手性和大幅度快速跟随响应，本项目在高响应配置中继续放宽到更大范围，
+      // 让位置环和速度环都具备更强的瞬时响应能力。
+      base_position_kp_(60.0f), base_position_ki_(20.0f), base_position_kd_(60.0f),
+      base_velocity_kp_(30.0f), base_velocity_ki_(8.0f), base_velocity_kd_(20.0f),
       adaptive_pid_enabled_(false), adaptive_config_{0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
       target_step_(0), actual_step_(0), last_actual_step_(0), command_step_(0),
       follow_error_(0.0f), measured_velocity_rps_(0.0f), target_velocity_rps_(0.0f),
     motion_start_rpm_(0.0f), motion_max_rpm_(0.0f), motion_accel_rpm_s_(0.0f),
-    angle_max_rpm_(120.0f), angle_accel_rpm_s_(60.0f),
+    angle_max_rpm_(1200.0f), angle_accel_rpm_s_(6000.0f),
       motion_pulse_count_(0U), motion_window_ms_(2000U), motion_mode_(MOTION_MODE_POSITION_FORWARD),
       motion_running_(false), motion_paused_(false), motion_speed_rpm_(0.0f), encoder_speed_rpm_(0.0f),
       motion_position_deg_(0.0f),
@@ -450,7 +454,12 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
         reg == TMC2209_EXT_PARAM_POSITION_KD || reg == TMC2209_EXT_PARAM_VELOCITY_KP ||
         reg == TMC2209_EXT_PARAM_VELOCITY_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KD)
     {
-        const float max_gain = reg == TMC2209_EXT_PARAM_POSITION_KP ? 1000.0f : 100.0f;
+        const float max_gain = reg == TMC2209_EXT_PARAM_POSITION_KP || reg == TMC2209_EXT_PARAM_POSITION_KD
+            ? 30000.0f
+            : (reg == TMC2209_EXT_PARAM_POSITION_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KP ||
+               reg == TMC2209_EXT_PARAM_VELOCITY_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KD)
+                ? 3000.0f
+                : 30000.0f;
         const float gain = fast_clamp(static_cast<float>(value) / 1000.0f, 0.0f, max_gain);
         if (reg == TMC2209_EXT_PARAM_POSITION_KP) base_position_kp_ = gain;
         if (reg == TMC2209_EXT_PARAM_POSITION_KI) base_position_ki_ = gain;
@@ -1225,6 +1234,9 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     if (closed_loop_angle_mode_enabled_)
     {
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
+        // 以真实机械角度误差做闭环控制，单位是度/圈；
+        // 微分步数只影响输出脉冲密度，不改变 PID 的误差定义，
+        // 因此不同驱动或不同细分设置不会让同一组 PID 失效。
         const float desired_error_deg = normalize_signed_angle_error_deg(target_angle_deg_ - motion_position_deg_);
         closed_loop_angle_error_deg_ = desired_error_deg;
 
@@ -1238,10 +1250,14 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             const float unconstrained_rps = fast_clamp(position_reference_rps + velocity_correction_rps,
                                                        -max_rps,
                                                        max_rps);
+            const float target_direction_rps = desired_error_deg >= 0.0f ? 1.0f : -1.0f;
+            const float directed_rps = unconstrained_rps * target_direction_rps < 0.0f
+                ? 0.0f
+                : unconstrained_rps;
             const float accel_limit_rps2 = angle_accel_rpm_s_ / 60.0f;
             const float previous_rps = motion_speed_rpm_ / 60.0f;
             const float max_delta_rps = accel_limit_rps2 * dt;
-            const float desired_rps = fast_clamp(unconstrained_rps,
+            const float desired_rps = fast_clamp(directed_rps,
                                                  previous_rps - max_delta_rps,
                                                  previous_rps + max_delta_rps);
             const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
