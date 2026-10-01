@@ -433,6 +433,25 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
         setTargetAngleDeg(static_cast<float>(value) / 1000.0f);
         return true;
     }
+    if (reg == TMC2209_EXT_PARAM_POSITION_KP || reg == TMC2209_EXT_PARAM_POSITION_KI ||
+        reg == TMC2209_EXT_PARAM_POSITION_KD || reg == TMC2209_EXT_PARAM_VELOCITY_KP ||
+        reg == TMC2209_EXT_PARAM_VELOCITY_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KD)
+    {
+        const float gain = fast_clamp(static_cast<float>(value) / 1000.0f, 0.0f, 100.0f);
+        if (reg == TMC2209_EXT_PARAM_POSITION_KP) base_position_kp_ = gain;
+        if (reg == TMC2209_EXT_PARAM_POSITION_KI) base_position_ki_ = gain;
+        if (reg == TMC2209_EXT_PARAM_POSITION_KD) base_position_kd_ = gain;
+        if (reg == TMC2209_EXT_PARAM_VELOCITY_KP) base_velocity_kp_ = gain;
+        if (reg == TMC2209_EXT_PARAM_VELOCITY_KI) base_velocity_ki_ = gain;
+        if (reg == TMC2209_EXT_PARAM_VELOCITY_KD) base_velocity_kd_ = gain;
+        position_pid_.setGains(base_position_kp_, base_position_ki_, base_position_kd_);
+        velocity_pid_.setGains(base_velocity_kp_, base_velocity_ki_, base_velocity_kd_);
+        position_pid_.resetIntegral();
+        position_pid_.resetDeriv();
+        velocity_pid_.resetIntegral();
+        velocity_pid_.resetDeriv();
+        return protocol_ != nullptr && protocol_->setCustomParameter(reg, value);
+    }
     if (reg == TMC2209_EXT_PARAM_MOTOR_ENABLE)
     {
         stopMotion();
@@ -536,6 +555,36 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_TARGET_ANGLE_DEG)
     {
         *value = static_cast<uint32_t>(static_cast<int32_t>(target_angle_deg_ * 1000.0f));
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_POSITION_KP)
+    {
+        *value = static_cast<uint32_t>(base_position_kp_ * 1000.0f);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_POSITION_KI)
+    {
+        *value = static_cast<uint32_t>(base_position_ki_ * 1000.0f);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_POSITION_KD)
+    {
+        *value = static_cast<uint32_t>(base_position_kd_ * 1000.0f);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_VELOCITY_KP)
+    {
+        *value = static_cast<uint32_t>(base_velocity_kp_ * 1000.0f);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_VELOCITY_KI)
+    {
+        *value = static_cast<uint32_t>(base_velocity_ki_ * 1000.0f);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_VELOCITY_KD)
+    {
+        *value = static_cast<uint32_t>(base_velocity_kd_ * 1000.0f);
         return true;
     }
     if (reg == TMC2209_REG_TSTEP)
@@ -1145,7 +1194,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     if (delta_ramp_ns > 0U && encoder_ != nullptr)
     {
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
-        encoder_speed_rpm_ = (encoder_delta_deg / 360.0f) * (60.0f / dt);
+        const float measured_rpm = (encoder_delta_deg / 360.0f) * (60.0f / dt);
+        encoder_speed_rpm_ = encoder_speed_rpm_ * 0.98f + measured_rpm * 0.02f;
     }
 
     if (closed_loop_angle_mode_enabled_)
@@ -1161,9 +1211,17 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             const float velocity_error_rps = position_reference_rps - (encoder_speed_rpm_ / 60.0f);
             const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt);
             const float max_rps = (motion_max_rpm_ > 0.0f) ? (motion_max_rpm_ / 60.0f) : 2.0f;
-            const float desired_rps = fast_clamp(position_reference_rps + velocity_correction_rps,
-                                                 -max_rps,
-                                                 max_rps);
+            const float unconstrained_rps = fast_clamp(position_reference_rps + velocity_correction_rps,
+                                                       -max_rps,
+                                                       max_rps);
+            const float accel_limit_rps2 = motion_accel_rpm_s_ > 0.0f
+                ? motion_accel_rpm_s_ / 60.0f
+                : 1.0f;
+            const float previous_rps = motion_speed_rpm_ / 60.0f;
+            const float max_delta_rps = accel_limit_rps2 * dt;
+            const float desired_rps = fast_clamp(unconstrained_rps,
+                                                 previous_rps - max_delta_rps,
+                                                 previous_rps + max_delta_rps);
             const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
             current_step_speed_ = desired_rps * static_cast<float>(micro_steps_per_round);
             motion_speed_rpm_ = desired_rps * 60.0f;
@@ -1179,6 +1237,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             current_step_speed_ = 0.0f;
             motion_speed_rpm_ = 0.0f;
             motion_step_accumulator_ = 0.0f;
+            position_pid_.resetIntegral();
+            position_pid_.resetDeriv();
+            velocity_pid_.resetIntegral();
+            velocity_pid_.resetDeriv();
         }
     }
     else

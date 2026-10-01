@@ -150,7 +150,6 @@ void UsbCdcProtocolBridge::sendTelemetry()
         TMC2209_EXT_PARAM_ACTUAL_POSITION,
         TMC2209_EXT_PARAM_FOLLOW_ERROR,
         TMC2209_EXT_PARAM_ENCODER_RAW,
-        TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG,
         TMC2209_EXT_PARAM_MAGNETIC_HIGH,
         TMC2209_EXT_PARAM_MAGNETIC_LOW,
         TMC2209_EXT_PARAM_ENCODER_ZERO,
@@ -165,6 +164,12 @@ void UsbCdcProtocolBridge::sendTelemetry()
         TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS, TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, TMC2209_EXT_PARAM_MOTOR_ENABLE,
         TMC2209_EXT_PARAM_MOTOR_DISABLE, TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS
     };
+
+    uint32_t encoder_angle_mdeg = 0U;
+    if (controller_->readParameter(TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG, &encoder_angle_mdeg))
+    {
+        sendFrame(0x10U, TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG, encoder_angle_mdeg);
+    }
 
     static uint16_t telemetry_index = 0U;
     const uint16_t telemetry_count = sizeof(telemetry_regs) / sizeof(telemetry_regs[0]);

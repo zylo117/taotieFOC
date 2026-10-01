@@ -109,6 +109,12 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS:
     case TMC2209_EXT_PARAM_HOST_SIMULATE:
     case TMC2209_EXT_PARAM_TARGET_ANGLE_DEG:
+    case TMC2209_EXT_PARAM_POSITION_KP:
+    case TMC2209_EXT_PARAM_POSITION_KI:
+    case TMC2209_EXT_PARAM_POSITION_KD:
+    case TMC2209_EXT_PARAM_VELOCITY_KP:
+    case TMC2209_EXT_PARAM_VELOCITY_KI:
+    case TMC2209_EXT_PARAM_VELOCITY_KD:
         return true;
     default:
         return false;
