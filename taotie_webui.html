@@ -498,6 +498,50 @@
             white-space: pre-wrap;
         }
 
+        .tune-action-list {
+            display: grid;
+            gap: 6px;
+        }
+
+        .tune-action-row {
+            display: grid;
+            grid-template-columns: minmax(120px, 1fr) minmax(180px, 1.5fr) auto;
+            align-items: center;
+            gap: 12px;
+            padding: 9px 10px;
+            border-bottom: 1px solid var(--line);
+            background: rgba(2, 6, 23, 0.24);
+        }
+
+        .tune-action-name {
+            font-size: 0.84rem;
+            font-weight: 700;
+        }
+
+        .tune-action-result {
+            color: var(--muted);
+            font: 0.74rem/1.45 "Consolas", "SFMono-Regular", monospace;
+            overflow-wrap: anywhere;
+        }
+
+        .tune-action-button:disabled {
+            cursor: default;
+            opacity: 0.42;
+            filter: grayscale(1);
+            transform: none;
+        }
+
+        @media (max-width: 640px) {
+            .tune-action-row {
+                grid-template-columns: minmax(0, 1fr) auto;
+            }
+
+            .tune-action-result {
+                grid-column: 1 / -1;
+                grid-row: 2;
+            }
+        }
+
         .wave-readouts {
             display: flex;
             justify-content: center;
@@ -992,6 +1036,8 @@
                             </div>
                         </div>
                     </div>
+                    <div class="tiny">每个动作使用当前 PID 独立采样评分；自动运行遇到失败会停在该项，失败项可单独重试。</div>
+                    <div aria-live="polite" class="tune-action-list" id="tuneActionList"></div>
                 </div>
             </section>
 
@@ -1002,7 +1048,7 @@
                 </div>
                 <div class="panel-body">
                     <div aria-live="polite" class="tune-log" id="tuneLog"></div>
-                    <div class="tiny">最佳实测参数</div>
+                    <div class="tiny">当前 PID 与动作评分</div>
                     <div class="tune-results" id="tuneResults">尚未完成自动整定</div>
                 </div>
             </section>
@@ -1025,10 +1071,18 @@
             autoTuneActive: false,
             autoTuneCancelled: false,
             tuneTrialActive: false,
-            tuneSamples: [],
+            tuneActionBusy: false,
+            tuneActionProfiles: [],
             tuneMotionObserved: false,
             tuneMotionResolver: null,
             tuneMotionTimeout: null,
+            tuneTrialStage: '',
+            tuneTrialProfile: null,
+            tuneTrialStartedAt: 0,
+            tuneLastMotionTelemetryAt: 0,
+            tuneLastMotionStatus: null,
+            tuneLastMotionStatusCmd: null,
+            tuneLastCommand: '无',
             bestTuneGains: null,
             currentAngle: 0,
             targetAngle: 0,
@@ -1129,6 +1183,11 @@
             , VELOCITY_KD: 0x12E
             , ANGLE_MAX_RPM: 0x12F
             , ANGLE_ACCEL_RPM_S: 0x130
+            , PID_TUNE_CONTROL: 0x131
+            , PID_TUNE_SCORE_MDEG: 0x132
+            , PID_TUNE_SAMPLE_COUNT: 0x133
+            , MOTION_SCHEDULED_STEPS: 0x134
+            , MOTION_COMMAND_SPEED_MRPM: 0x135
             , MAX_RPM: 0x11B
             , ACCEL_RPM_S: 0x11C
         };
@@ -1173,6 +1232,11 @@
             , [CUSTOM_REGS.VELOCITY_KD, ['0x012E', 'VELOCITY_KD', '速度环 Kd，单位 0.001']]
             , [CUSTOM_REGS.ANGLE_MAX_RPM, ['0x012F', 'ANGLE_MAX_RPM', '闭环整定最大速度，单位 RPM']]
             , [CUSTOM_REGS.ANGLE_ACCEL_RPM_S, ['0x0130', 'ANGLE_ACCEL_RPM_S', '闭环整定加速度，单位 RPM/s']]
+            , [CUSTOM_REGS.PID_TUNE_CONTROL, ['0x0131', 'PID_TUNE_CONTROL', '固件 PID 整定评分采集控制']]
+            , [CUSTOM_REGS.PID_TUNE_SCORE_MDEG, ['0x0132', 'PID_TUNE_SCORE', '固件计算的跟随误差评分，单位 0.001°']]
+            , [CUSTOM_REGS.PID_TUNE_SAMPLE_COUNT, ['0x0133', 'PID_TUNE_SAMPLES', '固件参与评分的误差样本数']]
+            , [CUSTOM_REGS.MOTION_SCHEDULED_STEPS, ['0x0134', 'MOTION_SCHEDULED_STEPS', '当前动作已提交的 STEP 数']]
+            , [CUSTOM_REGS.MOTION_COMMAND_SPEED_MRPM, ['0x0135', 'MOTION_COMMAND_SPEED', '当前命令速度，单位 0.001 RPM']]
             , [0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
             , [0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
             , [0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
@@ -1343,7 +1407,7 @@
                 frame.reg === CUSTOM_REGS.MAGNETIC_LOW;
             const routineMotionStatus = isTelemetry && frame.reg === 0x11F;
             if (!routineMotionStatus && (!isTelemetry || !diagnosticRegister)) {
-                log(`[RX] ${description ? description[0] : '0x' + frame.reg.toString(16).padStart(4, '0')} ${name} = ${frame.value}`);
+                log(`[RX] cmd=0x${frame.cmd.toString(16).padStart(2, '0')} ${description ? description[0] : '0x' + frame.reg.toString(16).padStart(4, '0')} ${name} = ${frame.value}`);
             }
 
             if (frame.reg === CUSTOM_REGS.PHASE_A_CURRENT_MA) state.phaseACurrentA = frame.value / 1000;
@@ -1366,10 +1430,6 @@
                 state.encoderAngleDeg = (frame.value | 0) / 1000;
                 state.lastEncoderTelemetryAt = performance.now();
                 setCurrentAngle(state.encoderAngleDeg);
-                if (state.tuneTrialActive) {
-                    state.tuneSamples.push({t: state.lastEncoderTelemetryAt, angle: state.currentAngle});
-                    if (state.tuneSamples.length > 1500) state.tuneSamples.shift();
-                }
             }
             const pidInputByRegister = new Map([
                 [CUSTOM_REGS.POSITION_KP, 'posKp'],
@@ -1413,34 +1473,51 @@
                 return null;
             }
             const frame = buildFrame(0x01, reg, 0);
+            if (state.autoTuneActive) state.tuneLastCommand = `READ 0x${reg.toString(16).padStart(4, '0')} cmd=0x01`;
             await state.writer.write(frame);
+            log(`[TX] READ reg=0x${reg.toString(16).padStart(4, '0')} cmd=0x01`);
             return frame;
         }
 
-        function readRegisterValue(reg, timeoutMs = 1500) {
+        async function readRegisterValue(reg, timeoutMs = 1500, retries = 2) {
             if (!state.connected || !state.writer) {
-                return Promise.reject(new Error('串口未连接，无法读取寄存器'));
+                throw new Error('串口未连接，无法读取寄存器');
             }
-            return new Promise((resolve, reject) => {
-                const waiters = state.registerReadWaiters.get(reg) || [];
-                const waiter = {
-                    resolve,
-                    reject,
-                    timeout: window.setTimeout(() => {
-                        const pending = state.registerReadWaiters.get(reg) || [];
-                        state.registerReadWaiters.set(reg, pending.filter((entry) => entry !== waiter));
-                        reject(new Error(`读取寄存器 0x${reg.toString(16)} 超时`));
-                    }, timeoutMs)
-                };
-                waiters.push(waiter);
-                state.registerReadWaiters.set(reg, waiters);
-                readRegister(reg).catch((error) => {
-                    window.clearTimeout(waiter.timeout);
-                    const pending = state.registerReadWaiters.get(reg) || [];
-                    state.registerReadWaiters.set(reg, pending.filter((entry) => entry !== waiter));
-                    reject(error);
-                });
-            });
+            let lastError;
+            for (let attempt = 0; attempt <= retries; attempt++) {
+                try {
+                    return await new Promise((resolve, reject) => {
+                        const waiters = state.registerReadWaiters.get(reg) || [];
+                        const waiter = {
+                            resolve,
+                            reject,
+                            timeout: window.setTimeout(() => {
+                                const pending = state.registerReadWaiters.get(reg) || [];
+                                const remaining = pending.filter((entry) => entry !== waiter);
+                                if (remaining.length > 0) state.registerReadWaiters.set(reg, remaining);
+                                else state.registerReadWaiters.delete(reg);
+                                reject(new Error(`READ 0x${reg.toString(16).padStart(4, '0')} 等待 cmd=0x81 回包超时 ${timeoutMs}ms（第 ${attempt + 1}/${retries + 1} 次）`));
+                            }, timeoutMs)
+                        };
+                        waiters.push(waiter);
+                        state.registerReadWaiters.set(reg, waiters);
+                        readRegister(reg).catch((error) => {
+                            window.clearTimeout(waiter.timeout);
+                            const pending = state.registerReadWaiters.get(reg) || [];
+                            const remaining = pending.filter((entry) => entry !== waiter);
+                            if (remaining.length > 0) state.registerReadWaiters.set(reg, remaining);
+                            else state.registerReadWaiters.delete(reg);
+                            reject(error);
+                        });
+                    });
+                } catch (error) {
+                    lastError = error;
+                    if (attempt < retries) {
+                        log(`[WARN] READ 0x${reg.toString(16).padStart(4, '0')} 失败：${lastError.message}；准备重试 ${attempt + 1}/${retries}`);
+                    }
+                }
+            }
+            throw lastError;
         }
 
         async function writeRegister(reg, value) {
@@ -1449,8 +1526,9 @@
                 return;
             }
             const frame = buildFrame(0x02, reg, value >>> 0);
+            if (state.autoTuneActive) state.tuneLastCommand = `WRITE 0x${reg.toString(16).padStart(4, '0')} value=${value} cmd=0x02`;
             await state.writer.write(frame);
-            log(`[TX] reg=0x${reg.toString(16).padStart(4, '0')} value=${value}`);
+            log(`[TX] WRITE reg=0x${reg.toString(16).padStart(4, '0')} cmd=0x02 value=${value}`);
         }
 
         async function connectSerial() {
@@ -1776,27 +1854,64 @@
             return profiles;
         }
 
-        function scorePulseTuneResponse(samples) {
-            const valid = samples.filter((sample) => sample && Number.isFinite(sample.followErrorDeg));
-            if (valid.length < 4) return Number.POSITIVE_INFINITY;
-            const errors = valid.map((sample) => Math.abs(sample.followErrorDeg));
-            const rmsError = Math.sqrt(errors.reduce((sum, error) => sum + error * error, 0) / errors.length);
-            const peakError = Math.max(...errors);
-            const halfIndex = Math.floor(errors.length / 2);
-            const firstHalfRms = Math.sqrt(errors.slice(0, halfIndex).reduce((sum, error) => sum + error * error, 0) / Math.max(1, halfIndex));
-            const lastHalf = errors.slice(halfIndex);
-            const lastHalfRms = Math.sqrt(lastHalf.reduce((sum, error) => sum + error * error, 0) / Math.max(1, lastHalf.length));
-            return rmsError + peakError * 0.35 + Math.max(0, lastHalfRms - firstHalfRms);
-        }
-
         function waitForTuneMotionCompletion(timeoutMs) {
             return new Promise((resolve, reject) => {
                 state.tuneMotionObserved = false;
+                state.tuneTrialStartedAt = performance.now();
+                state.tuneLastMotionTelemetryAt = 0;
+                state.tuneLastMotionStatus = null;
+                state.tuneLastMotionStatusCmd = null;
+                state.tuneTrialStage = '等待固件运动状态变为运行';
+                const profile = state.tuneTrialProfile;
+                const profileDescription = profile
+                    ? `${profile.label}, dir=${profile.direction}, rpm=${profile.startRpm}->${profile.maxRpm}, accel=${profile.accelRpmS}, turns=${profile.turns}, pulses=${profile.pulseCount}`
+                    : 'profile=unknown';
+                appendTuneLog(`[诊断] ${profileDescription}；等待 0x011F: 1->0，超时=${timeoutMs}ms`);
                 state.tuneMotionResolver = resolve;
-                state.tuneMotionTimeout = window.setTimeout(() => {
-                    state.tuneMotionResolver = null;
+                state.tuneMotionTimeout = window.setTimeout(async () => {
                     state.tuneMotionTimeout = null;
-                    reject(new Error('等待固件运动完成状态超时'));
+                    const stageAtTimeout = state.tuneTrialStage;
+                    const commandAtTimeout = state.tuneLastCommand;
+                    let liveStatus = '读取失败';
+                    let scheduledSteps = '读取失败';
+                    let commandedRpm = '读取失败';
+                    try {
+                        state.tuneTrialStage = '超时诊断：主动读取 0x011F';
+                        const value = await readRegisterValue(0x11F, 750, 0);
+                        liveStatus = `${value | 0} (cmd=0x81)`;
+                    } catch (error) {
+                        liveStatus = error.message;
+                    }
+                    try {
+                        state.tuneTrialStage = '超时诊断：读取已提交 STEP 数 0x0134';
+                        scheduledSteps = String(await readRegisterValue(CUSTOM_REGS.MOTION_SCHEDULED_STEPS, 750, 0));
+                    } catch (error) {
+                        scheduledSteps = error.message;
+                    }
+                    try {
+                        state.tuneTrialStage = '超时诊断：读取命令速度 0x0135';
+                        const rawCommandedSpeed = await readRegisterValue(CUSTOM_REGS.MOTION_COMMAND_SPEED_MRPM, 750, 0);
+                        commandedRpm = `${(rawCommandedSpeed | 0) / 1000.0}RPM`;
+                    } catch (error) {
+                        commandedRpm = error.message;
+                    }
+                    if (state.tuneMotionResolver === null) return;
+
+                    const now = performance.now();
+                    const elapsedMs = Math.round(now - state.tuneTrialStartedAt);
+                    const telemetryAge = state.tuneLastMotionTelemetryAt > 0
+                        ? `${Math.round(now - state.tuneLastMotionTelemetryAt)}ms`
+                        : '本试验未收到';
+                    const lastStatus = state.tuneLastMotionStatus === null
+                        ? '未收到'
+                        : `${state.tuneLastMotionStatus} (cmd=0x${state.tuneLastMotionStatusCmd.toString(16).padStart(2, '0')})`;
+                    const reason = state.tuneMotionObserved
+                        ? '已观察到运行状态，但在期限内没有观察到停止状态'
+                        : '未观察到运行状态；需检查启动命令应答、固件运动启动及 0x011F 状态遥测';
+                    const message = `等待固件运动完成状态超时：阶段=${stageAtTimeout}；${reason}；试验=${profileDescription}；已等待=${elapsedMs}ms/${timeoutMs}ms；最后 0x011F 状态=${lastStatus}，状态遥测距今=${telemetryAge}，超时后主动读取=${liveStatus}；STEP 已提交=${scheduledSteps}/${profile.pulseCount}；命令速度=${commandedRpm}，编码器实测速度=${Number(state.motionSpeedRpm || 0).toFixed(2)}RPM，跟随误差=${Number(state.motionFollowErrorDeg || 0).toFixed(3)}°；超时前最近命令=${commandAtTimeout}`;
+                    state.tuneMotionResolver = null;
+                    appendTuneLog(`[超时诊断] ${message}`);
+                    reject(new Error(message));
                 }, timeoutMs);
             });
         }
@@ -1805,32 +1920,180 @@
             const pulseCount = Math.max(2, Math.round(profile.turns * stepsPerRevolution));
             const accelTimeMs = Math.max(0, (profile.maxRpm - profile.startRpm) / profile.accelRpmS * 1000);
             const timeoutMs = Math.max(5000, profile.turns * 60 / profile.maxRpm * 3000 + accelTimeMs * 3 + 3000);
+            state.tuneTrialProfile = {...profile, pulseCount};
+            state.tuneTrialStage = '配置运动参数';
+            appendTuneLog(`[试验] ${profile.label} 参数：方向=${profile.direction === 0 ? '正向' : '反向'}，起始=${profile.startRpm}RPM，最高=${profile.maxRpm}RPM，加速度=${profile.accelRpmS}RPM/s，脉冲数=${pulseCount}，完成超时=${Math.round(timeoutMs)}ms`);
             await writeRegister(0x11A, Math.round(profile.startRpm));
             await writeRegister(0x11B, Math.round(profile.maxRpm));
             await writeRegister(0x11C, Math.round(profile.accelRpmS));
             await writeRegister(0x11D, pulseCount);
             await writeRegister(0x11E, profile.direction);
-            state.tuneSamples = [];
+            state.tuneTrialStage = '启动前读取故障位图 0x0108';
+            const faultFlags = await readRegisterValue(CUSTOM_REGS.FAULT_STATUS, 1000, 1);
+            const encoderFault = (faultFlags & 0x01) !== 0;
+            const magneticFault = (faultFlags & 0x02) !== 0;
+            const outputStopped = (faultFlags & 0x04) !== 0;
+            appendTuneLog(`[启动门控] 0x0108=0x${faultFlags.toString(16).padStart(8, '0')}；编码器故障=${encoderFault ? 1 : 0}，磁场报警=${magneticFault ? 1 : 0}，输出停止=${outputStopped ? 1 : 0}`);
+            if (encoderFault || magneticFault) {
+                throw new Error(`固件拒绝启动：${encoderFault ? '编码器故障 ' : ''}${magneticFault ? '磁场报警 ' : ''}(0x0108=0x${faultFlags.toString(16)})`);
+            }
             state.tuneTrialActive = true;
+            state.tuneTrialStage = '启动固件评分采集';
             const motionCompleted = waitForTuneMotionCompletion(timeoutMs);
+            let score = Number.POSITIVE_INFINITY;
             try {
+                state.tuneTrialStage = '发送评分采集命令 0x0131=1';
+                await writeRegister(CUSTOM_REGS.PID_TUNE_CONTROL, 1);
+                state.tuneTrialStage = '发送运动启动命令 0x011F=1';
                 await writeRegister(0x11F, 1);
+                state.tuneTrialStage = '等待固件运行状态与完成状态';
                 appendTuneLog(`${profile.label}：${profile.turns.toFixed(2)} 圈，${profile.maxRpm.toFixed(0)} RPM，${profile.accelRpmS.toFixed(0)} RPM/s`);
                 await motionCompleted;
+                state.tuneTrialStage = '读取固件评分样本数 0x0133';
+                const sampleCount = await readRegisterValue(CUSTOM_REGS.PID_TUNE_SAMPLE_COUNT);
+                state.tuneTrialStage = '读取固件评分 0x0132';
+                const scoreMilliDegrees = await readRegisterValue(CUSTOM_REGS.PID_TUNE_SCORE_MDEG);
+                if (sampleCount < 4 || scoreMilliDegrees === 0xFFFFFFFF) {
+                    throw new Error(`固件评分样本不足（${sampleCount}）`);
+                }
+                score = scoreMilliDegrees / 1000.0;
+                return {score, sampleCount};
             } finally {
+                state.tuneTrialStage = '关闭固件评分采集';
                 state.tuneTrialActive = false;
+                await writeRegister(CUSTOM_REGS.PID_TUNE_CONTROL, 0).catch((error) => {
+                    appendTuneLog(`关闭固件评分采集失败：${error.message}`);
+                });
                 if (state.tuneMotionTimeout !== null) {
                     window.clearTimeout(state.tuneMotionTimeout);
                     state.tuneMotionTimeout = null;
                 }
                 state.tuneMotionResolver = null;
+                state.tuneTrialProfile = null;
+                state.tuneTrialStage = '';
             }
-            if (state.autoTuneCancelled) return Number.POSITIVE_INFINITY;
-            const score = scorePulseTuneResponse(state.tuneSamples);
-            if (!Number.isFinite(score)) {
-                throw new Error(`跟随误差样本不足（${state.tuneSamples.length}），检查 0x0121 遥测`);
+            if (state.autoTuneCancelled) return null;
+            return {score, sampleCount: 0};
+        }
+
+        function getTuneActionProfiles() {
+            const maxSpeedRpm = clamp(Number(document.getElementById('tuneMaxSpeed').value || 60), 5, 600);
+            const accelRpmS = clamp(Number(document.getElementById('tuneAccel').value || 180), 10, 3000);
+            const turnsPerDirection = clamp(Number(document.getElementById('tuneTestTurns').value || 5), 1, 5);
+            return createPulseTuneProfiles(maxSpeedRpm, accelRpmS, turnsPerDirection, true);
+        }
+
+        function renderTuneActionRows(reset = true) {
+            const container = document.getElementById('tuneActionList');
+            if (!container) return;
+            state.tuneActionProfiles = getTuneActionProfiles();
+            container.replaceChildren();
+            state.tuneActionProfiles.forEach((profile, index) => {
+                const row = document.createElement('div');
+                row.className = 'tune-action-row';
+                row.innerHTML = `<div class="tune-action-name">${String(index + 1).padStart(2, '0')} · ${profile.label}</div><div class="tune-action-result" id="tuneActionResult${index}">${profile.direction === 0 ? '正向' : '反向'} · ${profile.startRpm}→${profile.maxRpm} RPM · ${profile.accelRpmS} RPM/s · ${profile.turns} 圈 · 等待执行</div><button class="tune-action-button" id="tuneActionButton${index}" type="button">执行</button>`;
+                container.appendChild(row);
+                row.querySelector('button').addEventListener('click', () => {
+                    void executeTuneAction(index);
+                });
+            });
+            if (!reset) return;
+            document.getElementById('tuneResults').textContent = '尚未完成动作评分';
+        }
+
+        function setTuneActionState(index, status, result, completed = false) {
+            const resultElement = document.getElementById(`tuneActionResult${index}`);
+            const button = document.getElementById(`tuneActionButton${index}`);
+            if (!resultElement || !button) return;
+            resultElement.textContent = `${status} · ${result}`;
+            button.disabled = completed || state.autoTuneActive || state.tuneActionBusy;
+            button.textContent = completed ? '已完成' : '执行';
+        }
+
+        async function readTuneGainsFromHardware() {
+            const registers = [
+                [CUSTOM_REGS.POSITION_KP, 'posKp'], [CUSTOM_REGS.POSITION_KI, 'posKi'],
+                [CUSTOM_REGS.POSITION_KD, 'posKd'], [CUSTOM_REGS.VELOCITY_KP, 'velKp'],
+                [CUSTOM_REGS.VELOCITY_KI, 'velKi'], [CUSTOM_REGS.VELOCITY_KD, 'velKd']
+            ];
+            const gains = {};
+            for (const [register, key] of registers) {
+                gains[key] = (await readRegisterValue(register)) / 1000;
             }
-            return score;
+            writeTuneGainsToInputs(gains);
+            return gains;
+        }
+
+        function formatTuneGains(gains) {
+            return `P:${gains.posKp.toFixed(2)}/${gains.posKi.toFixed(2)}/${gains.posKd.toFixed(2)} V:${gains.velKp.toFixed(2)}/${gains.velKi.toFixed(2)}/${gains.velKd.toFixed(2)}`;
+        }
+
+        async function runTuneAction(index, options = {}) {
+            if (state.tuneActionBusy || (state.autoTuneActive && !options.fromAuto)) return null;
+            if (!state.connected) {
+                setTuneActionState(index, '失败，可重试', '串口未连接');
+                appendTuneLog(`${state.tuneActionProfiles[index].label}：未连接串口`);
+                return null;
+            }
+            const profile = state.tuneActionProfiles[index];
+            const button = document.getElementById(`tuneActionButton${index}`);
+            if (!profile || !button) return null;
+
+            state.tuneActionBusy = true;
+            state.tuneActionProfiles.forEach((_, actionIndex) => {
+                const actionButton = document.getElementById(`tuneActionButton${actionIndex}`);
+                if (actionButton) actionButton.disabled = true;
+            });
+            button.textContent = '运行中';
+            setTuneActionState(index, '运行中', '读取当前 PID 并采样');
+            let savedConfig = null;
+            try {
+                const microsteps = await readRegisterValue(CUSTOM_REGS.MICROSTEPS);
+                savedConfig = {
+                    closedLoopEnabled: await readRegisterValue(CUSTOM_REGS.CLOSED_LOOP_ENABLE),
+                    startRpm: await readRegisterValue(0x11A),
+                    maxRpm: await readRegisterValue(0x11B),
+                    accelRpmS: await readRegisterValue(0x11C)
+                };
+                const gains = await readTuneGainsFromHardware();
+                await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 1);
+                document.getElementById('closedLoopEnableInput').checked = true;
+                const trialResult = await runPulseTuneTrial(profile, 200 * microsteps);
+                if (!trialResult) return null;
+                const details = `评分=${trialResult.score.toFixed(3)}°，样本=${trialResult.sampleCount}，${formatTuneGains(gains)}`;
+                setTuneActionState(index, '已完成', details, true);
+                appendTuneLog(`[动作完成] ${profile.label}：${details}`);
+                return trialResult.score;
+            } catch (error) {
+                setTuneActionState(index, '失败，可重试', error.message);
+                appendTuneLog(`[动作失败] ${profile.label}：${error.message}`);
+                throw error;
+            } finally {
+                if (savedConfig && state.connected && !state.autoTuneActive) {
+                    try {
+                        await writeRegister(0x11F, 0);
+                        await writeRegister(0x11A, savedConfig.startRpm);
+                        await writeRegister(0x11B, savedConfig.maxRpm);
+                        await writeRegister(0x11C, savedConfig.accelRpmS);
+                        await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, savedConfig.closedLoopEnabled);
+                        document.getElementById('closedLoopEnableInput').checked = savedConfig.closedLoopEnabled !== 0;
+                    } catch (error) {
+                        appendTuneLog(`恢复动作前配置失败：${error.message}`);
+                    }
+                }
+                state.tuneActionBusy = false;
+                if (state.autoTuneActive) {
+                    state.tuneActionProfiles.forEach((_, actionIndex) => {
+                        const actionButton = document.getElementById(`tuneActionButton${actionIndex}`);
+                        if (actionButton && !actionButton.textContent.includes('已完成')) actionButton.disabled = true;
+                    });
+                } else {
+                    state.tuneActionProfiles.forEach((_, actionIndex) => {
+                        const actionButton = document.getElementById(`tuneActionButton${actionIndex}`);
+                        if (actionButton && !actionButton.textContent.includes('已完成')) actionButton.disabled = false;
+                    });
+                }
+            }
         }
 
         function writeTuneGainsToInputs(gains) {
@@ -1847,9 +2110,19 @@
                 state.autoTuneCancelled = true;
                 if (state.tuneMotionResolver) state.tuneMotionResolver();
                 document.getElementById('startTuneBtn').textContent = '正在停止';
+                renderTuneActionRows(false);
+                state.tuneActionProfiles.forEach((_, index) => {
+                    const button = document.getElementById(`tuneActionButton${index}`);
+                    if (button) button.disabled = true;
+                });
                 appendTuneLog('请求取消整定');
                 return;
             }
+            if (state.tuneActionBusy) {
+                appendTuneLog('单项动作正在运行，请稍候');
+                return;
+            }
+            renderTuneActionRows(true);
             if (!state.connected) {
                 appendTuneLog('未连接串口，无法启动整定');
                 return;
@@ -1858,6 +2131,10 @@
             state.autoTuneActive = true;
             state.autoTuneCancelled = false;
             state.pendingTargetAngle = null;
+            state.tuneActionProfiles.forEach((_, index) => {
+                const button = document.getElementById(`tuneActionButton${index}`);
+                if (button) button.disabled = true;
+            });
             document.getElementById('startTuneBtn').textContent = '停止整定';
             document.getElementById('tuneState').textContent = '运行中';
             document.getElementById('tuneLogBadge').textContent = '整定中';
@@ -1867,13 +2144,11 @@
             const maxSpeedRpm = clamp(Number(document.getElementById('tuneMaxSpeed').value || 60), 5, 600);
             const accelRpmS = clamp(Number(document.getElementById('tuneAccel').value || 180), 10, 3000);
             const stepRatio = clamp(Number(document.getElementById('tuneGainStep').value || 0.25), 0.05, 0.5);
-            const turnsPerDirection = clamp(Number(document.getElementById('tuneTestTurns').value || 5), 1, 5);
             let bestGains = null;
             let bestScore = Number.POSITIVE_INFINITY;
             let finalScore = Number.POSITIVE_INFINITY;
-            let tuneOutcome = '已完成';
             let savedConfig = null;
-
+            let tuneOutcome = '已完成';
             try {
                 const microsteps = await readRegisterValue(CUSTOM_REGS.MICROSTEPS);
                 state.microsteps = microsteps;
@@ -1884,16 +2159,7 @@
                     maxRpm: await readRegisterValue(0x11B),
                     accelRpmS: await readRegisterValue(0x11C)
                 };
-                const pidRegisters = [
-                    [CUSTOM_REGS.POSITION_KP, 'posKp'], [CUSTOM_REGS.POSITION_KI, 'posKi'],
-                    [CUSTOM_REGS.POSITION_KD, 'posKd'], [CUSTOM_REGS.VELOCITY_KP, 'velKp'],
-                    [CUSTOM_REGS.VELOCITY_KI, 'velKi'], [CUSTOM_REGS.VELOCITY_KD, 'velKd']
-                ];
-                bestGains = {};
-                for (const [register, key] of pidRegisters) {
-                    bestGains[key] = (await readRegisterValue(register)) / 1000;
-                }
-                writeTuneGainsToInputs(bestGains);
+                bestGains = await readTuneGainsFromHardware();
 
                 if (performance.now() - state.lastEncoderTelemetryAt > 1000) {
                     await readRegisterValue(CUSTOM_REGS.ENCODER_ANGLE_MDEG);
@@ -1904,14 +2170,26 @@
 
                 await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 1);
                 document.getElementById('closedLoopEnableInput').checked = true;
-                appendTuneLog(`真实 STEP 闭环测试：${turnsPerDirection} 圈正向 + ${turnsPerDirection} 圈反向；${microsteps} 细分`);
-                const candidateProfiles = createPulseTuneProfiles(maxSpeedRpm, accelRpmS, turnsPerDirection, false).slice(0, 4);
+                appendTuneLog(`开始候选 PID 搜索：${formatTuneGains(bestGains)}；编码器细分=${microsteps}`);
+                const candidateProfiles = createPulseTuneProfiles(maxSpeedRpm, accelRpmS, 5, false).slice(0, 4);
+                const actionIndexForProfile = (profile) => state.tuneActionProfiles.findIndex((item) => item.label === profile.label);
                 const scoreProfiles = async (gains, profiles) => {
                     await writePidParameters(gains);
                     let totalScore = 0;
                     for (const profile of profiles) {
                         if (state.autoTuneCancelled) return Number.POSITIVE_INFINITY;
-                        totalScore += await runPulseTuneTrial(profile, 200 * microsteps);
+                        const actionIndex = actionIndexForProfile(profile);
+                        try {
+                            const trial = await runPulseTuneTrial(profile, 200 * microsteps);
+                            if (!trial || state.autoTuneCancelled) return Number.POSITIVE_INFINITY;
+                            totalScore += trial.score;
+                            if (actionIndex >= 0) {
+                                setTuneActionState(actionIndex, '候选 PID 评分', `评分=${trial.score.toFixed(3)}°，样本=${trial.sampleCount}，${formatTuneGains(gains)}`);
+                            }
+                        } catch (error) {
+                            if (actionIndex >= 0) setTuneActionState(actionIndex, '失败，可重试', error.message);
+                            throw error;
+                        }
                     }
                     return totalScore / profiles.length;
                 };
@@ -1935,7 +2213,7 @@
                         if (score < bestScore) {
                             bestScore = score;
                             bestGains = candidate;
-                            appendTuneLog(`${key}=${candidateValue.toFixed(3)} 成为当前最佳，脉冲误差评分 ${score.toFixed(3)}`);
+                            appendTuneLog(`${key}=${candidateValue.toFixed(3)} 成为当前最佳，短行程评分 ${score.toFixed(3)}`);
                         }
                     }
                     await writePidParameters(bestGains);
@@ -1943,15 +2221,33 @@
 
                 if (state.autoTuneCancelled) {
                     tuneOutcome = '已停止';
-                    appendTuneLog('整定已取消，保留已测得的最佳参数');
+                    appendTuneLog('整定已取消；动作按钮状态已重置');
                 } else {
-                    const finalProfiles = createPulseTuneProfiles(maxSpeedRpm, accelRpmS, turnsPerDirection, true);
-                    finalScore = await scoreProfiles(bestGains, finalProfiles);
-                    state.bestTuneGains = {...bestGains};
-                    writeTuneGainsToInputs(bestGains);
-                    const results = `位置环 Kp=${bestGains.posKp.toFixed(3)} Ki=${bestGains.posKi.toFixed(3)} Kd=${bestGains.posKd.toFixed(3)}\n速度环 Kp=${bestGains.velKp.toFixed(3)} Ki=${bestGains.velKi.toFixed(3)} Kd=${bestGains.velKd.toFixed(3)}\n短行程最佳评分 ${bestScore.toFixed(3)}；全行程验证评分 ${finalScore.toFixed(3)}\n测试包含 ${turnsPerDirection} 圈正向、${turnsPerDirection} 圈反向及快速往返`;
-                    document.getElementById('tuneResults').textContent = results;
-                    appendTuneLog('全场景脉冲整定与验证完成；PID 参数已即时写入');
+                    appendTuneLog(`候选 PID 搜索完成：${formatTuneGains(bestGains)}；开始逐项全场景验证`);
+                    let totalFinalScore = 0;
+                    let completedProfiles = 0;
+                    for (let index = 0; index < state.tuneActionProfiles.length; index++) {
+                        if (state.autoTuneCancelled) break;
+                        try {
+                            const score = await runTuneAction(index, {fromAuto: true});
+                            if (score === null) break;
+                            totalFinalScore += score;
+                            completedProfiles++;
+                        } catch (error) {
+                            tuneOutcome = '失败，可重试失败项';
+                            document.getElementById('tuneResults').textContent = `${state.tuneActionProfiles[index].label} 失败：${error.message}`;
+                            break;
+                        }
+                    }
+                    if (!state.autoTuneCancelled && completedProfiles === state.tuneActionProfiles.length) {
+                        finalScore = totalFinalScore / completedProfiles;
+                        state.bestTuneGains = {...bestGains};
+                        writeTuneGainsToInputs(bestGains);
+                        document.getElementById('tuneResults').textContent = `位置 PID Kp=${bestGains.posKp.toFixed(3)} Ki=${bestGains.posKi.toFixed(3)} Kd=${bestGains.posKd.toFixed(3)}\n速度 PID Kp=${bestGains.velKp.toFixed(3)} Ki=${bestGains.velKi.toFixed(3)} Kd=${bestGains.velKd.toFixed(3)}\n短行程最佳评分=${bestScore.toFixed(3)}°；全场景验证评分=${finalScore.toFixed(3)}°`;
+                        appendTuneLog('全部动作通过；最佳 PID 已即时写入，每组评分和 PID 已记录');
+                    } else if (state.autoTuneCancelled) {
+                        tuneOutcome = '已停止';
+                    }
                 }
             } catch (error) {
                 tuneOutcome = '已中止';
@@ -1963,9 +2259,9 @@
                 state.autoTuneActive = false;
                 document.getElementById('startTuneBtn').textContent = '开始整定';
                 document.getElementById('tuneState').textContent = state.autoTuneCancelled ? '已停止' : tuneOutcome;
-                document.getElementById('tuneLogBadge').textContent = state.autoTuneCancelled ? '已停止' : '已结束';
+                document.getElementById('tuneLogBadge').textContent = state.autoTuneCancelled ? '已停止' : tuneOutcome;
                 if (state.connected) {
-                    if (Number.isFinite(bestScore)) {
+                    if (bestGains && Number.isFinite(bestScore)) {
                         try {
                             await writePidParameters(bestGains);
                         } catch (error) {
@@ -1989,6 +2285,19 @@
                         appendTuneLog(`恢复运动配置失败：${error.message}`);
                     }
                 }
+                if (state.autoTuneCancelled) renderTuneActionRows(true);
+                else state.tuneActionProfiles.forEach((_, index) => {
+                    const button = document.getElementById(`tuneActionButton${index}`);
+                    if (button && button.textContent !== '已完成') button.disabled = false;
+                });
+            }
+        }
+
+        async function executeTuneAction(index) {
+            try {
+                await runTuneAction(index, {manual: true});
+            } catch (error) {
+                document.getElementById('tuneResults').textContent = `${state.tuneActionProfiles[index].label} 失败：${error.message}`;
             }
         }
 
@@ -2420,6 +2729,11 @@
             });
             document.getElementById('tuneBtn').addEventListener('click', startAutoTune);
             document.getElementById('startTuneBtn').addEventListener('click', startAutoTune);
+            ['tuneMaxSpeed', 'tuneAccel', 'tuneTestTurns'].forEach((id) => {
+                document.getElementById(id).addEventListener('change', () => {
+                    if (!state.autoTuneActive && !state.tuneActionBusy) renderTuneActionRows(true);
+                });
+            });
             document.getElementById('waveWindowMsInput').addEventListener('change', function () {
                 const value = clamp(Number(this.value || 10000), 10000, 10000);
                 this.value = String(value);
@@ -2474,9 +2788,6 @@
             if (frame.reg === 0x121) {
                 const followErrorDeg = (frame.value | 0) / 1000.0;
                 state.motionFollowErrorDeg = followErrorDeg;
-                if (state.tuneTrialActive && Number.isFinite(followErrorDeg)) {
-                    state.tuneSamples.push({t: performance.now(), followErrorDeg});
-                }
             }
             if (frame.reg === 0x122) {
                 const windowValue = clamp(Number(frame.value || 10000), 10000, 10000);
@@ -2489,10 +2800,21 @@
                     stopWaveCapture();
                 }
             }
-            if (frame.reg === 0x11F && (frame.cmd === 0x10 || frame.cmd === 0x81 || frame.cmd === 0x82) && state.tuneTrialActive) {
-                if ((frame.value | 0) !== 0) {
+            if (frame.reg === 0x11F && (frame.cmd === 0x10 || frame.cmd === 0x81) && state.tuneTrialActive) {
+                const motionStatus = frame.value | 0;
+                const previousStatus = state.tuneLastMotionStatus;
+                state.tuneLastMotionTelemetryAt = performance.now();
+                state.tuneLastMotionStatus = motionStatus;
+                state.tuneLastMotionStatusCmd = frame.cmd;
+                if (previousStatus !== motionStatus) {
+                    const elapsedMs = Math.round(performance.now() - state.tuneTrialStartedAt);
+                    appendTuneLog(`[状态] 0x011F=${motionStatus} cmd=0x${frame.cmd.toString(16)}；距试验启动 ${elapsedMs}ms；速度=${Number(state.motionSpeedRpm || 0).toFixed(2)}RPM，误差=${Number(state.motionFollowErrorDeg || 0).toFixed(3)}°`);
+                }
+                if (motionStatus !== 0) {
                     state.tuneMotionObserved = true;
+                    state.tuneTrialStage = '已观察到固件运行状态，等待停止状态';
                 } else if (state.tuneMotionObserved) {
+                    state.tuneTrialStage = '已观察到固件停止状态';
                     if (state.tuneMotionTimeout !== null) {
                         window.clearTimeout(state.tuneMotionTimeout);
                         state.tuneMotionTimeout = null;
@@ -2508,6 +2830,7 @@
         bindWavePopupDrag();
         bindControls();
         buildMotionControlOptions();
+        renderTuneActionRows();
         renderRegisterMap();
         updateDialVisual();
         updateFaultStatus();

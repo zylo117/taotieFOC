@@ -6,6 +6,7 @@
 
 #include "angle_encoder.h"
 #include "closed_loop_protocol.h"
+#include "pid_auto_tuner.h"
 #include "stepper_driver.h"
 
 #ifndef USE_HARD_FLOAT_ACCELERATION
@@ -256,6 +257,7 @@ private:
     ClosedLoopDriverProtocol* protocol_;
     PidController position_pid_;
     PidController velocity_pid_;
+    PidAutoTuner pid_auto_tuner_;
 
     float base_position_kp_;
     float base_position_ki_;
@@ -353,6 +355,7 @@ private:
     } motion_ramp_stage_; // 当前阶段：加速/匀速/减速/结束
     float current_step_speed_; // 当前瞬时速度，微步/s
     uint32_t steps_to_decel_; // 剩余多少步必须开始减速
+    bool motion_zero_speed_recovery_logged_;
 };
 
 #endif

@@ -116,6 +116,11 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_VELOCITY_KD:
     case TMC2209_EXT_PARAM_ANGLE_MAX_RPM:
     case TMC2209_EXT_PARAM_ANGLE_ACCEL_RPM_S:
+    case TMC2209_EXT_PARAM_PID_TUNE_CONTROL:
+    case TMC2209_EXT_PARAM_PID_TUNE_SCORE_MDEG:
+    case TMC2209_EXT_PARAM_PID_TUNE_SAMPLE_COUNT:
+    case TMC2209_EXT_PARAM_MOTION_SCHEDULED_STEPS:
+    case TMC2209_EXT_PARAM_MOTION_COMMAND_SPEED_MRPM:
         return true;
     default:
         return false;

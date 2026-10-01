@@ -423,6 +423,18 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
         angle_accel_rpm_s_ = fast_clamp(static_cast<float>(value), 1.0f, 12000.0f);
         return protocol_ != nullptr && protocol_->setCustomParameter(reg, static_cast<uint32_t>(angle_accel_rpm_s_));
     }
+    if (reg == TMC2209_EXT_PARAM_PID_TUNE_CONTROL)
+    {
+        if (value != 0U)
+        {
+            pid_auto_tuner_.beginTrial();
+        }
+        else
+        {
+            pid_auto_tuner_.finishTrial();
+        }
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_PULSE_COUNT)
     {
         motion_pulse_count_ = value;
@@ -619,6 +631,27 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_POSITION_KD)
     {
         *value = static_cast<uint32_t>(base_position_kd_ * 1000.0f);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_PID_TUNE_SCORE_MDEG)
+    {
+        *value = pid_auto_tuner_.scoreMilliDegrees();
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_PID_TUNE_SAMPLE_COUNT)
+    {
+        *value = pid_auto_tuner_.sampleCount();
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_MOTION_SCHEDULED_STEPS)
+    {
+        *value = motion_steps_emitted_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_MOTION_COMMAND_SPEED_MRPM)
+    {
+        *value = static_cast<uint32_t>(static_cast<int32_t>(motion_speed_rpm_ *
+                                                              static_cast<float>(motion_direction_) * 1000.0f));
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_VELOCITY_KP)
@@ -1012,6 +1045,7 @@ void ClosedLoopController::startMotion()
     motion_steps_emitted_ = 0U;
     motion_step_accumulator_ = 0.0f;
     motion_step_high_ = false;
+    motion_zero_speed_recovery_logged_ = false;
     motion_commanded_travel_deg_ = 0.0f;
     motion_encoder_travel_deg_ = 0.0f;
     motion_follow_error_deg_ = 0.0f;
@@ -1214,6 +1248,12 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_encoder_previous_angle_ = encoder_filtered_angle_;
     }
 
+    if (motion_running_ && !closed_loop_angle_mode_enabled_ && closed_loop_compensation_enabled_)
+    {
+        const bool latter_half = motion_steps_emitted_ >= motion_pulse_count_ / 2U;
+        pid_auto_tuner_.addSample(motion_follow_error_deg_, latter_half);
+    }
+
     // 如果当前没有运动在运行，直接退出
     if (!motion_running_ && !closed_loop_angle_mode_enabled_)
     {
@@ -1368,6 +1408,24 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_speed_rpm_ = current_step_speed_ * 60.0f / static_cast<float>(micro_steps_per_round);
     }
 
+    if (!closed_loop_angle_mode_enabled_ && motion_running_ && motion_start_step_s_ > 0.0f &&
+        motion_steps_emitted_ < motion_pulse_count_ &&
+        current_step_speed_ < motion_start_step_s_ * 0.05f)
+    {
+        if (!motion_zero_speed_recovery_logged_)
+        {
+            printf("[MOTION] zero-speed recovery: remaining=%lu/%lu stage=%u follow=%.3f dir=%d\r\n",
+                   static_cast<unsigned long>(motion_pulse_count_ - motion_steps_emitted_),
+                   static_cast<unsigned long>(motion_pulse_count_),
+                   static_cast<unsigned>(motion_ramp_stage_),
+                   motion_follow_error_deg_,
+                   motion_direction_);
+            motion_zero_speed_recovery_logged_ = true;
+        }
+        current_step_speed_ = motion_start_step_s_;
+        motion_speed_rpm_ = static_cast<float>(motion_direction_) * motion_start_rpm_;
+    }
+
     // 更新本次的时间戳，作为下一次调用的“上一次时间点”
     // printf("fuck1 motion_last_ramp_time_ns_: %f, now_ns: %f\n", motion_last_ramp_time_ns_/1e9, now_ns/1e9);
     motion_last_ramp_time_ns_ = now_ns;
@@ -1413,6 +1471,11 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // 如果是同向，这两个的arr周期为0，否则arr为guard_tick
         static uint32_t arr_seq_cycle[130];
         uint32_t num_steps = static_cast<uint32_t>(floor(motion_step_accumulator_));
+        const uint32_t remaining_steps = motion_pulse_count_ - motion_steps_emitted_;
+        if (num_steps > remaining_steps)
+        {
+            num_steps = remaining_steps;
+        }
         if (num_steps > 128U)
         {
             num_steps = 128U;
@@ -1499,7 +1562,6 @@ void ClosedLoopController::stopMotion()
     {
         stepper_common::stepper_stop_motion_timer();
         driver_->setStepState(false);
-        driver_->setEnable(false);
     }
 }
 
