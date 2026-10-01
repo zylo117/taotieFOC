@@ -116,6 +116,19 @@ namespace
         }
         return error_deg;
     }
+
+    float normalize_signed_delta_deg(float delta_deg)
+    {
+        while (delta_deg > 180.0f)
+        {
+            delta_deg -= 360.0f;
+        }
+        while (delta_deg < -180.0f)
+        {
+            delta_deg += 360.0f;
+        }
+        return delta_deg;
+    }
 }
 
 PidController::PidController()
@@ -1188,29 +1201,15 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         reportMagneticFieldAlarm(magnetic_field_high_ || magnetic_field_low_);
 
         motion_position_deg_ = encoder_filtered_angle_;
-        encoder_delta_deg = encoder_filtered_angle_ - previous_encoder_angle;
-        if (encoder_delta_deg > 180.0f)
-        {
-            encoder_delta_deg -= 360.0f;
-        }
-        else if (encoder_delta_deg < -180.0f)
-        {
-            encoder_delta_deg += 360.0f;
-        }
+        encoder_delta_deg = normalize_signed_delta_deg(encoder_filtered_angle_ - previous_encoder_angle);
 
         if (motion_running_ && motion_encoder_reference_valid_)
         {
-            float encoder_delta = motion_encoder_previous_angle_ - encoder_filtered_angle_;
-            if (encoder_delta > 180.0f)
-            {
-                encoder_delta -= 360.0f;
-            }
-            else if (encoder_delta < -180.0f)
-            {
-                encoder_delta += 360.0f;
-            }
+            const float encoder_delta = normalize_signed_delta_deg(
+                motion_encoder_previous_angle_ - encoder_filtered_angle_);
             motion_encoder_travel_deg_ += encoder_delta;
-            motion_follow_error_deg_ = motion_commanded_travel_deg_ - motion_encoder_travel_deg_;
+            motion_follow_error_deg_ = normalize_signed_angle_error_deg(
+                motion_commanded_travel_deg_ - motion_encoder_travel_deg_);
         }
         motion_encoder_previous_angle_ = encoder_filtered_angle_;
     }
@@ -1235,7 +1234,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     {
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
         const float measured_rpm = (encoder_delta_deg / 360.0f) * (60.0f / dt);
-        encoder_speed_rpm_ = encoder_speed_rpm_ * 0.98f + measured_rpm * 0.02f;
+        // 编码器方向和命令方向可能相反，因此这里将速度观测统一成“命令正方向为正”以便
+        // 上位机展示和闭环补偿使用同一套符号体系。
+        const float aligned_rpm = -measured_rpm;
+        encoder_speed_rpm_ = encoder_speed_rpm_ * 0.98f + aligned_rpm * 0.02f;
     }
 
     if (closed_loop_angle_mode_enabled_)
@@ -1343,8 +1345,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         encoder_ != nullptr && delta_ramp_ns > 0U && motion_max_step_s_ > 0.0f)
     {
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
-        const float position_reference_rps = position_pid_.update(motion_follow_error_deg_ / 360.0f, dt);
-        const float measured_motion_rps = -encoder_speed_rpm_ / 60.0f;
+        // 位置跟随误差定义为“命令 - 实际”。如果命令已经领先真实位置，说明该减速；
+        // 这里必须取反后再送入位置 PID，否则正误差会被误当成要求继续加速。
+        const float position_reference_rps = position_pid_.update(-motion_follow_error_deg_ / 360.0f, dt);
+        const float measured_motion_rps = encoder_speed_rpm_ / 60.0f;
         const float velocity_error_rps = position_reference_rps - measured_motion_rps;
         const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt);
         const float max_correction_rps = motion_max_rpm_ / 60.0f;
@@ -1465,7 +1469,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             const float step_angle_deg = 360.0f / static_cast<float>(getMicroStepsPerRound(driver_));
             motion_commanded_travel_deg_ = static_cast<float>(motion_direction_) * step_angle_deg *
                                            static_cast<float>(motion_steps_emitted_);
-            motion_follow_error_deg_ = motion_commanded_travel_deg_ - motion_encoder_travel_deg_;
+            motion_follow_error_deg_ = normalize_signed_angle_error_deg(
+                motion_commanded_travel_deg_ - motion_encoder_travel_deg_);
         }
         motion_step_accumulator_ -= num_steps;
     }
