@@ -835,8 +835,7 @@
                     <span class="badge warn">协议参数</span>
                 </div>
                 <div class="panel-body">
-                    <div class="grid-2">
-                        <div class="card">
+                    <div class="card">
                             <h3 style="margin-top:0;">电机基础参数</h3>
                             <div class="field">
                                 <label>微步数</label>
@@ -861,34 +860,6 @@
                                     <option value="0">关闭</option>
                                 </select>
                             </div>
-                        </div>
-
-                        <div class="card">
-                            <h3 style="margin-top:0;">闭环与速度参数</h3>
-                            <div class="field">
-                                <label>当前位置（编码器）</label>
-                                <input id="encoderPos" step="1" type="number" value="0"/>
-                            </div>
-                            <div class="field mt">
-                                <label>目标速度（rps）</label>
-                                <input id="targetVelocity" step="0.01" type="number" value="1.2"/>
-                            </div>
-                            <div class="field mt">
-                                <label>最大加速度（rps²）</label>
-                                <input id="maxAccel" step="0.01" type="number" value="3.5"/>
-                            </div>
-                            <div class="field mt">
-                                <label>跟随误差阈值</label>
-                                <input id="followError" step="0.01" type="number" value="0.25"/>
-                            </div>
-                            <div class="field mt">
-                                <label>当前闭环使能</label>
-                                <select id="closedLoopEnable">
-                                    <option value="1">开启</option>
-                                    <option value="0">关闭</option>
-                                </select>
-                            </div>
-                        </div>
                     </div>
                 </div>
             </section>
@@ -904,7 +875,7 @@
                             <h3 style="margin-top:0;">位置 PID</h3>
                             <div class="field">
                                 <label>Kp</label>
-                                <input id="posKp" min="0" max="100" step="0.01" type="number" value="1.0"/>
+                                <input id="posKp" min="0" max="1000" step="0.01" type="number" value="1.0"/>
                             </div>
                             <div class="field mt">
                                 <label>Ki</label>
@@ -949,12 +920,12 @@
                     <div class="grid-2">
                         <div class="card">
                             <div class="field">
-                                <label>最大速度（rps）</label>
-                                <input id="tuneMaxSpeed" min="0.05" max="0.5" step="0.05" type="number" value="0.2"/>
+                                <label>最大速度（RPM）</label>
+                                <input id="tuneMaxSpeed" min="3" max="30" step="1" type="number" value="12"/>
                             </div>
                             <div class="field mt">
-                                <label>加速度（rps²）</label>
-                                <input id="tuneAccel" min="0.1" max="2" step="0.1" type="number" value="0.5"/>
+                                <label>加速度（RPM/s）</label>
+                                <input id="tuneAccel" min="6" max="120" step="1" type="number" value="30"/>
                             </div>
                             <div class="field mt">
                                 <label>增益步进</label>
@@ -969,10 +940,7 @@
                         <div class="card">
                             <div class="field">
                                 <label>整定状态</label>
-                                <select id="tuneState">
-                                    <option value="0">未启动</option>
-                                    <option value="1">运行中</option>
-                                </select>
+                                <span aria-live="polite" class="tiny" id="tuneState">未启动</span>
                             </div>
                             <div class="field mt">
                                 <label>危险等级</label>
@@ -1045,6 +1013,8 @@
             , rxBuffer: new Uint8Array(0)
             , motionSpeedRpm: 0
             , motionFollowErrorDeg: 0
+            , angleMaxRpm: 120
+            , angleAccelRpmS: 60
             , waveHistory: []
             , wavePaused: false
             , wavePausedAt: 0
@@ -1113,6 +1083,10 @@
             , VELOCITY_KP: 0x12C
             , VELOCITY_KI: 0x12D
             , VELOCITY_KD: 0x12E
+            , ANGLE_MAX_RPM: 0x12F
+            , ANGLE_ACCEL_RPM_S: 0x130
+            , MAX_RPM: 0x11B
+            , ACCEL_RPM_S: 0x11C
             , HOST_SIMULATE: 0x127
         };
 
@@ -1154,6 +1128,8 @@
             , [CUSTOM_REGS.VELOCITY_KP, ['0x012C', 'VELOCITY_KP', '速度环 Kp，单位 0.001']]
             , [CUSTOM_REGS.VELOCITY_KI, ['0x012D', 'VELOCITY_KI', '速度环 Ki，单位 0.001']]
             , [CUSTOM_REGS.VELOCITY_KD, ['0x012E', 'VELOCITY_KD', '速度环 Kd，单位 0.001']]
+            , [CUSTOM_REGS.ANGLE_MAX_RPM, ['0x012F', 'ANGLE_MAX_RPM', '闭环整定最大速度，单位 RPM']]
+            , [CUSTOM_REGS.ANGLE_ACCEL_RPM_S, ['0x0130', 'ANGLE_ACCEL_RPM_S', '闭环整定加速度，单位 RPM/s']]
             , [0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
             , [0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
             , [0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
@@ -1352,6 +1328,8 @@
             if (frame.reg === CUSTOM_REGS.ACTUAL_POSITION) {
                 state.actualPosition = frame.value | 0;
             }
+            if (frame.reg === CUSTOM_REGS.ANGLE_MAX_RPM) state.angleMaxRpm = frame.value;
+            if (frame.reg === CUSTOM_REGS.ANGLE_ACCEL_RPM_S) state.angleAccelRpmS = frame.value;
             updateFaultStatus();
             updateTelemetryDisplay();
 
@@ -1554,8 +1532,7 @@
                 posKd: Number(document.getElementById('posKd').value || 0.02),
                 velKp: Number(document.getElementById('velKp').value || 0.7),
                 velKi: Number(document.getElementById('velKi').value || 0.06),
-                velKd: Number(document.getElementById('velKd').value || 0.01),
-                enabled: Number(document.getElementById('closedLoopEnable').value || 1)
+                velKd: Number(document.getElementById('velKd').value || 0.01)
             };
 
             state.phaseACurrentA = Number(document.getElementById('phaseACurrentValue').textContent.replace(/[^0-9.]/g, '')) || 0;
@@ -1566,7 +1543,6 @@
                 await writeRegister(CUSTOM_REGS.RUN_CURRENT_A, Math.round(config.runCurrent * 1000));
                 await writeRegister(CUSTOM_REGS.HOLD_CURRENT_A, Math.round(config.holdCurrent * 1000));
                 await writeRegister(CUSTOM_REGS.SILENT_MODE, config.silent);
-                await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, config.enabled);
                 await writePidParameters(config);
             }
             log('[INFO] 应用闭环配置：' + JSON.stringify(config));
@@ -1585,15 +1561,15 @@
 
         async function writePidParameters(params = getPidParameters()) {
             const registers = [
-                [CUSTOM_REGS.POSITION_KP, params.posKp],
-                [CUSTOM_REGS.POSITION_KI, params.posKi],
-                [CUSTOM_REGS.POSITION_KD, params.posKd],
-                [CUSTOM_REGS.VELOCITY_KP, params.velKp],
-                [CUSTOM_REGS.VELOCITY_KI, params.velKi],
-                [CUSTOM_REGS.VELOCITY_KD, params.velKd]
+                [CUSTOM_REGS.POSITION_KP, params.posKp, 1000],
+                [CUSTOM_REGS.POSITION_KI, params.posKi, 100],
+                [CUSTOM_REGS.POSITION_KD, params.posKd, 100],
+                [CUSTOM_REGS.VELOCITY_KP, params.velKp, 100],
+                [CUSTOM_REGS.VELOCITY_KI, params.velKi, 100],
+                [CUSTOM_REGS.VELOCITY_KD, params.velKd, 100]
             ];
-            for (const [register, gain] of registers) {
-                await writeRegister(register, Math.round(clamp(gain, 0, 100) * 1000));
+            for (const [register, gain, maxGain] of registers) {
+                await writeRegister(register, Math.round(clamp(gain, 0, maxGain) * 1000));
             }
         }
 
@@ -1624,7 +1600,8 @@
                 OFFICIAL_REGS.DRV_STATUS,
                 CUSTOM_REGS.RUN_CURRENT_A,
                 CUSTOM_REGS.HOLD_CURRENT_A,
-                CUSTOM_REGS.CLOSED_LOOP_ENABLE,
+                CUSTOM_REGS.ANGLE_MAX_RPM,
+                CUSTOM_REGS.ANGLE_ACCEL_RPM_S,
                 CUSTOM_REGS.ENCODER_RAW,
                 CUSTOM_REGS.ENCODER_ANGLE_MDEG,
                 CUSTOM_REGS.MAGNETIC_HIGH,
@@ -1712,7 +1689,7 @@
             appendTuneLog(`目标 ${targetAngle.toFixed(1)}°，方向 ${direction > 0 ? '正' : '反'}，开始采集编码器响应`);
 
             const startedAt = performance.now();
-            while (performance.now() - startedAt < 1800) {
+            while (performance.now() - startedAt < 2500) {
                 if (state.autoTuneCancelled) break;
                 if (state.encoderFault || state.magneticFault || state.outputStopped) {
                     throw new Error('检测到编码器、磁场或输出故障，整定已中止');
@@ -1721,10 +1698,19 @@
             }
             state.tuneTrialActive = false;
             if (state.autoTuneCancelled) return Number.POSITIVE_INFINITY;
+            if (state.tuneSamples.length < 8) {
+                throw new Error(`编码器反馈样本不足（${state.tuneSamples.length}），检查串口遥测`);
+            }
 
             const score = scoreTuneResponse(state.tuneSamples, startAngle, direction, testAngle);
             if (!Number.isFinite(score)) {
-                throw new Error(`有效反馈不足或电机未移动（样本 ${state.tuneSamples.length}），已停止整定`);
+                const progress = state.tuneSamples.map((sample) => direction * normalizeAngle(sample.angle - startAngle));
+                const forwardMotion = Math.max(0, ...progress);
+                const reverseMotion = Math.max(0, ...progress.map((value) => -value));
+                if (reverseMotion >= 0.5) {
+                    throw new Error(`编码器检测到反向位移 ${reverseMotion.toFixed(2)}°；请核对电机 DIR 与编码器方向`);
+                }
+                throw new Error(`编码器反馈正常但位移仅 ${forwardMotion.toFixed(2)}°；检查使能、输出和 PID 增益`);
             }
             appendTuneLog(`响应评分 ${score.toFixed(3)}，样本 ${state.tuneSamples.length}`);
             return score;
@@ -1751,6 +1737,9 @@
                 return;
             }
 
+            let restoreMaxRpm = state.angleMaxRpm;
+            let restoreAccelRpmS = state.angleAccelRpmS;
+
             state.autoTuneActive = true;
             state.autoTuneCancelled = false;
             if (state.targetWriteTimer !== null) {
@@ -1758,26 +1747,36 @@
                 state.targetWriteTimer = null;
             }
             document.getElementById('startTuneBtn').textContent = '停止整定';
-            document.getElementById('tuneState').value = '1';
+            document.getElementById('tuneState').textContent = '运行中';
             document.getElementById('tuneLogBadge').textContent = '整定中';
             document.getElementById('tuneResults').textContent = '正在采集编码器响应';
             appendTuneLog('开始受限速度/加速度的闭环响应整定');
 
-            const maxSpeedRps = clamp(Number(document.getElementById('tuneMaxSpeed').value || 0.2), 0.05, 0.5);
-            const accelRps2 = clamp(Number(document.getElementById('tuneAccel').value || 0.5), 0.1, 2.0);
+            const maxSpeedRpm = clamp(Number(document.getElementById('tuneMaxSpeed').value || 12), 3, 30);
+            const accelRpmS = clamp(Number(document.getElementById('tuneAccel').value || 30), 6, 120);
             const stepRatio = clamp(Number(document.getElementById('tuneGainStep').value || 0.25), 0.05, 0.5);
             const testAngle = clamp(Number(document.getElementById('tuneTestAngle').value || 8), 3, 20);
-            let bestGains = getPidParameters();
+            let bestGains = null;
             let bestScore = Number.POSITIVE_INFINITY;
             let trialIndex = 0;
+            let tuneOutcome = '已完成';
 
             try {
                 const pidRegisters = [
                     CUSTOM_REGS.POSITION_KP, CUSTOM_REGS.POSITION_KI, CUSTOM_REGS.POSITION_KD,
-                    CUSTOM_REGS.VELOCITY_KP, CUSTOM_REGS.VELOCITY_KI, CUSTOM_REGS.VELOCITY_KD
+                    CUSTOM_REGS.VELOCITY_KP, CUSTOM_REGS.VELOCITY_KI, CUSTOM_REGS.VELOCITY_KD,
+                    CUSTOM_REGS.ANGLE_MAX_RPM, CUSTOM_REGS.ANGLE_ACCEL_RPM_S
                 ];
                 for (const register of pidRegisters) await readRegister(register);
                 await waitTuneInterval(250);
+                restoreMaxRpm = state.angleMaxRpm;
+                restoreAccelRpmS = state.angleAccelRpmS;
+                bestGains = getPidParameters();
+                if (bestGains.posKp < 10) {
+                    bestGains.posKp = 10;
+                    writeTuneGainsToInputs(bestGains);
+                    appendTuneLog('位置环 Kp 提升至 10.000 作为低速整定起始值');
+                }
 
                 if (performance.now() - state.lastEncoderTelemetryAt > 500) {
                     await readRegister(CUSTOM_REGS.ENCODER_ANGLE_MDEG);
@@ -1787,9 +1786,9 @@
                     throw new Error('没有收到实时编码器角度反馈');
                 }
 
-                await writeRegister(0x11B, Math.round(maxSpeedRps * 60));
-                await writeRegister(0x11C, Math.round(accelRps2 * 60));
-                appendTuneLog(`安全限制：最高 ${maxSpeedRps.toFixed(2)} rps，加速度 ${accelRps2.toFixed(2)} rps²，测试角度 ±${testAngle.toFixed(0)}°`);
+                await writeRegister(CUSTOM_REGS.ANGLE_MAX_RPM, Math.round(maxSpeedRpm));
+                await writeRegister(CUSTOM_REGS.ANGLE_ACCEL_RPM_S, Math.round(accelRpmS));
+                appendTuneLog(`安全限制：最高 ${maxSpeedRpm.toFixed(0)} RPM，加速度 ${accelRpmS.toFixed(0)} RPM/s，测试角度 ±${testAngle.toFixed(0)}°`);
 
                 await writePidParameters(bestGains);
                 bestScore = await runTuneTrial(1, testAngle);
@@ -1798,11 +1797,12 @@
                 for (const key of gainKeys) {
                     if (state.autoTuneCancelled) break;
                     const center = bestGains[key];
+                    const maxGain = key === 'posKp' ? 1000 : 100;
                     const candidates = [
                         Math.max(0, center * (1 - stepRatio)),
-                        Math.min(100, center * (1 + stepRatio))
+                        Math.min(maxGain, center * (1 + stepRatio))
                     ];
-                    if (center < 0.001) candidates[1] = Math.min(100, Math.max(0.01, stepRatio * 0.1));
+                    if (center < 0.001) candidates[1] = Math.min(maxGain, Math.max(0.01, stepRatio * 0.1));
 
                     for (const candidateValue of candidates) {
                         if (state.autoTuneCancelled) break;
@@ -1821,6 +1821,7 @@
                 }
 
                 if (state.autoTuneCancelled) {
+                    tuneOutcome = '已停止';
                     appendTuneLog('整定已取消，保留已测得的最佳参数');
                     if (Number.isFinite(bestScore)) {
                         state.bestTuneGains = {...bestGains};
@@ -1837,6 +1838,7 @@
                     appendTuneLog(`整定完成：${trialIndex} 次响应测试；参数已写入固件`);
                 }
             } catch (error) {
+                tuneOutcome = '已中止';
                 state.tuneTrialActive = false;
                 appendTuneLog(`整定中止：${error.message}`);
                 document.getElementById('tuneResults').textContent = `整定未完成：${error.message}`;
@@ -1844,7 +1846,7 @@
                 state.tuneTrialActive = false;
                 state.autoTuneActive = false;
                 document.getElementById('startTuneBtn').textContent = '开始整定';
-                document.getElementById('tuneState').value = '0';
+                document.getElementById('tuneState').textContent = state.autoTuneCancelled ? '已停止' : tuneOutcome;
                 document.getElementById('tuneLogBadge').textContent = state.autoTuneCancelled ? '已停止' : '已结束';
                 if (state.connected) {
                     if (Number.isFinite(bestScore)) {
@@ -1858,6 +1860,12 @@
                         await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0);
                     } catch (error) {
                         appendTuneLog(`发送失能命令失败：${error.message}`);
+                    }
+                    try {
+                        await writeRegister(CUSTOM_REGS.ANGLE_MAX_RPM, restoreMaxRpm);
+                        await writeRegister(CUSTOM_REGS.ANGLE_ACCEL_RPM_S, restoreAccelRpmS);
+                    } catch (error) {
+                        appendTuneLog(`恢复速度/加速度限制失败：${error.message}`);
                     }
                 }
             }

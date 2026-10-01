@@ -194,7 +194,8 @@ ClosedLoopController::ClosedLoopController()
       adaptive_pid_enabled_(false), adaptive_config_{0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
       target_step_(0), actual_step_(0), last_actual_step_(0), command_step_(0),
       follow_error_(0.0f), measured_velocity_rps_(0.0f), target_velocity_rps_(0.0f),
-      motion_start_rpm_(0.0f), motion_max_rpm_(0.0f), motion_accel_rpm_s_(0.0f),
+    motion_start_rpm_(0.0f), motion_max_rpm_(0.0f), motion_accel_rpm_s_(0.0f),
+    angle_max_rpm_(120.0f), angle_accel_rpm_s_(60.0f),
       motion_pulse_count_(0U), motion_window_ms_(2000U), motion_mode_(MOTION_MODE_POSITION_FORWARD),
       motion_running_(false), motion_paused_(false), motion_speed_rpm_(0.0f), encoder_speed_rpm_(0.0f),
       motion_position_deg_(0.0f),
@@ -352,6 +353,8 @@ void ClosedLoopController::syncProtocolTelemetry()
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_START_RPM, static_cast<uint32_t>(motion_start_rpm_));
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAX_RPM, static_cast<uint32_t>(motion_max_rpm_));
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_ACCEL_RPM_S, static_cast<uint32_t>(motion_accel_rpm_s_));
+    protocol_->setCustomParameter(TMC2209_EXT_PARAM_ANGLE_MAX_RPM, static_cast<uint32_t>(angle_max_rpm_));
+    protocol_->setCustomParameter(TMC2209_EXT_PARAM_ANGLE_ACCEL_RPM_S, static_cast<uint32_t>(angle_accel_rpm_s_));
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_PULSE_COUNT, motion_pulse_count_);
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_MODE, static_cast<uint32_t>(motion_mode_));
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_COMMAND, motion_running_ ? 1U : 0U);
@@ -396,6 +399,16 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
         motion_accel_rpm_s_ = static_cast<float>(value);
         return true;
     }
+    if (reg == TMC2209_EXT_PARAM_ANGLE_MAX_RPM)
+    {
+        angle_max_rpm_ = fast_clamp(static_cast<float>(value), 1.0f, 12000.0f);
+        return protocol_ != nullptr && protocol_->setCustomParameter(reg, static_cast<uint32_t>(angle_max_rpm_));
+    }
+    if (reg == TMC2209_EXT_PARAM_ANGLE_ACCEL_RPM_S)
+    {
+        angle_accel_rpm_s_ = fast_clamp(static_cast<float>(value), 1.0f, 12000.0f);
+        return protocol_ != nullptr && protocol_->setCustomParameter(reg, static_cast<uint32_t>(angle_accel_rpm_s_));
+    }
     if (reg == TMC2209_EXT_PARAM_PULSE_COUNT)
     {
         motion_pulse_count_ = value;
@@ -437,7 +450,8 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
         reg == TMC2209_EXT_PARAM_POSITION_KD || reg == TMC2209_EXT_PARAM_VELOCITY_KP ||
         reg == TMC2209_EXT_PARAM_VELOCITY_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KD)
     {
-        const float gain = fast_clamp(static_cast<float>(value) / 1000.0f, 0.0f, 100.0f);
+        const float max_gain = reg == TMC2209_EXT_PARAM_POSITION_KP ? 1000.0f : 100.0f;
+        const float gain = fast_clamp(static_cast<float>(value) / 1000.0f, 0.0f, max_gain);
         if (reg == TMC2209_EXT_PARAM_POSITION_KP) base_position_kp_ = gain;
         if (reg == TMC2209_EXT_PARAM_POSITION_KI) base_position_ki_ = gain;
         if (reg == TMC2209_EXT_PARAM_POSITION_KD) base_position_kd_ = gain;
@@ -515,6 +529,16 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_ACCEL_RPM_S)
     {
         *value = static_cast<uint32_t>(motion_accel_rpm_s_);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ANGLE_MAX_RPM)
+    {
+        *value = static_cast<uint32_t>(angle_max_rpm_);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ANGLE_ACCEL_RPM_S)
+    {
+        *value = static_cast<uint32_t>(angle_accel_rpm_s_);
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_PULSE_COUNT)
@@ -1210,13 +1234,11 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             const float position_reference_rps = position_pid_.update(position_error_rev, dt);
             const float velocity_error_rps = position_reference_rps - (encoder_speed_rpm_ / 60.0f);
             const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt);
-            const float max_rps = (motion_max_rpm_ > 0.0f) ? (motion_max_rpm_ / 60.0f) : 2.0f;
+            const float max_rps = angle_max_rpm_ / 60.0f;
             const float unconstrained_rps = fast_clamp(position_reference_rps + velocity_correction_rps,
                                                        -max_rps,
                                                        max_rps);
-            const float accel_limit_rps2 = motion_accel_rpm_s_ > 0.0f
-                ? motion_accel_rpm_s_ / 60.0f
-                : 1.0f;
+            const float accel_limit_rps2 = angle_accel_rpm_s_ / 60.0f;
             const float previous_rps = motion_speed_rpm_ / 60.0f;
             const float max_delta_rps = accel_limit_rps2 * dt;
             const float desired_rps = fast_clamp(unconstrained_rps,

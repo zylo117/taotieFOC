@@ -115,6 +115,8 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_VELOCITY_KP:
     case TMC2209_EXT_PARAM_VELOCITY_KI:
     case TMC2209_EXT_PARAM_VELOCITY_KD:
+    case TMC2209_EXT_PARAM_ANGLE_MAX_RPM:
+    case TMC2209_EXT_PARAM_ANGLE_ACCEL_RPM_S:
         return true;
     default:
         return false;
