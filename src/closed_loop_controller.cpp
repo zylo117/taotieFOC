@@ -207,7 +207,7 @@ ClosedLoopController::ClosedLoopController()
       adaptive_pid_enabled_(false), adaptive_config_{0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
       target_step_(0), actual_step_(0), last_actual_step_(0), command_step_(0),
       follow_error_(0.0f), measured_velocity_rps_(0.0f), target_velocity_rps_(0.0f),
-    motion_start_rpm_(0.0f), motion_max_rpm_(0.0f), motion_accel_rpm_s_(0.0f),
+    motion_start_rpm_(60.0f), motion_max_rpm_(1200.0f), motion_accel_rpm_s_(6000.0f),
     angle_max_rpm_(1200.0f), angle_accel_rpm_s_(6000.0f),
       motion_pulse_count_(0U), motion_window_ms_(2000U), motion_mode_(MOTION_MODE_POSITION_FORWARD),
     closed_loop_compensation_enabled_(false), motion_running_(false), motion_paused_(false),
@@ -989,7 +989,25 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
         angle_deg = 360.0f;
     }
 
+    if (motion_max_rpm_ <= 0.0f)
+    {
+        motion_max_rpm_ = angle_max_rpm_ > 0.0f ? angle_max_rpm_ : 1200.0f;
+    }
+    if (motion_accel_rpm_s_ <= 0.0f)
+    {
+        motion_accel_rpm_s_ = angle_accel_rpm_s_ > 0.0f ? angle_accel_rpm_s_ : 6000.0f;
+    }
+    if (motion_start_rpm_ <= 0.0f)
+    {
+        motion_start_rpm_ = fminf(60.0f, motion_max_rpm_ * 0.1f);
+        if (motion_start_rpm_ <= 0.0f)
+        {
+            motion_start_rpm_ = 10.0f;
+        }
+    }
+
     target_angle_deg_ = angle_deg;
+    closed_loop_compensation_enabled_ = true;
     closed_loop_angle_mode_enabled_ = true;
     angle_position_tolerance_deg_ = 1.0f;
     closed_loop_angle_error_deg_ = 0.0f;
@@ -1037,6 +1055,23 @@ void ClosedLoopController::setMotionConfig(float start_rpm, float max_rpm, float
 
 void ClosedLoopController::startMotion()
 {
+    if (motion_start_rpm_ <= 0.0f)
+    {
+        motion_start_rpm_ = 60.0f;
+    }
+    if (motion_max_rpm_ <= 0.0f)
+    {
+        motion_max_rpm_ = angle_max_rpm_ > 0.0f ? angle_max_rpm_ : 1200.0f;
+    }
+    if (motion_accel_rpm_s_ <= 0.0f)
+    {
+        motion_accel_rpm_s_ = angle_accel_rpm_s_ > 0.0f ? angle_accel_rpm_s_ : 6000.0f;
+    }
+    if (motion_max_rpm_ < motion_start_rpm_)
+    {
+        motion_max_rpm_ = motion_start_rpm_;
+    }
+
     closed_loop_angle_mode_enabled_ = false;
     position_pid_.resetIntegral();
     position_pid_.resetDeriv();
@@ -1513,16 +1548,19 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // 如果是同向，这两个的arr周期为0，否则arr为guard_tick
         static uint32_t arr_seq_cycle[130];
         uint32_t num_steps = static_cast<uint32_t>(floor(motion_step_accumulator_));
-        const uint32_t remaining_total_steps = motion_pulse_count_ - motion_steps_emitted_;
-        const uint32_t leg_steps_emitted = alternating_motion && motion_leg_reversed_
-            ? motion_steps_emitted_ - motion_leg_pulse_count_
-            : motion_steps_emitted_;
-        const uint32_t remaining_steps = alternating_motion
-            ? (motion_leg_reversed_ ? remaining_total_steps : motion_leg_pulse_count_ - leg_steps_emitted)
-            : remaining_total_steps;
-        if (num_steps > remaining_steps)
+        if (!closed_loop_angle_mode_enabled_)
         {
-            num_steps = remaining_steps;
+            const uint32_t remaining_total_steps = motion_pulse_count_ - motion_steps_emitted_;
+            const uint32_t leg_steps_emitted = alternating_motion && motion_leg_reversed_
+                ? motion_steps_emitted_ - motion_leg_pulse_count_
+                : motion_steps_emitted_;
+            const uint32_t remaining_steps = alternating_motion
+                ? (motion_leg_reversed_ ? remaining_total_steps : motion_leg_pulse_count_ - leg_steps_emitted)
+                : remaining_total_steps;
+            if (num_steps > remaining_steps)
+            {
+                num_steps = remaining_steps;
+            }
         }
         if (num_steps > 128U)
         {

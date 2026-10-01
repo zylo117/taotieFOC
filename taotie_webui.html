@@ -1533,6 +1533,22 @@
             log(`[TX] WRITE reg=0x${reg.toString(16).padStart(4, '0')} cmd=0x02 value=${value}`);
         }
 
+        async function armPositionFollowMode() {
+            if (!state.connected) return;
+            const startRpm = clamp(Math.round(Number(document.getElementById('startRpmSelect').value || 120)), 1, 12000);
+            const maxRpm = clamp(Math.round(Number(document.getElementById('maxRpmSelect').value || 1200)), 1, 12000);
+            const accelRpm = clamp(Math.round(Number(document.getElementById('accelRpmSelect').value || 6000)), 1, 12000);
+            const angleMaxRpm = clamp(Math.round(Number(document.getElementById('angleMaxRpmInput').value || 1200)), 1, 12000);
+            const angleAccelRpm = clamp(Math.round(Number(document.getElementById('angleAccelRpmSInput').value || 6000)), 1, 12000);
+            await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 1);
+            await writeRegister(0x11A, startRpm);
+            await writeRegister(0x11B, maxRpm);
+            await writeRegister(0x11C, accelRpm);
+            await writeRegister(CUSTOM_REGS.ANGLE_MAX_RPM, angleMaxRpm);
+            await writeRegister(CUSTOM_REGS.ANGLE_ACCEL_RPM_S, angleAccelRpm);
+            document.getElementById('closedLoopEnableInput').checked = true;
+        }
+
         async function connectSerial() {
             try {
                 if (!('serial' in navigator)) {
@@ -1552,6 +1568,7 @@
                 setConnBadge('已连接', true);
                 protoBadge.textContent = 'TMC 兼容';
                 log('[INFO] 串口已连接，开始监听返回数据');
+                await armPositionFollowMode();
                 if (state.pendingTargetAngle !== null) void flushTargetAngleWrites();
 
                 readLoop();
@@ -1606,6 +1623,22 @@
             updateDialVisual();
         }
 
+        async function ensureMotionDefaultsForAngleControl() {
+            if (!state.connected) return;
+            const startRpm = clamp(Math.round(Number(document.getElementById('startRpmSelect').value || 120)), 1, 12000);
+            const maxRpm = clamp(Math.round(Number(document.getElementById('maxRpmSelect').value || 1200)), 1, 12000);
+            const accelRpm = clamp(Math.round(Number(document.getElementById('accelRpmSelect').value || 6000)), 1, 12000);
+            const angleMaxRpm = clamp(Math.round(Number(document.getElementById('angleMaxRpmInput').value || 1200)), 1, 12000);
+            const angleAccelRpm = clamp(Math.round(Number(document.getElementById('angleAccelRpmSInput').value || 6000)), 1, 12000);
+            await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 1);
+            await writeRegister(0x11A, startRpm);
+            await writeRegister(0x11B, maxRpm);
+            await writeRegister(0x11C, accelRpm);
+            await writeRegister(CUSTOM_REGS.ANGLE_MAX_RPM, angleMaxRpm);
+            await writeRegister(CUSTOM_REGS.ANGLE_ACCEL_RPM_S, angleAccelRpm);
+            document.getElementById('closedLoopEnableInput').checked = true;
+        }
+
         function queueTargetAngleWrite() {
             if (state.autoTuneActive) return;
             const target = normalize360Angle(Number(document.getElementById('targetPosInput').value || 0));
@@ -1619,6 +1652,7 @@
             if (state.targetWriteInFlight || !state.connected) return;
             state.targetWriteInFlight = true;
             try {
+                await ensureMotionDefaultsForAngleControl();
                 while (state.connected && !state.autoTuneActive && state.pendingTargetAngle !== null) {
                     const target = state.pendingTargetAngle;
                     state.pendingTargetAngle = null;
