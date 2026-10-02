@@ -102,8 +102,6 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_MOTION_COMMAND:
     case TMC2209_EXT_PARAM_SPEED_RPM:
     case TMC2209_EXT_PARAM_POSITION_DEG:
-    case TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS:
-    case TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS:
     case TMC2209_EXT_PARAM_MOTOR_ENABLE:
     case TMC2209_EXT_PARAM_MOTOR_DISABLE:
     case TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS:
@@ -382,9 +380,6 @@ bool Tmc2209ProtocolAdapter::setCustomParameter(uint16_t id, uint32_t value)
     case TMC2209_EXT_PARAM_MOTION_COMMAND:
         custom_parameters_[index] = value;
         break;
-    case TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS:
-        custom_parameters_[index] = value;
-        break;
     case TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS:
         custom_parameters_[index] = value;
         break;
@@ -451,9 +446,6 @@ bool Tmc2209ProtocolAdapter::getCustomParameter(uint16_t id, uint32_t* value) co
         *value = custom_parameters_[index];
         break;
     case TMC2209_EXT_PARAM_MOTION_COMMAND:
-        *value = custom_parameters_[index];
-        break;
-    case TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS:
         *value = custom_parameters_[index];
         break;
     case TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS:

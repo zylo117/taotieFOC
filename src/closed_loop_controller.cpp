@@ -4,6 +4,7 @@
 #define STEP_EDGE_TIMEOUT_US    200U
 #define STEP_PERIOD_US_DEFAULT  5000U
 #define FULL_STEPS_PER_ROUND    200U  // 1.8度步进
+#define DEFAULT_MICROSTEPS      64U
 #define MIN_STEP_PULSE_NS       100ULL
 #define DEFAULT_STEP_PULSE_NS   2000ULL
 #define MAX_STEP_PULSE_NS       20000ULL
@@ -54,14 +55,14 @@ namespace
     // 每圈多少微步
     uint32_t getMicroStepsPerRound(const StepperDriver* driver)
     {
-        uint16_t microsteps = 32U;
+        uint16_t microsteps = DEFAULT_MICROSTEPS;
         if (driver != nullptr)
         {
             microsteps = driver->config().microsteps;
         }
         if (microsteps == 0U)
         {
-            microsteps = 32U;
+            microsteps = DEFAULT_MICROSTEPS;
         }
         return FULL_STEPS_PER_ROUND * static_cast<uint32_t>(microsteps);
     }
@@ -209,7 +210,7 @@ ClosedLoopController::ClosedLoopController()
       follow_error_(0.0f), measured_velocity_rps_(0.0f), target_velocity_rps_(0.0f),
     motion_start_rpm_(60.0f), motion_max_rpm_(1200.0f), motion_accel_rpm_s_(6000.0f),
     angle_max_rpm_(1200.0f), angle_accel_rpm_s_(6000.0f),
-      motion_pulse_count_(0U), motion_window_ms_(2000U), motion_mode_(MOTION_MODE_POSITION_FORWARD),
+      motion_pulse_count_(0U), motion_mode_(MOTION_MODE_POSITION_FORWARD),
     closed_loop_compensation_enabled_(false), motion_running_(false), motion_paused_(false),
     motion_speed_rpm_(0.0f), encoder_speed_rpm_(0.0f),
       motion_position_deg_(0.0f),
@@ -379,7 +380,6 @@ void ClosedLoopController::syncProtocolTelemetry()
                                   static_cast<uint32_t>(static_cast<int32_t>(closed_loop_angle_error_deg_ * 1000.0f)));
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_TARGET_ANGLE_DEG,
                                   static_cast<uint32_t>(static_cast<int32_t>(target_angle_deg_ * 1000.0f)));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS, motion_window_ms_);
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, step_pulse_width_ns_);
 }
 
@@ -459,9 +459,9 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
         }
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS)
+    if (reg == TMC2209_EXT_PARAM_CALIBRATE_ENCODER)
     {
-        setWaveformWindowMs(value);
+        calibrateEncoder();
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS)
@@ -602,11 +602,6 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_POSITION_DEG)  // 实际是跟随误差
     {
         *value = static_cast<uint32_t>(static_cast<int32_t>(motion_follow_error_deg_ * 1000.0f));
-        return true;
-    }
-    if (reg == TMC2209_EXT_PARAM_WAVEFORM_WINDOW_MS)
-    {
-        *value = motion_window_ms_;
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS)
@@ -1436,27 +1431,6 @@ float ClosedLoopController::getMotionPositionDeg() const
     return motion_position_deg_;
 }
 
-uint32_t ClosedLoopController::getWaveformWindowMs() const
-{
-    return motion_window_ms_;
-}
-
-void ClosedLoopController::setWaveformWindowMs(uint32_t window_ms)
-{
-    if (window_ms < 10U)
-    {
-        motion_window_ms_ = 10U;
-    }
-    else if (window_ms > 2000U)
-    {
-        motion_window_ms_ = 2000U;
-    }
-    else
-    {
-        motion_window_ms_ = window_ms;
-    }
-}
-
 void ClosedLoopController::setPid(float kp, float ki, float kd)
 {
     base_position_kp_ = kp;
@@ -1617,4 +1591,12 @@ uint32_t ClosedLoopController::getCurrentLoopHz() const
 
 void ClosedLoopController::calibrateEncoder()
 {
+    printf("fuckfuckfuck");
+    motion_start_rpm_ = 60;
+    motion_max_rpm_ = 60;
+    motion_accel_rpm_s_ = 60;
+    motion_pulse_count_ = getMicroStepsPerRound(driver_) / 360 * 20;  // 2度左右
+    motion_mode_ = MOTION_MODE_POSITION_FORWARD;
+    step_pulse_width_ns_ = 200;
+    startMotion();
 }

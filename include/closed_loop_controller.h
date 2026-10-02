@@ -288,7 +288,6 @@ private:
     volatile float angle_max_rpm_;
     volatile float angle_accel_rpm_s_;
     volatile uint32_t motion_pulse_count_;
-    volatile uint32_t motion_window_ms_;
     volatile MotionMode motion_mode_;
     volatile bool closed_loop_compensation_enabled_;
     volatile bool motion_running_;
