@@ -692,50 +692,6 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     return protocol_->readRegister(reg, value);
 }
 
-// void ClosedLoopController::syncStepDirection()
-// {
-//     if (driver_ == nullptr)
-//     {
-//         return;
-//     }
-//
-//     gpio_type* step_port = GPIOB;
-//     gpio_type* dir_port = GPIOA;
-//     gpio_type* en_port = GPIOA;
-//
-//     uint8_t step_state = gpio_input_data_bit_read(step_port, GPIO_PINS_3);
-//     uint8_t dir_state = gpio_input_data_bit_read(dir_port, GPIO_PINS_15);
-//     uint8_t en_state = gpio_input_data_bit_read(en_port, EN_OUT_PIN);
-//
-//     if (motion_running_)
-//     {
-//         return;
-//     }
-//
-//     if (step_state != last_step_state_)
-//     {
-//         if (step_state != 0U)
-//         {
-//             command_step_ += (dir_state != 0U) ? 1 : -1;
-//             target_step_ = command_step_;
-//             driver_->sendStepPulse(step_pulse_width_ns_);
-//         }
-//         last_step_state_ = step_state;
-//     }
-//
-//     if (dir_state != last_dir_state_)
-//     {
-//         driver_->setDirection(dir_state != 0U);
-//         last_dir_state_ = dir_state;
-//     }
-//
-//     if (en_state != last_en_state_)
-//     {
-//         driver_->setEnable(en_state != 0U);
-//         last_en_state_ = en_state;
-//     }
-// }
-
 void ClosedLoopController::updateLoopFrequencyStats(uint64_t time_ns)
 {
     if (!loop_stats_enabled_)
@@ -781,197 +737,6 @@ void ClosedLoopController::updateLoopFrequencyStats(uint64_t time_ns)
         last_current_tick_ns_ = time_ns;
     }
 }
-
-// process() 是闭环控制器最核心的函数，负责完成一整个控制周期：
-// 1. 读取编码器实际位置
-// 2. 计算位置误差
-// 3. 用位置 PID 生成速度参考
-// 4. 通过速度 PID 调整输出修正
-// 5. 最终通过步进输出和驱动器状态更新实现闭环控制
-//
-// 设计上采用双环结构：
-// - 外层位置环：控制“目标位置 vs 当前位置”的误差
-// - 内层速度环：控制“速度参考 vs 当前速度”的误差
-// 这样可以把大范围位置控制和短周期速度控制分开，提高稳定性和响应性。
-// void ClosedLoopController::process(uint32_t time_us)
-// {
-//     updateLoopFrequencyStats(time_us);
-//
-//     if (driver_ == nullptr)
-//     {
-//         return;
-//     }
-//
-//     if (encoder_ != nullptr)
-//     {
-//         uint16_t encoder_raw = encoder_->readRawAngle();
-//         encoder_raw_angle_ = encoder_raw;
-//         magnetic_field_high_ = encoder_->magneticFieldHigh();
-//         magnetic_field_low_ = encoder_->magneticFieldLow();
-//         reportMagneticFieldAlarm(magnetic_field_high_ || magnetic_field_low_);
-//
-//         motion_position_deg_ = static_cast<float>(static_cast<int32_t>(encoder_raw) - static_cast<int32_t>(
-//             encoder_zero_)) * 360.0f / 65536.0f;
-//         if (motion_position_deg_ > 180.0f)
-//         {
-//             motion_position_deg_ -= 360.0f;
-//         }
-//         else if (motion_position_deg_ < -180.0f)
-//         {
-//             motion_position_deg_ += 360.0f;
-//         }
-//     }
-//
-//     if (motion_running_)
-//     {
-//         const float max_rpm = motion_max_rpm_ > 0.0f ? motion_max_rpm_ : motion_start_rpm_;
-//         const float accel_rpm = motion_accel_rpm_s_ > 0.0f ? motion_accel_rpm_s_ : 300.0f;
-//         const float target_speed = max_rpm > 0.0f ? max_rpm : motion_start_rpm_;
-//         const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
-//         if (motion_last_ramp_time_us_ == 0U)
-//         {
-//             motion_last_ramp_time_us_ = time_us;
-//         }
-//
-//         const float dt = static_cast<float>(time_us - motion_last_ramp_time_us_) * 1.0e-6f;
-//         if (dt > 0.0f)
-//         {
-//             if (motion_speed_rpm_ < target_speed)
-//             {
-//                 motion_speed_rpm_ = motion_speed_rpm_ + accel_rpm * dt;
-//                 if (motion_speed_rpm_ > target_speed)
-//                 {
-//                     motion_speed_rpm_ = target_speed;
-//                 }
-//             }
-//             else if (motion_speed_rpm_ > target_speed)
-//             {
-//                 motion_speed_rpm_ = motion_speed_rpm_ - accel_rpm * dt;
-//                 if (motion_speed_rpm_ < target_speed)
-//                 {
-//                     motion_speed_rpm_ = target_speed;
-//                 }
-//             }
-//             motion_speed_rpm_ = (motion_direction_ > 0) ? motion_speed_rpm_ : -motion_speed_rpm_;
-//             motion_last_ramp_time_us_ = time_us;
-//         }
-//
-//         const float commanded_rpm = fast_abs(motion_speed_rpm_);
-//         const float step_hz = (commanded_rpm * static_cast<float>(micro_steps_per_round)) / 60.0f;
-//         if (!output_stopped_ && step_hz > 0.0f)
-//         {
-//             driver_->setDirection(motion_direction_ > 0);
-//             stepper_common::stepper_update_motion_timer(static_cast<uint32_t>(step_hz),
-//                                                         pulseWidthNsToUs(step_pulse_width_ns_));
-//             if (motion_last_step_time_us_ != 0U && time_us > motion_last_step_time_us_)
-//             {
-//                 const float elapsed_s = static_cast<float>(time_us - motion_last_step_time_us_) * 1.0e-6f;
-//                 motion_step_accumulator_ += step_hz * elapsed_s;
-//                 const uint32_t completed_steps = static_cast<uint32_t>(motion_step_accumulator_);
-//                 motion_step_accumulator_ -= static_cast<float>(completed_steps);
-//                 motion_steps_emitted_ += completed_steps;
-//             }
-//             motion_last_step_time_us_ = time_us;
-//             const uint32_t max_steps = motion_pulse_count_ == 0U ? UINT32_MAX : motion_pulse_count_;
-//             if (motion_steps_emitted_ >= max_steps)
-//             {
-//                 stopMotion();
-//                 return;
-//             }
-//         }
-//         else if (output_stopped_)
-//         {
-//             stepper_common::stepper_stop_motion_timer();
-//         }
-//     }
-//
-//     // 读取编码器原始角度，并换算成相对零点的步数。
-//     // 这里的逻辑是把编码器量化到一个可比较的相对位置值，
-//     // 后续 position_error 能直接反映目标和当前位置的偏差。
-//     uint16_t encoder_raw = encoder_raw_angle_;
-//     int32_t actual_step = 0;
-//
-//     actual_step = static_cast<int32_t>(encoder_raw) - static_cast<int32_t>(encoder_zero_);
-//     if (actual_step > 32768)
-//     {
-//         actual_step -= 65536;
-//     }
-//     else if (actual_step < -32768)
-//     {
-//         actual_step += 65536;
-//     }
-//
-//     actual_step_ = actual_step;
-//     follow_error_ = static_cast<float>(target_step_ - actual_step_);
-//     if (last_process_time_us_ == 0U)
-//     {
-//         last_process_time_us_ = time_us;
-//     }
-//
-//     // 根据两个采样时刻之间的位置变化，计算实际速度。
-//     // 这里的 /200.0f 是粗略折算到电机机械转速单位，体现在闭环控制中
-//     // 是“步数变化量 -> 速度参考”的桥接。
-//     if (last_process_time_us_ != 0U && time_us > last_process_time_us_)
-//     {
-//         uint32_t dt_us = time_us - last_process_time_us_;
-//         float dt = static_cast<float>(dt_us) * 1.0e-6f;
-//         if (dt > 0.0f)
-//         {
-//             measured_velocity_rps_ = (static_cast<float>(actual_step_ - last_actual_step_)) / 65536.0f / dt;
-//             encoder_speed_rpm_ = measured_velocity_rps_ * 60.0f;
-//         }
-//     }
-//
-//     syncProtocolTelemetry();
-//
-//     // 位置误差 = 目标位置 - 当前位置。
-//     float position_error = static_cast<float>(target_step_ - actual_step_);
-//
-//     // 位置环输出的 correction 是“速度参考”而不是直接驱动量。
-//     // 这个设计将位置控制和速度控制拆开，避免大范围位置误差直接作用到驱动器。
-//     float position_correction = position_pid_.update(position_error, 0.001f);
-//
-//     // 速度参考 -> 速度误差 -> 速度 PID -> 更细粒度的控制输出。
-//     float velocity_reference = position_correction;
-//     float velocity_error = velocity_reference - measured_velocity_rps_;
-//     float velocity_correction = velocity_pid_.update(velocity_error, 0.001f);
-//
-//     // 速度修正量会参与步进周期的补偿：
-//     // 如果速度误差较大，就缩短步进周期，增加动作频率；
-//     // 如果误差较小，则维持或放宽步进节奏。
-//     float correction_gain = velocity_correction / MAX_PID_OUTPUT;
-//     correction_gain = fast_clamp(correction_gain, -1.0f, 1.0f);
-//
-//     if (step_period_us_ > 10U)
-//     {
-//         uint32_t compensated_step_period = static_cast<uint32_t>(static_cast<float>(step_period_us_) * (1.0f - 0.25f *
-//             correction_gain));
-//         if (compensated_step_period < 10U)
-//         {
-//             compensated_step_period = 10U;
-//         }
-//         step_period_us_ = compensated_step_period;
-//     }
-//
-//     // 当接近目标时，清零积分项，避免大误差导致积分发散。
-//     if (fast_abs(position_error) < 0.25f)
-//     {
-//         position_pid_.resetIntegral();
-//         velocity_pid_.resetIntegral();
-//     }
-//
-//     // 更接近零时，清理微分历史，减少抖动和噪声放大。
-//     if (fast_abs(position_error) < 0.1f)
-//     {
-//         position_pid_.resetDeriv();
-//         velocity_pid_.resetDeriv();
-//     }
-//
-//     last_actual_step_ = actual_step_;
-//     last_process_time_us_ = time_us;
-//
-//     syncStepDirection();
-// }
 
 void ClosedLoopController::setTargetStep(int32_t target_step)
 {
@@ -1206,7 +971,6 @@ void add_dir_to_step_sequence(uint32_t *seq, uint32_t seq_count, uint32_t guard_
     }
     seq[seq_count - 1U] = guard_tick;
 }
-
 
 void stop_timer_dma_for_reload()
 {
@@ -1849,4 +1613,8 @@ uint32_t ClosedLoopController::getVelocityLoopHz() const
 uint32_t ClosedLoopController::getCurrentLoopHz() const
 {
     return current_loop_hz_;
+}
+
+void ClosedLoopController::calibrateEncoder()
+{
 }
