@@ -1546,7 +1546,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     {
         // 人为规定第一个和最后arr周期是用来提前和延后换向的，
         // 如果是同向，这两个的arr周期为0，否则arr为guard_tick
-        static uint32_t arr_seq_cycle[130];
+        static uint32_t arr_seq_cycle[MAX_PULSE_ARR_LEN + 2];
         uint32_t num_steps = static_cast<uint32_t>(floor(motion_step_accumulator_));
         if (!closed_loop_angle_mode_enabled_)
         {
@@ -1562,9 +1562,9 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
                 num_steps = remaining_steps;
             }
         }
-        if (num_steps > 128U)
+        if (num_steps > MAX_PULSE_ARR_LEN)
         {
-            num_steps = 128U;
+            num_steps = MAX_PULSE_ARR_LEN;
         }
         const uint32_t seq_count = num_steps + 2U;
         const bool current_direction = motion_direction_ > 0;

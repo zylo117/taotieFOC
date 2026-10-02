@@ -13,6 +13,8 @@
 #define USE_HARD_FLOAT_ACCELERATION 1
 #endif
 
+#define MAX_PULSE_ARR_LEN 128U
+
 #include <cmath>
 
 #include "core_cm4.h"
