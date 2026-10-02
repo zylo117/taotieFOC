@@ -769,7 +769,7 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
     target_angle_deg_ = angle_deg;
     closed_loop_compensation_enabled_ = true;
     closed_loop_angle_mode_enabled_ = true;
-    angle_position_tolerance_deg_ = 1.0f;
+    // angle_position_tolerance_deg_ = 0.1f;
     closed_loop_angle_error_deg_ = 0.0f;
     position_pid_.resetIntegral();
     position_pid_.resetDeriv();
@@ -1120,16 +1120,17 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             }
         }
 
-        if (fast_abs(closed_loop_angle_error_deg_) <= angle_position_tolerance_deg_)
-        {
-            current_step_speed_ = 0.0f;
-            motion_speed_rpm_ = 0.0f;
-            motion_step_accumulator_ = 0.0f;
-            position_pid_.resetIntegral();
-            position_pid_.resetDeriv();
-            velocity_pid_.resetIntegral();
-            velocity_pid_.resetDeriv();
-        }
+        // 注释掉这段，因为我需要它摇摆才能测好pid，但是以后需要强制定在某个角度可能有用
+        // if (fast_abs(closed_loop_angle_error_deg_) <= angle_position_tolerance_deg_)
+        // {
+        //     current_step_speed_ = 0.0f;
+        //     motion_speed_rpm_ = 0.0f;
+        //     motion_step_accumulator_ = 0.0f;
+        //     position_pid_.resetIntegral();
+        //     position_pid_.resetDeriv();
+        //     velocity_pid_.resetIntegral();
+        //     velocity_pid_.resetDeriv();
+        // }
     }
     else
     {
