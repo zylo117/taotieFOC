@@ -248,6 +248,8 @@ public:
     uint32_t getVelocityLoopHz() const;
     uint32_t getCurrentLoopHz() const;
 
+    void calibrateEncoder();
+
 private:
     void updateLoopFrequencyStats(uint64_t time_ns);
     StepperDriver* driver_;

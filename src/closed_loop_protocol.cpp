@@ -108,6 +108,7 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_MOTOR_DISABLE:
     case TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS:
     case TMC2209_EXT_PARAM_HOST_SIMULATE:
+    case TMC2209_EXT_PARAM_CALIBRATE_ENCODER:
         return true;
     default:
         return false;

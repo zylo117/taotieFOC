@@ -432,6 +432,14 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
         last_en_state_ = 2U;
         return true;
     }
+    if (reg == TMC2209_EXT_PARAM_CALIBRATE_ENCODER)
+    {
+        if (value != 0U)
+        {
+            calibrateEncoder();
+        }
+        return true;
+    }
     if (protocol_ == nullptr)
     {
         return false;
@@ -1320,6 +1328,12 @@ void ClosedLoopController::calibrateEncoder(const EncoderCalibrationConfig& conf
         encoder_zero_ = static_cast<float>(encoder_zero_ + static_cast<float>(result.offset_correction));
         encoder_->setZero(encoder_zero_);
     }
+}
+
+void ClosedLoopController::calibrateEncoder()
+{
+    EncoderCalibrationConfig config{};
+    calibrateEncoder(config);
 }
 
 void ClosedLoopController::enableLoopStats(bool enable)

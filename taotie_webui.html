@@ -544,6 +544,7 @@
             <button class="primary" id="connectBtn">连接串口</button>
             <button id="readAllBtn">读取全部</button>
             <button id="writeAllBtn">应用配置</button>
+            <button id="calibrateEncoderBtn">磁编码器校准</button>
             <button class="warn" id="tuneBtn">自动整定</button>
             <span class="badge ok" id="faultBadge"><span class="led"></span> 无故障</span>
             <span class="badge" id="connBadge">未连接</span>
@@ -1030,6 +1031,7 @@
             , MAGNETIC_LOW: 0x118
             , ENCODER_ZERO: 0x119
             , HOST_SIMULATE: 0x127
+            , CALIBRATE_ENCODER: 0x128
         };
 
         const REGISTER_DESCRIPTIONS = new Map([
@@ -1077,6 +1079,7 @@
             , [0x125, ['0x0125', 'MOTOR_DISABLE', '电机失能，EN 输出高电平']]
             , [0x126, ['0x0126', 'SINGLE_FORWARD_STEP', 'DIR 高电平并输出单个 STEP']]
             , [CUSTOM_REGS.HOST_SIMULATE, ['0x0127', 'HOST_SIMULATE', '上位机模拟测试：1 开启，0 使用真实 STEP/DIR 输入']]
+            , [0x128, ['0x0128', 'CALIBRATE_ENCODER', '磁编码器校准：写 1 触发一次校准']]
         ]);
 
         function log(message) {
@@ -1907,6 +1910,14 @@
             document.getElementById('closeWavePopupBtn').addEventListener('click', () => toggleWavePopup(false));
             ['startRpmSelect', 'maxRpmSelect', 'accelRpmSelect', 'pulseCountInput', 'microsteps'].forEach((id) => {
                 document.getElementById(id).addEventListener('change', updateMotionDurationEstimate);
+            });
+            document.getElementById('calibrateEncoderBtn').addEventListener('click', async () => {
+                if (!state.connected) {
+                    log('[WARN] 尚未连接串口，无法执行磁编码器校准');
+                    return;
+                }
+                await writeRegister(CUSTOM_REGS.CALIBRATE_ENCODER, 1);
+                log('[INFO] 已发送磁编码器校准触发命令');
             });
             document.getElementById('tuneBtn').addEventListener('click', startAutoTune);
             document.getElementById('startTuneBtn').addEventListener('click', startAutoTune);
