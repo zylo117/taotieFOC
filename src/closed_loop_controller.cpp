@@ -1145,18 +1145,19 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     // 累加本次时间内应该产生的步数（浮点数，允许小数累积）
     motion_step_accumulator_ += current_step_speed_ * dt_step_s;
 
+#ifdef USE_SOFT_PULSE
     // 只要累加器≥1，代表需要输出1个step脉冲；循环批量输出，直到没有脉冲待输出或者全部脉冲发完
     // cpu软脉冲实现，效率低
-    // while ((motion_step_accumulator_ >= 1.0f) && (motion_steps_emitted_ < motion_pulse_count_))
-    // {
-    //     // 调用驱动输出STEP脉冲；脉冲高电平宽度固定为step_pulse_width_ns_，底层实现ns延时
-    //     driver_->sendStepPulse(step_pulse_width_ns_);
-    //     // 已经发出的脉冲计数+1
-    //     motion_steps_emitted_++;
-    //     // 已经消耗1步，累加器减去1，小数部分保留，留给下一次调度
-    //     motion_step_accumulator_ -= 1.0f;
-    // }
-
+    while ((motion_step_accumulator_ >= 1.0f) && (motion_steps_emitted_ < motion_pulse_count_))
+    {
+        // 调用驱动输出STEP脉冲；脉冲高电平宽度固定为step_pulse_width_ns_，底层实现ns延时
+        driver_->sendStepPulse(step_pulse_width_ns_);
+        // 已经发出的脉冲计数+1
+        motion_steps_emitted_++;
+        // 已经消耗1步，累加器减去1，小数部分保留，留给下一次调度
+        motion_step_accumulator_ -= 1.0f;
+    }
+#else
     // TMR2 是 32 位计数器，因此 ARR 序列必须是 32 位。
     // 这里复用同一份周期表，正转和反转都只需要切换 DIR 输出 + 重新装载同一块 RAM，
     // 这样既能完成“正转一圈 -> 反转一圈”，又不会把 RAM 翻倍消耗掉。
@@ -1176,21 +1177,22 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         uint64_t remaining_time = delta_step_ns - reserved_time_ns - direction_switch_guard_time_ns;
         uint32_t remaining_ticks = remaining_time / stepper_common::target_tick_time;
 
-        // uint32_t step_ticks = k_step_pulse_ticks * 2;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
-        // uint64_t max_iter_time_ns = (2 * stepper_common::guard_tick + step_ticks * num_steps) * stepper_common::target_tick_time;
-        // // 因为硬件TMR定时器+DMA工作是异步的，耗时必须短于软件定时器迭代时间，否则就会输出延迟
-        // if (delta_step_ns < max_iter_time_ns)
-        // {
-        //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
-        //     printf("shitfuck, delta_step_ns: %.6f us < max_iter_time_ns: %.6f us, lower your iter rate.\n", delta_step_ns / 1000.f, max_iter_time_ns / 1000.f);
-        // }
-
-        uint32_t step_ticks = remaining_ticks / num_steps;
-        if (step_ticks < stepper_common::k_step_pulse_ticks * 2)
+        // 要尽快执行，不可以用下面那种平均的平滑模式，会丢步
+        uint32_t step_ticks = k_step_pulse_ticks * 2;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
+        uint64_t max_iter_time_ns = (2 * stepper_common::guard_tick + step_ticks * num_steps) * stepper_common::target_tick_time;
+        // 因为硬件TMR定时器+DMA工作是异步的，耗时必须短于软件定时器迭代时间，否则就会输出延迟
+        if (delta_step_ns < max_iter_time_ns)
         {
             printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
-            printf("shitfuck, delta_step_ns: %.6f us, step_ticks < 2*min_k_step_pulse_ticks %lu us, lower your iter rate.\n", delta_step_ns / 1000.f, stepper_common::k_step_pulse_ticks * 2);
+            printf("shitfuck, delta_step_ns: %.6f us < max_iter_time_ns: %.6f us, lower your iter rate.\n", delta_step_ns / 1000.f, max_iter_time_ns / 1000.f);
         }
+
+        // uint32_t step_ticks = remaining_ticks / num_steps;
+        // if (step_ticks < stepper_common::k_step_pulse_ticks * 2)
+        // {
+        //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
+        //     printf("shitfuck, delta_step_ns: %.6f us, step_ticks < 2*min_k_step_pulse_ticks %lu us, lower your iter rate.\n", delta_step_ns / 1000.f, stepper_common::k_step_pulse_ticks * 2);
+        // }
 
         generate_constant_speed_step_sequence(arr_seq_cycle, seq_count, step_ticks);
         add_dir_to_step_sequence(arr_seq_cycle, seq_count, stepper_common::guard_tick, false);
@@ -1203,6 +1205,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_follow_error_deg_ = motion_commanded_travel_deg_ - motion_encoder_travel_deg_;
         motion_step_accumulator_ -= num_steps;
     }
+#endif
 
     // 更新脉冲模块的时间戳
     motion_last_step_time_ns_ = now_ns;
@@ -1211,7 +1214,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
 void ClosedLoopController::stopMotion()
 {
-    printf("motion stopping!!!");
+    printf("motion stopping!!!\n");
+    printf("motion_steps_emitted_: %lu, motion_step_accumulator_: %f\n", motion_steps_emitted_, motion_step_accumulator_);
     motion_running_ = false;
     motion_first_run_ = false;
     motion_paused_ = false;
@@ -1313,27 +1317,9 @@ void ClosedLoopController::updateAdaptivePid(float speed_rps, float acceleration
     velocity_pid_.kd = base_velocity_kd_ * (0.9f + accel_scale * 0.5f);
 }
 
-void ClosedLoopController::calibrateEncoder(const EncoderCalibrationConfig& config)
-{
-    if (encoder_ == nullptr)
-    {
-        return;
-    }
-
-    EncoderCalibrationResult result = {false, false, false, false, 0, 0.0f, 0.0f};
-    encoder_->calibrate(config, &result);
-
-    if (result.offset_ok)
-    {
-        encoder_zero_ = static_cast<float>(encoder_zero_ + static_cast<float>(result.offset_correction));
-        encoder_->setZero(encoder_zero_);
-    }
-}
-
 void ClosedLoopController::calibrateEncoder()
 {
-    EncoderCalibrationConfig config{};
-    calibrateEncoder(config);
+    printf("fuck");
 }
 
 void ClosedLoopController::enableLoopStats(bool enable)
