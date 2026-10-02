@@ -249,7 +249,7 @@ void telemetry_task_function(void* pvParameters)
                    static_cast<unsigned long>(g_encoder.allZerosCount()));
             last_log_tick = xTaskGetTickCount();
         }
-        vTaskDelay(20);
+        vTaskDelay(5);
     }
 }
 
