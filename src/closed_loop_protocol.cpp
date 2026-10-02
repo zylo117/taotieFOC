@@ -121,6 +121,7 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_PID_TUNE_SAMPLE_COUNT:
     case TMC2209_EXT_PARAM_MOTION_SCHEDULED_STEPS:
     case TMC2209_EXT_PARAM_MOTION_COMMAND_SPEED_MRPM:
+    case TMC2209_EXT_PARAM_CALIBRATE_ENCODER:
         return true;
     default:
         return false;

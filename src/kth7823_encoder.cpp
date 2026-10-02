@@ -32,6 +32,8 @@ Kth7823Encoder::Kth7823Encoder()
 
 bool Kth7823Encoder::init()
 {
+    calibrationInit();  //基类校准初始化，加载flash主表，校验fast cal checksum
+
     spi_init_type spi_init_struct;
 
     crm_periph_clock_enable(CRM_GPIOA_PERIPH_CLOCK, TRUE);

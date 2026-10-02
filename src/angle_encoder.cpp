@@ -63,3 +63,104 @@ namespace encoder_common
         return static_cast<uint16_t>(spi_i2s_data_receive(KTH7823_SPI));
     }
 }
+
+void AngleEncoder::loadFromFlash(void)
+{
+	for(uint16_t i=0; i < CALIBRATION_TABLE_SIZE; i++)
+	{
+		m_calData[i].value = m_nvmFlashCal->FlashCalData[i];
+		m_calData[i].error = CALIBRATION_MIN_ERROR;
+	}
+}
+
+void AngleEncoder::saveToFlash(void)
+{
+	uint16_t i = 0;
+	uint16_t min = 0, max = 0;
+	FlashCalData_t data;
+
+	max = min = m_calData[0].value;
+	for (i=0; i < CALIBRATION_TABLE_SIZE; i++ )
+	{
+		if(m_calData[i].value < min)	{min = m_calData[i].value;}
+		if(m_calData[i].value > max)	{max = m_calData[i].value;}
+		data.FlashCalData[i] = m_calData[i].value;
+	}
+	data.status = CalStatus::valid;
+	data.MIN = min;
+	data.MAX = max;
+
+	flash_write(MAINCAL_FLASH_BASE, reinterpret_cast<uint16_t*>(&data), sizeof(FlashCalData_t)/2U);
+	createFastCal();
+}
+
+void AngleEncoder::createFastCal(void)
+{
+	uint32_t i,j;
+	uint16_t checkSum = 0;
+	uint16_t data[FLASH_ROW_SIZE];
+	for (i=0,j=0; i < 65536U; i++)
+	{
+		uint16_t x = reverseLookup(static_cast<uint16_t>(i));
+		data[j] = x;
+		j++;
+		if (j >= FLASH_ROW_SIZE)
+		{
+			uint32_t dst_addr = FASTCAL_FLASH_BASE + ((i + 1U - FLASH_ROW_SIZE) * 2U);
+			flash_write(dst_addr, data, FLASH_ROW_SIZE);
+			j=0;
+		}
+		checkSum += x;
+	}
+	if(j>0)
+	{
+		uint32_t dst_addr = FASTCAL_FLASH_BASE + (i - j)*2U;
+		flash_write(dst_addr, data, j);
+	}
+	flash_write(FASTCAL_CHECKSUM_ADDR, &checkSum, 1U);
+	m_fastCalValid = true;
+}
+
+void AngleEncoder::updateFastCalCheck(void)
+{
+	uint32_t i;
+	uint16_t checkSum = 0;
+	bool NonZero = false;
+	for(i=0; i < 65536U; i++)
+	{
+		checkSum += m_nvmFastCal->angle[i];
+		if(m_nvmFastCal->angle[i] != 0U)
+		{
+			NonZero = true;
+		}
+	}
+	uint16_t stored_checksum;
+    flash_read(FASTCAL_CHECKSUM_ADDR, &stored_checksum,1U);
+
+	if(checkSum != stored_checksum || NonZero != true)
+	{
+		saveToFlash();
+	}
+	else
+	{
+		m_fastCalValid = true;
+	}
+}
+
+void AngleEncoder::calibrationInit(void)
+{
+	uint16_t i;
+	if(m_nvmFlashCal->status == CalStatus::valid)
+	{
+		loadFromFlash();
+		updateFastCalCheck();
+	}else
+	{
+		for(i=0; i < CALIBRATION_TABLE_SIZE; i++)
+		{
+			m_calData[i].value = 0;
+			m_calData[i].error = CALIBRATION_ERROR_NOT_SET;
+		}
+        m_fastCalValid = false;
+	}
+}

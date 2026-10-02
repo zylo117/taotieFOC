@@ -1582,31 +1582,32 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const uint64_t remaining_time = delta_step_ns - overhead_ns;
         const uint64_t remaining_ticks = remaining_time / stepper_common::target_tick_time;
 
-        // uint32_t step_ticks = k_step_pulse_ticks * 2;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
-        // uint64_t max_iter_time_ns = (2 * stepper_common::guard_tick + step_ticks * num_steps) * stepper_common::target_tick_time;
-        // // 因为硬件TMR定时器+DMA工作是异步的，耗时必须短于软件定时器迭代时间，否则就会输出延迟
-        // if (delta_step_ns < max_iter_time_ns)
-        // {
-        //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
-        //     printf("shitfuck, delta_step_ns: %.6f us < max_iter_time_ns: %.6f us, lower your iter rate.\n", delta_step_ns / 1000.f, max_iter_time_ns / 1000.f);
-        // }
-
-        uint64_t step_ticks_wide = remaining_ticks / num_steps;
-        const uint32_t min_step_ticks = stepper_common::k_step_pulse_ticks * 2U;
-        if (step_ticks_wide < min_step_ticks)
-        {
-            step_ticks_wide = min_step_ticks;
-        }
-        if (step_ticks_wide > UINT32_MAX)
-        {
-            step_ticks_wide = UINT32_MAX;
-        }
-        const uint32_t step_ticks = static_cast<uint32_t>(step_ticks_wide);
-        if (step_ticks < stepper_common::k_step_pulse_ticks * 2)
+        // 要尽快执行，不可以用下面那种平均的平滑模式，会丢步
+        uint32_t step_ticks = k_step_pulse_ticks * 2;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
+        uint64_t max_iter_time_ns = (2 * stepper_common::guard_tick + step_ticks * num_steps) * stepper_common::target_tick_time;
+        // 因为硬件TMR定时器+DMA工作是异步的，耗时必须短于软件定时器迭代时间，否则就会输出延迟
+        if (delta_step_ns < max_iter_time_ns)
         {
             printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
-            printf("shitfuck, delta_step_ns: %.6f us, step_ticks < 2*min_k_step_pulse_ticks %lu us, lower your iter rate.\n", delta_step_ns / 1000.f, stepper_common::k_step_pulse_ticks * 2);
+            printf("shitfuck, delta_step_ns: %.6f us < max_iter_time_ns: %.6f us, lower your iter rate.\n", delta_step_ns / 1000.f, max_iter_time_ns / 1000.f);
         }
+
+        // uint64_t step_ticks_wide = remaining_ticks / num_steps;
+        // const uint32_t min_step_ticks = stepper_common::k_step_pulse_ticks * 2U;
+        // if (step_ticks_wide < min_step_ticks)
+        // {
+        //     step_ticks_wide = min_step_ticks;
+        // }
+        // if (step_ticks_wide > UINT32_MAX)
+        // {
+        //     step_ticks_wide = UINT32_MAX;
+        // }
+        // const uint32_t step_ticks = static_cast<uint32_t>(step_ticks_wide);
+        // if (step_ticks < stepper_common::k_step_pulse_ticks * 2)
+        // {
+        //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
+        //     printf("shitfuck, delta_step_ns: %.6f us, step_ticks < 2*min_k_step_pulse_ticks %lu us, lower your iter rate.\n", delta_step_ns / 1000.f, stepper_common::k_step_pulse_ticks * 2);
+        // }
 
         generate_constant_speed_step_sequence(arr_seq_cycle, seq_count, step_ticks);
         add_dir_to_step_sequence(arr_seq_cycle, seq_count, stepper_common::guard_tick,
@@ -1735,23 +1736,6 @@ void ClosedLoopController::updateAdaptivePid(float speed_rps, float acceleration
     velocity_pid_.kp = base_velocity_kp_ * gain_scale;
     velocity_pid_.ki = base_velocity_ki_ * (0.8f + speed_scale * 0.6f);
     velocity_pid_.kd = base_velocity_kd_ * (0.9f + accel_scale * 0.5f);
-}
-
-void ClosedLoopController::calibrateEncoder(const EncoderCalibrationConfig& config)
-{
-    if (encoder_ == nullptr)
-    {
-        return;
-    }
-
-    EncoderCalibrationResult result = {false, false, false, false, 0, 0.0f, 0.0f};
-    encoder_->calibrate(config, &result);
-
-    if (result.offset_ok)
-    {
-        encoder_zero_ = static_cast<float>(encoder_zero_ + static_cast<float>(result.offset_correction));
-        encoder_->setZero(encoder_zero_);
-    }
 }
 
 void ClosedLoopController::enableLoopStats(bool enable)

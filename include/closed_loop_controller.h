@@ -218,9 +218,6 @@ public:
     // 根据当前速度、加速度和跟随误差动态修正 PID 参数。
     void updateAdaptivePid(float speed_rps, float acceleration_rps2, float follow_error);
 
-    // 对编码器执行校准，更新零点偏差。
-    void calibrateEncoder(const EncoderCalibrationConfig& config);
-
     // 开启/关闭循环频率统计功能。
     void enableLoopStats(bool enable);
 
@@ -251,6 +248,8 @@ public:
     uint32_t getPositionLoopHz() const;
     uint32_t getVelocityLoopHz() const;
     uint32_t getCurrentLoopHz() const;
+
+    void calibrateEncoder();
 
 private:
     void updateLoopFrequencyStats(uint64_t time_ns);

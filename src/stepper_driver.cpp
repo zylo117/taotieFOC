@@ -238,7 +238,11 @@ namespace stepper_common
 
         gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
         gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
+#ifdef USE_SOFT_PULSE
+        gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
+#else
         gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
+#endif
         gpio_init_struct.gpio_pins = STEP_OUT_PIN | DIR_OUT_PIN;
         gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
         gpio_init(STEP_OUTPUT_PORT, &gpio_init_struct);
