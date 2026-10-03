@@ -1142,6 +1142,14 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
                                                   fast_abs(desired_error_deg) <= 0.25f
                 ? 0.0f
                 : desired_rps;
+            if (calibration_stage_ == CALIBRATION_HOMING && calibration_rps == 0.0f)
+            {
+                motion_step_accumulator_ = 0.0f;
+                position_pid_.resetIntegral();
+                position_pid_.resetDeriv();
+                velocity_pid_.resetIntegral();
+                velocity_pid_.resetDeriv();
+            }
             const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
             current_step_speed_ = calibration_rps * static_cast<float>(micro_steps_per_round);
             motion_speed_rpm_ = calibration_rps * 60.0f;
@@ -1287,7 +1295,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
         // 位置跟随误差定义为“命令 - 实际”。如果命令已经领先真实位置，说明该减速；
         // 这里必须取反后再送入位置 PID，否则正误差会被误当成要求继续加速。
-        const float position_reference_rps = position_pid_.update(-motion_follow_error_deg_ / 360.0f, dt);
+        const float position_reference_rps = position_pid_.update(motion_follow_error_deg_ / 360.0f, dt);
         const float measured_motion_rps = encoder_speed_rpm_ / 60.0f;
         const float velocity_error_rps = position_reference_rps - measured_motion_rps;
         const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt);
