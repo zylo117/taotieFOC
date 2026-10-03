@@ -95,6 +95,10 @@ extern "C" {
 #define configUSE_PREEMPTION    1
 #define configUSE_IDLE_HOOK      0
 #define configUSE_TICK_HOOK      0
+#define configUSE_TRACE_FACILITY 1
+#define configGENERATE_RUN_TIME_STATS 1
+#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS() do { } while (0)
+#define portGET_RUN_TIME_COUNTER_VALUE() (*(volatile uint32_t*)0xE0001004UL)
 #define configCPU_CLOCK_HZ      ( ( unsigned long ) system_core_clock )
 #define configTICK_RATE_HZ      ( ( TickType_t ) 1000 )
 #define configMAX_PRIORITIES    ( 5 )
@@ -121,6 +125,8 @@ to exclude the API function. */
 #define INCLUDE_vTaskDelayUntil      1
 #define INCLUDE_vTaskDelay        1
 #define INCLUDE_xTaskGetCurrentTaskHandle 1
+#define INCLUDE_vTaskGetInfo 1
+#define INCLUDE_xTaskGetIdleTaskHandle 1
 /* Cortex-M specific definitions. */
 #ifdef __NVIC_PRIO_BITS
 /* __BVIC_PRIO_BITS will be specified when CMSIS is being used. */

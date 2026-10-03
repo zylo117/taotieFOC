@@ -120,6 +120,8 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_MOTION_SCHEDULED_STEPS:
     case TMC2209_EXT_PARAM_MOTION_COMMAND_SPEED_MRPM:
     case TMC2209_EXT_PARAM_CALIBRATE_ENCODER:
+    case TMC2209_EXT_PARAM_CPU_USAGE_CENTIPERCENT:
+    case TMC2209_EXT_PARAM_CONTROL_TASK_USAGE_CENTIPERCENT:
         return true;
     default:
         return false;

@@ -225,7 +225,8 @@ ClosedLoopController::ClosedLoopController()
       last_step_state_(0U), last_dir_state_(0U), last_en_state_(0U),
       stop_on_encoder_fault_(true), stop_on_magnetic_fault_(true), encoder_fault_active_(false),
       magnetic_fault_active_(false), output_stopped_(false), phase_a_current_a_(0.0f),
-      phase_b_current_a_(0.0f), loop_stats_enabled_(false), last_position_tick_ns_(0ULL),
+    phase_b_current_a_(0.0f), cpu_usage_centi_percent_(0U), control_task_usage_centi_percent_(0U),
+    loop_stats_enabled_(false), last_position_tick_ns_(0ULL),
       last_velocity_tick_ns_(0ULL), last_current_tick_ns_(0ULL), position_loop_hz_(0U),
       velocity_loop_hz_(0U), current_loop_hz_(0U), position_samples_(0U), velocity_samples_(0U),
       current_samples_(0U)
@@ -326,6 +327,13 @@ void ClosedLoopController::setPhaseCurrentTelemetry(float phase_a_a, float phase
 {
     phase_a_current_a_ = phase_a_a;
     phase_b_current_a_ = phase_b_a;
+}
+
+void ClosedLoopController::setCpuUsageTelemetry(uint16_t cpu_usage_centi_percent,
+                                                 uint16_t control_task_usage_centi_percent)
+{
+    cpu_usage_centi_percent_ = cpu_usage_centi_percent;
+    control_task_usage_centi_percent_ = control_task_usage_centi_percent;
 }
 
 void ClosedLoopController::syncProtocolTelemetry()
@@ -648,6 +656,16 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     {
         *value = static_cast<uint32_t>(static_cast<int32_t>(motion_speed_rpm_ *
                                                               static_cast<float>(motion_direction_) * 1000.0f));
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_CPU_USAGE_CENTIPERCENT)
+    {
+        *value = cpu_usage_centi_percent_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_CONTROL_TASK_USAGE_CENTIPERCENT)
+    {
+        *value = control_task_usage_centi_percent_;
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_VELOCITY_KP)

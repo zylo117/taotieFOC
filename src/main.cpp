@@ -157,6 +157,7 @@ int main(void)
     g_usb_bridge.init(&g_controller, &g_usb_core);
     control_timer_init();
     encoder_timer_init();
+    get_hw_time_ns();
 
     taskENTER_CRITICAL();
 
@@ -232,11 +233,51 @@ void telemetry_task_function(void* pvParameters)
 {
     (void)pvParameters;
     TickType_t last_log_tick = xTaskGetTickCount();
+    TickType_t last_usage_tick = last_log_tick;
+    uint32_t previous_cycle_count = DWT->CYCCNT;
+    uint32_t previous_idle_runtime = 0U;
+    uint32_t previous_control_runtime = 0U;
+    bool usage_baseline_valid = false;
 
     while (1)
     {
+        const TickType_t now_tick = xTaskGetTickCount();
+        if ((now_tick - last_usage_tick) >= pdMS_TO_TICKS(500))
+        {
+            TaskStatus_t idle_status;
+            TaskStatus_t control_status;
+            vTaskGetInfo(xTaskGetIdleTaskHandle(), &idle_status, pdTRUE, eInvalid);
+            vTaskGetInfo(control_handler, &control_status, pdTRUE, eInvalid);
+
+            const uint32_t current_cycle_count = DWT->CYCCNT;
+            const uint32_t current_idle_runtime = static_cast<uint32_t>(idle_status.ulRunTimeCounter);
+            const uint32_t current_control_runtime = static_cast<uint32_t>(control_status.ulRunTimeCounter);
+            if (usage_baseline_valid)
+            {
+                const uint32_t elapsed_cycles = current_cycle_count - previous_cycle_count;
+                const uint32_t idle_cycles = current_idle_runtime - previous_idle_runtime;
+                const uint32_t control_cycles = current_control_runtime - previous_control_runtime;
+                if (elapsed_cycles > 0U)
+                {
+                    const uint64_t cpu_usage = idle_cycles < elapsed_cycles
+                        ? (static_cast<uint64_t>(elapsed_cycles - idle_cycles) * 10000ULL) / elapsed_cycles
+                        : 0ULL;
+                    const uint64_t control_usage =
+                        (static_cast<uint64_t>(control_cycles) * 10000ULL) / elapsed_cycles;
+                    g_controller.setCpuUsageTelemetry(
+                        static_cast<uint16_t>(cpu_usage > 10000ULL ? 10000ULL : cpu_usage),
+                        static_cast<uint16_t>(control_usage > 10000ULL ? 10000ULL : control_usage));
+                }
+            }
+            previous_cycle_count = current_cycle_count;
+            previous_idle_runtime = current_idle_runtime;
+            previous_control_runtime = current_control_runtime;
+            last_usage_tick = now_tick;
+            usage_baseline_valid = true;
+        }
+
         g_usb_bridge.sendTelemetry();
-        if ((xTaskGetTickCount() - last_log_tick) >= pdMS_TO_TICKS(500))
+        if ((xTaskGetTickCount() - last_log_tick) >= pdMS_TO_TICKS(2000))
         {
             const float angle_mdeg = g_encoder.lastFrameAngle();
             printf("KTH7823: tx=0x%04X raw=0x%04X angle=%.3f, filter_angle=%.3f MISO=%u MGH=%u MGL=%u reads=%lu ff=%lu 00=%lu\r\n",

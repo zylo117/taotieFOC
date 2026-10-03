@@ -156,6 +156,7 @@ public:
 
     // 设置 A/B 相电流监控值，供上位机实时显示。
     void setPhaseCurrentTelemetry(float phase_a_a, float phase_b_a);
+    void setCpuUsageTelemetry(uint16_t cpu_usage_centi_percent, uint16_t control_task_usage_centi_percent);
 
     // 将控制器当前故障状态和采样频率同步到协议扩展寄存器表。
     void syncProtocolTelemetry();
@@ -331,6 +332,8 @@ private:
     bool output_stopped_;
     float phase_a_current_a_;
     float phase_b_current_a_;
+    volatile uint16_t cpu_usage_centi_percent_;
+    volatile uint16_t control_task_usage_centi_percent_;
 
     bool loop_stats_enabled_;
     uint64_t last_position_tick_ns_;

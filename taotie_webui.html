@@ -664,6 +664,8 @@
             <button id="readAllBtn">读取全部</button>
             <button id="calibrateEncoderBtn">磁编码器校准</button>
             <button class="warn" id="tuneBtn">自动整定</button>
+            <span class="badge" id="cpuUsageBadge">CPU --%</span>
+            <span class="badge" id="controlUsageBadge">控制 --%</span>
             <span class="badge ok" id="faultBadge"><span class="led"></span> 无故障</span>
             <span class="badge" id="connBadge">未连接</span>
         </div>
@@ -1126,6 +1128,8 @@
             , waveMotionObserved: false
             , waveFrozenAt: 0
             , lastWaveStamp: 0
+            , cpuUsagePercent: 0
+            , controlTaskUsagePercent: 0
         };
 
         const OFFICIAL_REGS = {
@@ -1192,6 +1196,8 @@
             , MOTION_SCHEDULED_STEPS: 0x134
             , MOTION_COMMAND_SPEED_MRPM: 0x135
             , CALIBRATE_ENCODER: 0x136
+            , CPU_USAGE_CENTIPERCENT: 0x137
+            , CONTROL_TASK_USAGE_CENTIPERCENT: 0x138
             , MAX_RPM: 0x11B
             , ACCEL_RPM_S: 0x11C
         };
@@ -1241,6 +1247,8 @@
             , [CUSTOM_REGS.PID_TUNE_SAMPLE_COUNT, ['0x0133', 'PID_TUNE_SAMPLES', '固件参与评分的误差样本数']]
             , [CUSTOM_REGS.MOTION_SCHEDULED_STEPS, ['0x0134', 'MOTION_SCHEDULED_STEPS', '当前动作已提交的 STEP 数']]
             , [CUSTOM_REGS.MOTION_COMMAND_SPEED_MRPM, ['0x0135', 'MOTION_COMMAND_SPEED', '当前命令速度，单位 0.001 RPM']]
+            , [CUSTOM_REGS.CPU_USAGE_CENTIPERCENT, ['0x0137', 'CPU_USAGE', 'MCU 总 CPU 占用率，单位 0.01%']]
+            , [CUSTOM_REGS.CONTROL_TASK_USAGE_CENTIPERCENT, ['0x0138', 'CONTROL_TASK_USAGE', 'Control_task CPU 占用率，单位 0.01%']]
             , [0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
             , [0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
             , [0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
@@ -1293,6 +1301,8 @@
             document.getElementById('posLoopRateValue').textContent = `${state.posLoopHz} Hz`;
             document.getElementById('velLoopRateValue').textContent = `${state.velLoopHz} Hz`;
             document.getElementById('curLoopRateValue').textContent = `${state.curLoopHz} Hz`;
+            document.getElementById('cpuUsageBadge').textContent = `CPU ${state.cpuUsagePercent.toFixed(1)}%`;
+            document.getElementById('controlUsageBadge').textContent = `控制 ${state.controlTaskUsagePercent.toFixed(1)}%`;
             document.getElementById('faultSummaryValue').textContent = state.faultSummary;
             document.getElementById('encoderAngleValue').textContent = `${state.encoderAngleDeg.toFixed(2)}°`;
             document.getElementById('magneticLevelValue').textContent = `${state.magneticHigh ? '报警' : '正常'} / ${state.magneticLow ? '报警' : '正常'}`;
@@ -1409,7 +1419,9 @@
             const diagnosticRegister = frame.reg === CUSTOM_REGS.ENCODER_RAW ||
                 frame.reg === CUSTOM_REGS.ENCODER_ANGLE_MDEG ||
                 frame.reg === CUSTOM_REGS.MAGNETIC_HIGH ||
-                frame.reg === CUSTOM_REGS.MAGNETIC_LOW;
+                frame.reg === CUSTOM_REGS.MAGNETIC_LOW ||
+                frame.reg === CUSTOM_REGS.CPU_USAGE_CENTIPERCENT ||
+                frame.reg === CUSTOM_REGS.CONTROL_TASK_USAGE_CENTIPERCENT;
             const routineMotionStatus = isTelemetry && frame.reg === 0x11F;
             if (!routineMotionStatus && (!isTelemetry || !diagnosticRegister)) {
                 log(`[RX] cmd=0x${frame.cmd.toString(16).padStart(2, '0')} ${description ? description[0] : '0x' + frame.reg.toString(16).padStart(4, '0')} ${name} = ${frame.value}`);
@@ -1420,6 +1432,10 @@
             if (frame.reg === CUSTOM_REGS.POSITION_LOOP_HZ) state.posLoopHz = frame.value;
             if (frame.reg === CUSTOM_REGS.VELOCITY_LOOP_HZ) state.velLoopHz = frame.value;
             if (frame.reg === CUSTOM_REGS.CURRENT_LOOP_HZ) state.curLoopHz = frame.value;
+            if (frame.reg === CUSTOM_REGS.CPU_USAGE_CENTIPERCENT) state.cpuUsagePercent = frame.value / 100;
+            if (frame.reg === CUSTOM_REGS.CONTROL_TASK_USAGE_CENTIPERCENT) {
+                state.controlTaskUsagePercent = frame.value / 100;
+            }
             if (frame.reg === CUSTOM_REGS.MICROSTEPS) {
                 state.microsteps = frame.value;
                 document.getElementById('microsteps').value = frame.value;
