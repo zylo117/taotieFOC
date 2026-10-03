@@ -69,7 +69,7 @@ namespace stepper_common
         dir_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
         dir_config.oc_output_state = TRUE;
         tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_4, &dir_config);
-        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, direction? 0U: 0xFFFFFFFF);
+        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, direction? 0xFFFFFFFF: 0U);
         tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_4, TRUE);
 
         tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, TRUE);

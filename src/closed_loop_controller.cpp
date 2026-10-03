@@ -1061,10 +1061,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         if (motion_running_ && motion_encoder_reference_valid_)
         {
             const float encoder_delta = normalize_signed_delta_deg(
-                motion_encoder_previous_angle_ - encoder_filtered_angle_);
+                encoder_filtered_angle_ - motion_encoder_previous_angle_);
             motion_encoder_travel_deg_ += encoder_delta;
             motion_follow_error_deg_ = normalize_signed_angle_error_deg(
-                motion_commanded_travel_deg_ - motion_encoder_travel_deg_);
+                motion_encoder_travel_deg_ - motion_commanded_travel_deg_);  // 比如命令要走3度，结果才走了2度，那跟随误差就是-1度
         }
         motion_encoder_previous_angle_ = encoder_filtered_angle_;
     }
@@ -1095,10 +1095,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     {
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
         const float measured_rpm = (encoder_delta_deg / 360.0f) * (60.0f / dt);
-        // 编码器方向和命令方向可能相反，因此这里将速度观测统一成“命令正方向为正”以便
-        // 上位机展示和闭环补偿使用同一套符号体系。
-        const float aligned_rpm = -measured_rpm;
-        encoder_speed_rpm_ = encoder_speed_rpm_ * 0.98f + aligned_rpm * 0.02f;
+        // 平滑计算电机的实际转速
+        encoder_speed_rpm_ = encoder_speed_rpm_ * 0.98f + measured_rpm * 0.02f;
     }
 
     if (closed_loop_angle_mode_enabled_)
@@ -1134,6 +1132,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             current_step_speed_ = desired_rps * static_cast<float>(micro_steps_per_round);
             motion_speed_rpm_ = desired_rps * 60.0f;
             motion_direction_ = desired_rps >= 0.0f ? -1 : 1;
+                motion_direction_ = calibration_rps >= 0.0f ? 1 : -1;
             if (driver_ != nullptr)
             {
                 driver_->setDirection(motion_direction_ > 0);
@@ -1404,7 +1403,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             motion_commanded_travel_deg_ += static_cast<float>(motion_direction_) * step_angle_deg *
                                             static_cast<float>(num_steps);
             motion_follow_error_deg_ = normalize_signed_angle_error_deg(
-                motion_commanded_travel_deg_ - motion_encoder_travel_deg_);
+                motion_commanded_travel_deg_ - motion_encoder_travel_deg_);  // 比如命令要走3度，结果才走了2度，那跟随误差就是-1度
         }
         motion_step_accumulator_ -= num_steps;
     }
