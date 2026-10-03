@@ -1424,7 +1424,10 @@
                 frame.reg === CUSTOM_REGS.CONTROL_TASK_USAGE_CENTIPERCENT;
             const routineMotionStatus = isTelemetry && frame.reg === 0x11F;
             if (!routineMotionStatus && (!isTelemetry || !diagnosticRegister)) {
-                log(`[RX] cmd=0x${frame.cmd.toString(16).padStart(2, '0')} ${description ? description[0] : '0x' + frame.reg.toString(16).padStart(4, '0')} ${name} = ${frame.value}`);
+                const isSignedRegister = frame.reg === 0x0113 || frame.reg === 0x0120 ||
+                    frame.reg === 0x0121 || frame.reg === 0x0135;
+                const displayValue = isSignedRegister ? (frame.value | 0) : frame.value;
+                log(`[RX] cmd=0x${frame.cmd.toString(16).padStart(2, '0')} ${description ? description[0] : '0x' + frame.reg.toString(16).padStart(4, '0')} ${name} = ${displayValue}`);
             }
 
             if (frame.reg === CUSTOM_REGS.PHASE_A_CURRENT_MA) state.phaseACurrentA = frame.value / 1000;
