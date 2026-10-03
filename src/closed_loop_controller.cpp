@@ -229,7 +229,15 @@ ClosedLoopController::ClosedLoopController()
     loop_stats_enabled_(false), last_position_tick_ns_(0ULL),
       last_velocity_tick_ns_(0ULL), last_current_tick_ns_(0ULL), position_loop_hz_(0U),
       velocity_loop_hz_(0U), current_loop_hz_(0U), position_samples_(0U), velocity_samples_(0U),
-      current_samples_(0U)
+    current_samples_(0U), calibration_stage_(CALIBRATION_IDLE), calibration_index_(0U),
+    calibration_sample_count_(0U), calibration_sample_attempts_(0U),
+    calibration_sample_min_(0), calibration_sample_max_(0), calibration_sample_anchor_(0U),
+    calibration_sample_sum_(0), calibration_home_stable_count_(0U), calibration_home_wait_ticks_(0U),
+    calibration_home_previous_angle_(0.0f), calibration_saved_start_rpm_(0.0f),
+    calibration_saved_max_rpm_(0.0f), calibration_saved_accel_rpm_s_(0.0f),
+    calibration_saved_pulse_count_(0U), calibration_saved_pulse_width_ns_(0U),
+    calibration_saved_motion_mode_(MOTION_MODE_POSITION_FORWARD),
+    calibration_saved_compensation_enabled_(false)
 {
     position_pid_.setGains(base_position_kp_, base_position_ki_, base_position_kd_);
     velocity_pid_.setGains(base_velocity_kp_, base_velocity_ki_, base_velocity_kd_);
@@ -1069,6 +1077,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_encoder_previous_angle_ = encoder_filtered_angle_;
     }
 
+    updateEncoderCalibration();
+
     if (motion_running_ && !closed_loop_angle_mode_enabled_ && closed_loop_compensation_enabled_)
     {
         const bool latter_half = motion_steps_emitted_ >= motion_pulse_count_ / 2U;
@@ -1128,11 +1138,17 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             const float desired_rps = fast_clamp(directed_rps,
                                                  previous_rps - max_delta_rps,
                                                  previous_rps + max_delta_rps);
+            const float calibration_rps = calibration_stage_ == CALIBRATION_HOMING &&
+                                                  fast_abs(desired_error_deg) <= 0.25f
+                ? 0.0f
+                : desired_rps;
             const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
-            current_step_speed_ = desired_rps * static_cast<float>(micro_steps_per_round);
-            motion_speed_rpm_ = desired_rps * 60.0f;
-            motion_direction_ = desired_rps >= 0.0f ? -1 : 1;
+            current_step_speed_ = calibration_rps * static_cast<float>(micro_steps_per_round);
+            motion_speed_rpm_ = calibration_rps * 60.0f;
+            if (calibration_rps != 0.0f)
+            {
                 motion_direction_ = calibration_rps >= 0.0f ? 1 : -1;
+            }
             if (driver_ != nullptr)
             {
                 driver_->setDirection(motion_direction_ > 0);
@@ -1174,6 +1190,43 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // 条件：已经输出全部需要的脉冲，运动正常结束
         if (motion_steps_emitted_ >= motion_pulse_count_)
         {
+            if (calibration_stage_ == CALIBRATION_MOVING)
+            {
+                // static uint64_t dma_done_since_ns = 0ULL;
+                // if (dma_flag_get(DMA1_FDT2_FLAG) == RESET)
+                // {
+                //     dma_done_since_ns = 0ULL;
+                //     syncProtocolTelemetry();
+                //     return;
+                // }
+                // if (dma_done_since_ns == 0ULL)
+                // {
+                //     stepper_common::stepper_stop_motion_timer();
+                //     dma_done_since_ns = now_ns;
+                //     syncProtocolTelemetry();
+                //     return;
+                // }
+                // if (now_ns - dma_done_since_ns < 1000000ULL)
+                // {
+                //     syncProtocolTelemetry();
+                //     return;
+                // }
+
+                // dma_done_since_ns = 0ULL;
+                motion_running_ = false;
+                motion_first_run_ = false;
+                current_step_speed_ = 0.0f;
+                motion_speed_rpm_ = 0.0f;
+                motion_step_accumulator_ = 0.0f;
+                calibration_stage_ = CALIBRATION_SAMPLING;
+                calibration_sample_count_ = 0U;
+                calibration_sample_attempts_ = 0U;
+                calibration_sample_sum_ = 0;
+                calibration_sample_min_ = 0x7FFFFFFF;
+                calibration_sample_max_ = (-0x7FFFFFFF - 1);
+                syncProtocolTelemetry();
+                return;
+            }
             printf("motion_steps_emitted_: %lu, motion_pulse_count_: %lu\n", motion_steps_emitted_, motion_pulse_count_);
             motion_running_ = false; // 标记运动停止
             motion_ramp_stage_ = RAMP_STAGE_DONE; // 设置状态为运动完成
@@ -1611,8 +1664,191 @@ uint32_t ClosedLoopController::getCurrentLoopHz() const
     return current_loop_hz_;
 }
 
-// 阻塞性函数，会使用delay卡住
+
 void ClosedLoopController::calibrateEncoder()
 {
-    setTargetAngleDeg(0);
+    if (calibration_stage_ != CALIBRATION_IDLE)
+    {
+        return;
+    }
+    if (driver_ == nullptr || encoder_ == nullptr || encoder_fault_active_ || magnetic_fault_active_)
+    {
+        printf("[CALIBRATION] start rejected: driver/encoder unavailable or fault active\r\n");
+        return;
+    }
+
+    step_pulse_width_ns_ = 200U;
+    k_step_pulse_ticks = std::ceil(static_cast<float>(step_pulse_width_ns_) / static_cast<float>(stepper_common::target_tick_time));
+    calibration_saved_start_rpm_ = motion_start_rpm_;
+    calibration_saved_max_rpm_ = motion_max_rpm_;
+    calibration_saved_accel_rpm_s_ = motion_accel_rpm_s_;
+    calibration_saved_pulse_count_ = motion_pulse_count_;
+    calibration_saved_pulse_width_ns_ = step_pulse_width_ns_;
+    calibration_saved_motion_mode_ = motion_mode_;
+    calibration_saved_compensation_enabled_ = closed_loop_compensation_enabled_;
+    calibration_index_ = 0U;
+    calibration_home_stable_count_ = 0U;
+    calibration_home_previous_angle_ = encoder_->readFilteredAngle();
+    calibration_stage_ = CALIBRATION_HOMING;
+    setTargetAngleDeg(0.0f);
+    printf("[CALIBRATION] homing to zero\r\n");
+}
+
+bool ClosedLoopController::startEncoderCalibrationMove(uint16_t index)
+{
+    const uint32_t steps_per_round = getMicroStepsPerRound(driver_);
+    const uint64_t table_size = CALIBRATION_TABLE_SIZE;
+    const uint32_t first_step = static_cast<uint32_t>(
+        (static_cast<uint64_t>(index) * steps_per_round + table_size / 2U) / table_size);
+    const uint32_t next_step = static_cast<uint32_t>(
+        (static_cast<uint64_t>(index + 1U) * steps_per_round + table_size / 2U) / table_size);
+    const uint32_t steps = next_step - first_step;
+    if (steps == 0U)
+    {
+        printf("[CALIBRATION] unsupported microstep resolution\r\n");
+        finishEncoderCalibration(false);
+        return false;
+    }
+
+    motion_start_rpm_ = 60.0f;
+    motion_max_rpm_ = 60.0f;
+    motion_accel_rpm_s_ = 60.0f;
+    motion_pulse_count_ = steps;
+    motion_mode_ = MOTION_MODE_POSITION_FORWARD;
+    step_pulse_width_ns_ = 200ULL;
+    calibration_stage_ = CALIBRATION_MOVING;
+    motion_direction_ = 1;
+    startMotion();
+    if (!motion_running_)
+    {
+        printf("[CALIBRATION] could not start move at index=%u\r\n", static_cast<unsigned>(index));
+        finishEncoderCalibration(false);
+        return false;
+    }
+    return true;
+}
+
+void ClosedLoopController::updateEncoderCalibration()
+{
+    if (calibration_stage_ == CALIBRATION_HOMING)
+    {
+        calibration_home_wait_ticks_++;
+        if (calibration_home_wait_ticks_ >= 1000000U)
+        {
+            printf("[CALIBRATION] homing timeout\r\n");
+            finishEncoderCalibration(false);
+            return;
+        }
+        const float position = encoder_->readFilteredAngle();
+        const float position_error = normalize_signed_angle_error_deg(-position);
+        const float position_delta = normalize_signed_delta_deg(position - calibration_home_previous_angle_);
+        calibration_home_previous_angle_ = position;
+        if (fast_abs(position_error) <= 0.25f && fast_abs(position_delta) <= 0.02f)
+        {
+            if (calibration_home_stable_count_ < 100U)
+            {
+                calibration_home_stable_count_++;
+            }
+        }
+        else
+        {
+            calibration_home_stable_count_ = 0U;
+            calibration_home_wait_ticks_ = 0U;
+        }
+        if (calibration_home_stable_count_ >= 100U)
+        {
+            closed_loop_angle_mode_enabled_ = false;
+            stopMotion();
+            calibration_stage_ = CALIBRATION_SAMPLING;
+            calibration_sample_count_ = 0U;
+            calibration_sample_attempts_ = 0U;
+            calibration_sample_sum_ = 0;
+            calibration_sample_min_ = 0x7FFFFFFF;
+            calibration_sample_max_ = (-0x7FFFFFFF - 1);
+            printf("[CALIBRATION] zero reached; sampling index=0\r\n");
+        }
+        return;
+    }
+
+    if (calibration_stage_ != CALIBRATION_SAMPLING)
+    {
+        return;
+    }
+
+    const uint16_t raw = encoder_->readRaw();
+    calibration_sample_attempts_++;
+    if (raw != 0xFFFFU)
+    {
+        int32_t unwrapped = static_cast<int32_t>(raw);
+        if (calibration_sample_count_ > 0U)
+        {
+            int32_t delta = static_cast<int32_t>(raw) - static_cast<int32_t>(calibration_sample_anchor_);
+            if (delta > 32767)
+            {
+                delta -= 65536;
+            }
+            else if (delta < -32768)
+            {
+                delta += 65536;
+            }
+            unwrapped = static_cast<int32_t>(calibration_sample_anchor_) + delta;
+        }
+        else
+        {
+            calibration_sample_anchor_ = raw;
+        }
+        calibration_sample_sum_ += unwrapped;
+        if (unwrapped < calibration_sample_min_)
+        {
+            calibration_sample_min_ = unwrapped;
+        }
+        if (unwrapped > calibration_sample_max_)
+        {
+            calibration_sample_max_ = unwrapped;
+        }
+        calibration_sample_count_++;
+    }
+
+    if (calibration_sample_count_ < 202U)
+    {
+        if (calibration_sample_attempts_ >= 1000U)
+        {
+            printf("[CALIBRATION] insufficient encoder samples at index=%u\r\n",
+                   static_cast<unsigned>(calibration_index_));
+            finishEncoderCalibration(false);
+        }
+        return;
+    }
+
+    const int32_t trimmed_mean = (calibration_sample_sum_ - calibration_sample_min_ - calibration_sample_max_) / 200;
+    const uint16_t mean_raw = static_cast<uint16_t>(static_cast<uint32_t>(trimmed_mean) & 0xFFFFU);
+    encoder_->feedCalibrationSample(calibration_index_, mean_raw);
+    if (calibration_index_ + 1U >= CALIBRATION_TABLE_SIZE)
+    {
+        finishEncoderCalibration(true);
+        return;
+    }
+    calibration_index_++;
+    startEncoderCalibrationMove(calibration_index_);
+}
+
+void ClosedLoopController::finishEncoderCalibration(bool save_table)
+{
+    closed_loop_angle_mode_enabled_ = false;
+    stopMotion();
+
+    bool saved = false;
+    if (save_table)
+    {
+        saved = encoder_ != nullptr && encoder_->saveCalibration();
+    }
+    motion_start_rpm_ = calibration_saved_start_rpm_;
+    motion_max_rpm_ = calibration_saved_max_rpm_;
+    motion_accel_rpm_s_ = calibration_saved_accel_rpm_s_;
+    motion_pulse_count_ = calibration_saved_pulse_count_;
+    motion_mode_ = calibration_saved_motion_mode_;
+    step_pulse_width_ns_ = calibration_saved_pulse_width_ns_;
+    closed_loop_compensation_enabled_ = calibration_saved_compensation_enabled_;
+    calibration_stage_ = CALIBRATION_IDLE;
+    printf("[CALIBRATION] finished saved=%u\r\n", saved ? 1U : 0U);
 }

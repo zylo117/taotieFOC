@@ -80,18 +80,24 @@ void AngleEncoder::saveToFlash(void)
 	FlashCalData_t data;
 
 	max = min = m_calData[0].value;
+	printf("Calibration data\n");
 	for (i=0; i < CALIBRATION_TABLE_SIZE; i++ )
 	{
+		printf("%d: %d, ", i, m_calData[i].value);
 		if(m_calData[i].value < min)	{min = m_calData[i].value;}
 		if(m_calData[i].value > max)	{max = m_calData[i].value;}
 		data.FlashCalData[i] = m_calData[i].value;
 	}
+	printf("\n");
 	data.status = CalStatus::valid;
 	data.MIN = min;
 	data.MAX = max;
 
+	printf("fuck233\n");
 	flash_write(MAINCAL_FLASH_BASE, reinterpret_cast<uint16_t*>(&data), sizeof(FlashCalData_t)/2U);
+	printf("fuck234\n");
 	createFastCal();
+	printf("fuck235\n");
 }
 
 void AngleEncoder::createFastCal(void)

@@ -256,6 +256,9 @@ public:
 
 private:
     void updateLoopFrequencyStats(uint64_t time_ns);
+    void updateEncoderCalibration();
+    void finishEncoderCalibration(bool save_table);
+    bool startEncoderCalibrationMove(uint16_t index);
     StepperDriver* driver_;
     AngleEncoder* encoder_;
     ClosedLoopDriverProtocol* protocol_;
@@ -364,6 +367,32 @@ private:
     float current_step_speed_; // 当前瞬时速度，微步/s
     uint32_t steps_to_decel_; // 剩余多少步必须开始减速
     bool motion_zero_speed_recovery_logged_;
+
+    enum EncoderCalibrationStage : uint8_t
+    {
+        CALIBRATION_IDLE,
+        CALIBRATION_HOMING,
+        CALIBRATION_SAMPLING,
+        CALIBRATION_MOVING
+    };
+    volatile EncoderCalibrationStage calibration_stage_;
+    volatile uint16_t calibration_index_;
+    volatile uint16_t calibration_sample_count_;
+    volatile uint16_t calibration_sample_attempts_;
+    volatile int32_t calibration_sample_min_;
+    volatile int32_t calibration_sample_max_;
+    volatile uint16_t calibration_sample_anchor_;
+    volatile int32_t calibration_sample_sum_;
+    volatile uint16_t calibration_home_stable_count_;
+    volatile uint32_t calibration_home_wait_ticks_;
+    float calibration_home_previous_angle_;
+    float calibration_saved_start_rpm_;
+    float calibration_saved_max_rpm_;
+    float calibration_saved_accel_rpm_s_;
+    uint32_t calibration_saved_pulse_count_;
+    uint64_t calibration_saved_pulse_width_ns_;
+    MotionMode calibration_saved_motion_mode_;
+    bool calibration_saved_compensation_enabled_;
 };
 
 #endif
