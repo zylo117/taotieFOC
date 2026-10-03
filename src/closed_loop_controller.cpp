@@ -1140,7 +1140,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             }
         }
 
-        // 注释掉这段，因为我需要它摇摆才能测好pid，但是以后需要强制定在某个角度可能有用
+        // 注释掉这段，这段代码不能启用，因为我需要它摇摆才能测好pid，但是以后需要强制定在某个角度可能有用
         // if (fast_abs(closed_loop_angle_error_deg_) <= angle_position_tolerance_deg_)
         // {
         //     current_step_speed_ = 0.0f;
@@ -1364,13 +1364,15 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
         // 要尽快执行，不可以用下面那种平均的平滑模式，会丢步
         uint32_t step_ticks = k_step_pulse_ticks * 2;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
-        uint64_t max_iter_time_ns = (2 * stepper_common::guard_tick + step_ticks * num_steps) * stepper_common::target_tick_time;
-        // 因为硬件TMR定时器+DMA工作是异步的，耗时必须短于软件定时器迭代时间，否则就会输出延迟
-        if (delta_step_ns < max_iter_time_ns)
-        {
-            printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
-            printf("shitfuck, delta_step_ns: %.6f us < max_iter_time_ns: %.6f us, lower your iter rate.\n", delta_step_ns / 1000.f, max_iter_time_ns / 1000.f);
-        }
+
+        // 丢步直接丢了，不打印b报错，因为打印反而会加剧丢步
+        // uint64_t max_iter_time_ns = (2 * stepper_common::guard_tick + step_ticks * num_steps) * stepper_common::target_tick_time;
+        // // 因为硬件TMR定时器+DMA工作是异步的，耗时必须短于软件定时器迭代时间，否则就会输出延迟
+        // if (delta_step_ns < max_iter_time_ns)
+        // {
+        //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
+        //     printf("shitfuck, delta_step_ns: %.6f us < max_iter_time_ns: %.6f us, lower your iter rate.\n", delta_step_ns / 1000.f, max_iter_time_ns / 1000.f);
+        // }
 
         // uint64_t step_ticks_wide = remaining_ticks / num_steps;
         // const uint32_t min_step_ticks = stepper_common::k_step_pulse_ticks * 2U;
@@ -1610,14 +1612,8 @@ uint32_t ClosedLoopController::getCurrentLoopHz() const
     return current_loop_hz_;
 }
 
+// 阻塞性函数，会使用delay卡住
 void ClosedLoopController::calibrateEncoder()
 {
-    printf("fuckfuckfuck");
-    motion_start_rpm_ = 60;
-    motion_max_rpm_ = 60;
-    motion_accel_rpm_s_ = 60;
-    motion_pulse_count_ = getMicroStepsPerRound(driver_) / 360 * 20;  // 2度左右
-    motion_mode_ = MOTION_MODE_POSITION_FORWARD;
-    step_pulse_width_ns_ = 200;
-    startMotion();
+    setTargetAngleDeg(0);
 }
