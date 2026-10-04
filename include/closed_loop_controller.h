@@ -251,6 +251,8 @@ public:
     uint32_t getPositionLoopHz() const;
     uint32_t getVelocityLoopHz() const;
     uint32_t getCurrentLoopHz() const;
+    bool readCalibrationTablePair(uint8_t table, uint16_t pair_index, uint32_t* packed_values) const;
+    bool readCalibrationTableChecksum(uint32_t* checksum) const;
 
     void calibrateEncoder();
 
@@ -373,7 +375,8 @@ private:
         CALIBRATION_IDLE,
         CALIBRATION_HOMING,
         CALIBRATION_SAMPLING,
-        CALIBRATION_MOVING
+        CALIBRATION_MOVING,
+        CALIBRATION_SAVING
     };
     volatile EncoderCalibrationStage calibration_stage_;
     volatile uint16_t calibration_index_;

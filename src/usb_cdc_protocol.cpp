@@ -30,7 +30,9 @@ namespace
     }
 }
 
-UsbCdcProtocolBridge::UsbCdcProtocolBridge() : controller_(nullptr), udev_(nullptr)
+UsbCdcProtocolBridge::UsbCdcProtocolBridge()
+        : controller_(nullptr), udev_(nullptr), calibration_dump_active_(false),
+            calibration_dump_type_(0U), calibration_dump_pair_index_(0U), calibration_dump_pair_count_(0U)
 {
 }
 
@@ -49,16 +51,11 @@ void UsbCdcProtocolBridge::poll()
 
     uint8_t recv_buf[kMaxRxBytes];
     const uint16_t rx_len = usb_vcp_get_rxdata(udev_, recv_buf);
-    if (rx_len == 0U)
-    {
-        return;
-    }
-
     // The upstream Web UI uses a fixed-length 10-byte protocol frame:
     // 0x55 0xAA, cmd, reg_hi, reg_lo, value[4], crc8
     // We accept a payload length from 10 bytes and ignore trailing bytes in the same packet.
     const uint16_t frame_len = 10U;
-    for (uint16_t offset = 0; offset + frame_len <= rx_len; offset += frame_len)
+    for (uint16_t offset = 0U; offset + frame_len <= rx_len; offset += frame_len)
     {
         const uint8_t* frame = recv_buf + offset;
         if (frame[0] != kFrameHeaderA || frame[1] != kFrameHeaderB)
@@ -75,6 +72,7 @@ void UsbCdcProtocolBridge::poll()
 
         handleFrame(frame, frame_len);
     }
+    serviceCalibrationTableDump();
 }
 
 void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)
@@ -87,6 +85,33 @@ void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)
     const uint8_t cmd = frame[2];
     const uint16_t reg = (static_cast<uint16_t>(frame[3]) << 8U) | static_cast<uint16_t>(frame[4]);
     const uint32_t value = read_u32_be(frame + 5U);
+
+    if (cmd == kCmdWrite && reg == TMC2209_EXT_PARAM_CALIBRATION_TABLE_DUMP)
+    {
+        calibration_dump_type_ = static_cast<uint8_t>(value);
+        calibration_dump_pair_index_ = 0U;
+        if (calibration_dump_type_ == 0U)
+        {
+            calibration_dump_pair_count_ = CALIBRATION_TABLE_SIZE / 2U;
+            calibration_dump_active_ = true;
+        }
+        else if (calibration_dump_type_ == 1U)
+        {
+            calibration_dump_pair_count_ = 32768U;
+            calibration_dump_active_ = true;
+        }
+        else if (calibration_dump_type_ == 2U)
+        {
+            calibration_dump_pair_count_ = 0U;
+            calibration_dump_active_ = true;
+        }
+        else
+        {
+            calibration_dump_active_ = false;
+        }
+        sendFrame(0x82U, reg, value);
+        return;
+    }
 
     uint32_t reply_value = 0U;
     if (cmd == kCmdRead)
@@ -109,11 +134,11 @@ void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)
     }
 }
 
-void UsbCdcProtocolBridge::sendFrame(uint8_t cmd, uint16_t reg, uint32_t value)
+bool UsbCdcProtocolBridge::sendFrame(uint8_t cmd, uint16_t reg, uint32_t value)
 {
     if (udev_ == nullptr)
     {
-        return;
+        return false;
     }
 
     uint8_t frame[10];
@@ -125,12 +150,12 @@ void UsbCdcProtocolBridge::sendFrame(uint8_t cmd, uint16_t reg, uint32_t value)
     write_u32_be(frame + 5U, value);
     frame[9] = crc8(frame, 9U);
 
-    usb_vcp_send_data(udev_, frame, sizeof(frame));
+    return usb_vcp_send_data(udev_, frame, sizeof(frame)) == SUCCESS;
 }
 
 void UsbCdcProtocolBridge::sendTelemetry()
 {
-    if (udev_ == nullptr || controller_ == nullptr)
+    if (udev_ == nullptr || controller_ == nullptr || calibration_dump_active_)
     {
         return;
     }
@@ -196,6 +221,49 @@ void UsbCdcProtocolBridge::sendTelemetry()
     {
         sendFrame(0x10U, register_to_send, value_to_send);
     }
+}
+
+void UsbCdcProtocolBridge::serviceCalibrationTableDump()
+{
+    if (!calibration_dump_active_ || controller_ == nullptr || udev_ == nullptr)
+    {
+        return;
+    }
+
+    if (calibration_dump_type_ == 2U)
+    {
+        uint32_t checksum = 0U;
+        if (controller_->readCalibrationTableChecksum(&checksum))
+        {
+            if (!sendFrame(0x85U, 0U, checksum)) return;
+        }
+        else
+        {
+            if (!sendFrame(0x86U, 0U, 0xFFFFFFFFU)) return;
+        }
+        calibration_dump_active_ = false;
+        return;
+    }
+
+    if (calibration_dump_pair_index_ >= calibration_dump_pair_count_)
+    {
+        if (!sendFrame(0x86U, calibration_dump_pair_count_, calibration_dump_type_)) return;
+        calibration_dump_active_ = false;
+        return;
+    }
+
+    uint32_t packed_values = 0U;
+    if (!controller_->readCalibrationTablePair(calibration_dump_type_, calibration_dump_pair_index_,
+                                               &packed_values))
+    {
+        if (!sendFrame(0x86U, calibration_dump_pair_index_, 0xFFFFFFFFU)) return;
+        calibration_dump_active_ = false;
+        return;
+    }
+
+    const uint8_t response_cmd = calibration_dump_type_ == 0U ? 0x83U : 0x84U;
+    if (!sendFrame(response_cmd, calibration_dump_pair_index_, packed_values)) return;
+    calibration_dump_pair_index_++;
 }
 
 uint8_t UsbCdcProtocolBridge::crc8(const uint8_t* data, uint16_t len)

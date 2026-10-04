@@ -632,6 +632,92 @@
             height: calc(100vh - 170px);
         }
 
+        .calibration-table-dialog {
+            width: min(900px, calc(100vw - 32px));
+            max-width: 900px;
+            max-height: calc(100vh - 32px);
+            padding: 0;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            color: var(--text);
+            background: #111827;
+            box-shadow: var(--shadow);
+        }
+
+        .calibration-table-dialog::backdrop {
+            background: rgba(0, 0, 0, 0.72);
+        }
+
+        .cal-table-head,
+        .cal-table-controls,
+        .cal-table-status {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .cal-table-head h2 {
+            margin: 0;
+            font-size: 1.05rem;
+        }
+
+        .cal-table-controls {
+            justify-content: flex-start;
+            flex-wrap: wrap;
+        }
+
+        .cal-table-controls input {
+            width: 90px;
+            padding: 8px;
+        }
+
+        .cal-table-status {
+            display: grid;
+            grid-template-columns: minmax(100px, 1fr) auto;
+            font-size: 0.85rem;
+            color: var(--muted);
+        }
+
+        .cal-table-status progress {
+            grid-column: 1 / -1;
+            width: 100%;
+            height: 8px;
+            accent-color: var(--primary-2);
+        }
+
+        .cal-table-checksum {
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--line);
+            font-family: Consolas, monospace;
+        }
+
+        .cal-table-values {
+            height: min(58vh, 560px);
+            margin: 0;
+            padding: 12px 16px;
+            overflow: auto;
+            color: #bfdbfe;
+            background: rgba(2, 6, 23, 0.82);
+            font: 0.82rem/1.55 Consolas, monospace;
+            white-space: pre;
+        }
+
+        @media (max-width: 640px) {
+            .cal-table-head,
+            .cal-table-controls,
+            .cal-table-status {
+                align-items: stretch;
+                flex-direction: column;
+            }
+
+            .cal-table-status {
+                display: flex;
+            }
+        }
+
         input[readonly],
         input:disabled,
         textarea[readonly] {
@@ -663,6 +749,7 @@
             <button class="primary" id="connectBtn">连接串口</button>
             <button id="readAllBtn">读取全部</button>
             <button id="calibrateEncoderBtn">磁编码器校准</button>
+            <button id="viewCalibrationTableBtn">查看校准表</button>
             <button class="warn" id="tuneBtn">自动整定</button>
             <span class="badge" id="cpuUsageBadge">CPU --%</span>
             <span class="badge" id="controlUsageBadge">控制 --%</span>
@@ -1060,6 +1147,30 @@
         </div>
     </div>
 
+    <dialog class="calibration-table-dialog" id="calibrationTableDialog">
+        <div class="cal-table-head">
+            <h2>磁编码器校准数据</h2>
+            <button id="closeCalibrationTableBtn" type="button">关闭</button>
+        </div>
+        <div class="cal-table-controls">
+            <select aria-label="校准表类型" id="calibrationTableSelect">
+                <option value="main">主表 1024 项</option>
+                <option value="fast">快速表 65536 项</option>
+            </select>
+            <button id="calibrationTablePrevBtn" type="button">上一页</button>
+            <label>页码 <input id="calibrationTablePageInput" min="1" type="number" value="1"></label>
+            <button id="calibrationTableNextBtn" type="button">下一页</button>
+            <button id="exportCalibrationTableBtn" type="button">导出 CSV</button>
+        </div>
+        <div class="cal-table-status">
+            <span aria-live="polite" id="calibrationTableStatus">等待读取</span>
+            <span id="calibrationTablePageStatus">第 1 页</span>
+            <progress id="calibrationTableProgress" max="1" value="0"></progress>
+        </div>
+        <div class="cal-table-checksum">快速表校验码：<strong id="calibrationTableChecksum">未读取</strong></div>
+        <pre aria-label="校准表数据" class="cal-table-values" id="calibrationTableValues"></pre>
+    </dialog>
+
     <script>
         const logArea = document.getElementById('logArea');
         const connBadge = document.getElementById('connBadge');
@@ -1130,6 +1241,13 @@
             , lastWaveStamp: 0
             , cpuUsagePercent: 0
             , controlTaskUsagePercent: 0
+            , calibrationMainTable: null
+            , calibrationFastTable: null
+            , calibrationTableChecksum: null
+            , calibrationDumpKind: null
+            , calibrationDumpExpectedPairs: 0
+            , calibrationDumpReceivedPairs: 0
+            , calibrationDumpNextKind: null
         };
 
         const OFFICIAL_REGS = {
@@ -1196,6 +1314,7 @@
             , MOTION_SCHEDULED_STEPS: 0x134
             , MOTION_COMMAND_SPEED_MRPM: 0x135
             , CALIBRATE_ENCODER: 0x136
+            , CALIBRATION_TABLE_DUMP: 0x139
             , CPU_USAGE_CENTIPERCENT: 0x137
             , CONTROL_TASK_USAGE_CENTIPERCENT: 0x138
             , MAX_RPM: 0x11B
@@ -1404,6 +1523,48 @@
         }
 
         function handleIncomingFrame(frame) {
+            if (frame.cmd === 0x83 || frame.cmd === 0x84) {
+                handleCalibrationTablePair(frame);
+                return;
+            }
+            if (frame.cmd === 0x85) {
+                state.calibrationTableChecksum = frame.value & 0xFFFF;
+                document.getElementById('calibrationTableProgress').value = 1;
+                document.getElementById('calibrationTableChecksum').textContent =
+                    `0x${state.calibrationTableChecksum.toString(16).padStart(4, '0').toUpperCase()} (${state.calibrationTableChecksum})`;
+                const computed = state.calibrationFastTable
+                    ? state.calibrationFastTable.reduce((sum, value) => (sum + value) & 0xFFFF, 0)
+                    : null;
+                const checksumStatus = computed === null ? '' : (computed === state.calibrationTableChecksum ? '，校验通过' : '，校验不匹配');
+                document.getElementById('calibrationTableStatus').textContent = `读取完成${checksumStatus}`;
+                state.calibrationDumpKind = null;
+                return;
+            }
+            if (frame.cmd === 0x86) {
+                if (frame.value === 0xFFFFFFFF) {
+                    document.getElementById('calibrationTableStatus').textContent =
+                        '读取失败：校准表不可用，或校准正在写入';
+                    state.calibrationDumpKind = null;
+                    return;
+                }
+                if (state.calibrationDumpKind === 'main') {
+                    if (state.calibrationDumpReceivedPairs !== 512) {
+                        document.getElementById('calibrationTableStatus').textContent = '主表数据不完整';
+                        state.calibrationDumpKind = null;
+                        return;
+                    }
+                    void requestCalibrationTableDump('fast');
+                } else if (state.calibrationDumpKind === 'fast') {
+                    if (state.calibrationDumpReceivedPairs !== 32768) {
+                        document.getElementById('calibrationTableStatus').textContent = '快速表数据不完整';
+                        state.calibrationDumpKind = null;
+                        return;
+                    }
+                    void requestCalibrationTableDump('checksum');
+                }
+                return;
+            }
+
             const registerWaiters = state.registerReadWaiters.get(frame.reg);
             // 只接受真正的“读寄存器回包”（0x81）。周期遥测（0x10）是广播，不应被当成
             // 读取命令的答复，否则同一寄存器的等待器会被提前消费，出现超时和样本丢失。
@@ -1489,6 +1650,124 @@
                     state.lastEncoderLogAt = now;
                 }
             }
+        }
+
+        async function requestCalibrationTableDump(kind) {
+            const type = kind === 'main' ? 0 : (kind === 'fast' ? 1 : (kind === 'checksum' ? 2 : 3));
+            state.calibrationDumpKind = kind;
+            state.calibrationDumpExpectedPairs = kind === 'main' ? 512 : (kind === 'fast' ? 32768 : 0);
+            state.calibrationDumpReceivedPairs = 0;
+            if (kind === 'main') state.calibrationMainTable = new Uint16Array(1024);
+            if (kind === 'fast') state.calibrationFastTable = new Uint16Array(65536);
+            if (kind === 'checksum') {
+                document.getElementById('calibrationTableStatus').textContent = '正在读取校验码';
+                document.getElementById('calibrationTableProgress').max = 1;
+            } else {
+                document.getElementById('calibrationTableStatus').textContent = `正在读取${kind === 'main' ? '主表' : '快速表'}：0/${kind === 'main' ? 1024 : 65536}`;
+            }
+            document.getElementById('calibrationTableProgress').value = 0;
+            document.getElementById('calibrationTableProgress').max = Math.max(1, state.calibrationDumpExpectedPairs);
+            try {
+                await writeRegister(CUSTOM_REGS.CALIBRATION_TABLE_DUMP, type);
+            } catch (error) {
+                state.calibrationDumpKind = null;
+                document.getElementById('calibrationTableStatus').textContent = `读取失败：${error.message}`;
+            }
+        }
+
+        function handleCalibrationTablePair(frame) {
+            const isMain = frame.cmd === 0x83;
+            const expectedKind = isMain ? 'main' : 'fast';
+            const table = isMain ? state.calibrationMainTable : state.calibrationFastTable;
+            if (state.calibrationDumpKind !== expectedKind || !table) return;
+            if (frame.reg !== state.calibrationDumpReceivedPairs) {
+                document.getElementById('calibrationTableStatus').textContent =
+                    `数据帧索引错位：期望 ${state.calibrationDumpReceivedPairs}，收到 ${frame.reg}`;
+                state.calibrationDumpKind = null;
+                return;
+            }
+            const firstIndex = frame.reg * 2;
+            if (firstIndex >= table.length) return;
+            table[firstIndex] = (frame.value >>> 16) & 0xFFFF;
+            if (firstIndex + 1 < table.length) table[firstIndex + 1] = frame.value & 0xFFFF;
+            state.calibrationDumpReceivedPairs++;
+            document.getElementById('calibrationTableProgress').value = state.calibrationDumpReceivedPairs;
+            if ((state.calibrationDumpReceivedPairs & 0x7F) === 0 || state.calibrationDumpReceivedPairs === state.calibrationDumpExpectedPairs) {
+                const received = state.calibrationDumpReceivedPairs * 2;
+                const total = table.length;
+                document.getElementById('calibrationTableStatus').textContent =
+                    `正在读取${isMain ? '主表' : '快速表'}：${received}/${total}`;
+                if (document.getElementById('calibrationTableSelect').value === expectedKind) {
+                    renderCalibrationTablePage();
+                }
+            }
+        }
+
+        function renderCalibrationTablePage() {
+            const kind = document.getElementById('calibrationTableSelect').value;
+            const table = kind === 'main' ? state.calibrationMainTable : state.calibrationFastTable;
+            const values = document.getElementById('calibrationTableValues');
+            const pageInput = document.getElementById('calibrationTablePageInput');
+            if (!table) {
+                values.textContent = '尚未读取此表';
+                document.getElementById('calibrationTablePageStatus').textContent = '未读取';
+                return;
+            }
+            const pageSize = 256;
+            const pageCount = Math.ceil(table.length / pageSize);
+            const page = clamp(Math.round(Number(pageInput.value) || 1), 1, pageCount);
+            pageInput.value = String(page);
+            pageInput.max = String(pageCount);
+            const first = (page - 1) * pageSize;
+            const last = Math.min(first + pageSize, table.length);
+            const rows = [];
+            for (let index = first; index < last; index++) {
+                const value = table[index];
+                rows.push(`${String(index).padStart(5, '0')}  0x${value.toString(16).padStart(4, '0').toUpperCase()}  ${value}`);
+            }
+            values.textContent = rows.join('\n');
+            document.getElementById('calibrationTablePageStatus').textContent = `第 ${page}/${pageCount} 页 · ${first}-${last - 1}`;
+        }
+
+        function exportCalibrationTable() {
+            const kind = document.getElementById('calibrationTableSelect').value;
+            const table = kind === 'main' ? state.calibrationMainTable : state.calibrationFastTable;
+            if (!table) {
+                log('[WARN] 当前表尚未读取完成，无法导出');
+                return;
+            }
+            const csv = `index,value,hex\n${Array.from(table, (value, index) => `${index},${value},0x${value.toString(16).padStart(4, '0').toUpperCase()}`).join('\n')}\n`;
+            const url = URL.createObjectURL(new Blob([csv], {type: 'text/csv;charset=utf-8'}));
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = `encoder-${kind}-calibration.csv`;
+            anchor.click();
+            URL.revokeObjectURL(url);
+        }
+
+        async function openCalibrationTableViewer() {
+            if (!state.connected) {
+                log('[WARN] 尚未连接串口，无法读取校准表');
+                return;
+            }
+            const dialog = document.getElementById('calibrationTableDialog');
+            if (!dialog.open) dialog.showModal();
+            state.calibrationMainTable = null;
+            state.calibrationFastTable = null;
+            state.calibrationTableChecksum = null;
+            document.getElementById('calibrationTableChecksum').textContent = '读取中';
+            document.getElementById('calibrationTableSelect').value = 'main';
+            document.getElementById('calibrationTablePageInput').value = '1';
+            document.getElementById('calibrationTableValues').textContent = '';
+            await requestCalibrationTableDump('main');
+        }
+
+        async function closeCalibrationTableViewer() {
+            if (state.calibrationDumpKind && state.connected) {
+                await writeRegister(CUSTOM_REGS.CALIBRATION_TABLE_DUMP, 3);
+            }
+            state.calibrationDumpKind = null;
+            document.getElementById('calibrationTableDialog').close();
         }
 
         async function readRegister(reg) {
@@ -2788,6 +3067,24 @@
         function bindControls() {
             document.getElementById('connectBtn').addEventListener('click', connectSerial);
             document.getElementById('readAllBtn').addEventListener('click', readAllConfig);
+            document.getElementById('viewCalibrationTableBtn').addEventListener('click', openCalibrationTableViewer);
+            document.getElementById('closeCalibrationTableBtn').addEventListener('click', closeCalibrationTableViewer);
+            document.getElementById('calibrationTableDialog').addEventListener('cancel', () => {
+                void closeCalibrationTableViewer();
+            });
+            document.getElementById('calibrationTableSelect').addEventListener('change', renderCalibrationTablePage);
+            document.getElementById('calibrationTablePageInput').addEventListener('change', renderCalibrationTablePage);
+            document.getElementById('calibrationTablePrevBtn').addEventListener('click', () => {
+                const input = document.getElementById('calibrationTablePageInput');
+                input.value = String(Math.max(1, Number(input.value || 1) - 1));
+                renderCalibrationTablePage();
+            });
+            document.getElementById('calibrationTableNextBtn').addEventListener('click', () => {
+                const input = document.getElementById('calibrationTablePageInput');
+                input.value = String(Number(input.value || 1) + 1);
+                renderCalibrationTablePage();
+            });
+            document.getElementById('exportCalibrationTableBtn').addEventListener('click', exportCalibrationTable);
             document.getElementById('writeAllBtn').addEventListener('click', applyAllConfig);
             document.getElementById('sendTargetBtn').addEventListener('click', sendTargetPosition);
             document.getElementById('zeroBtn').addEventListener('click', zeroEncoder);

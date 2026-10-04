@@ -1672,6 +1672,48 @@ uint32_t ClosedLoopController::getCurrentLoopHz() const
     return current_loop_hz_;
 }
 
+bool ClosedLoopController::readCalibrationTablePair(uint8_t table, uint16_t pair_index,
+                                                    uint32_t* packed_values) const
+{
+    if (encoder_ == nullptr || packed_values == nullptr || calibration_stage_ != CALIBRATION_IDLE)
+    {
+        return false;
+    }
+
+    const uint32_t first_index = static_cast<uint32_t>(pair_index) * 2U;
+    uint16_t first = 0xFFFFU;
+    uint16_t second = 0xFFFFU;
+    if (table == 0U && first_index < CALIBRATION_TABLE_SIZE)
+    {
+        first = encoder_->calibrationMainValue(static_cast<uint16_t>(first_index));
+        if (first_index + 1U < CALIBRATION_TABLE_SIZE)
+        {
+            second = encoder_->calibrationMainValue(static_cast<uint16_t>(first_index + 1U));
+        }
+    }
+    else if (table == 1U && first_index < 65536U)
+    {
+        first = encoder_->calibrationFastValue(first_index);
+        second = encoder_->calibrationFastValue(first_index + 1U);
+    }
+    else
+    {
+        return false;
+    }
+
+    *packed_values = (static_cast<uint32_t>(first) << 16U) | second;
+    return true;
+}
+
+bool ClosedLoopController::readCalibrationTableChecksum(uint32_t* checksum) const
+{
+    if (encoder_ == nullptr || checksum == nullptr || calibration_stage_ != CALIBRATION_IDLE)
+    {
+        return false;
+    }
+    *checksum = encoder_->calibrationChecksum();
+    return true;
+}
 
 void ClosedLoopController::calibrateEncoder()
 {
@@ -1844,6 +1886,7 @@ void ClosedLoopController::updateEncoderCalibration()
 
 void ClosedLoopController::finishEncoderCalibration(bool save_table)
 {
+    calibration_stage_ = CALIBRATION_SAVING;
     closed_loop_angle_mode_enabled_ = false;
     stopMotion();
 

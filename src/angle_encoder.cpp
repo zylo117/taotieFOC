@@ -1,5 +1,7 @@
 #include "angle_encoder.h"
 #include "at32f403a_407_board.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 namespace encoder_common
 {
@@ -68,66 +70,84 @@ void AngleEncoder::loadFromFlash(void)
 {
 	for(uint16_t i=0; i < CALIBRATION_TABLE_SIZE; i++)
 	{
-		m_calData[i].value = m_nvmFlashCal->FlashCalData[i];
+		m_calData[i].value = m_nvmFlashCal[i];
 		m_calData[i].error = CALIBRATION_MIN_ERROR;
 	}
+	calibration_min_ = m_nvmFlashMeta->MIN;
+	calibration_max_ = m_nvmFlashMeta->MAX;
 }
 
-void AngleEncoder::saveToFlash(void)
+bool AngleEncoder::saveToFlash(bool yield_between_pages)
 {
-	uint16_t i = 0;
-	uint16_t min = 0, max = 0;
-	FlashCalData_t data;
-
-	max = min = m_calData[0].value;
-	printf("Calibration data\n");
-	for (i=0; i < CALIBRATION_TABLE_SIZE; i++ )
+	m_fastCalValid = false;
+	static uint16_t main_table[CALIBRATION_TABLE_SIZE];
+	uint16_t minimum = m_calData[0].value;
+	uint16_t maximum = minimum;
+	for (uint16_t i = 0U; i < CALIBRATION_TABLE_SIZE; ++i)
 	{
-		if (i < 5 or i > CALIBRATION_TABLE_SIZE - 6)
-			printf("%d: %d, ", i, m_calData[i].value);
-		if(m_calData[i].value < min)	{min = m_calData[i].value;}
-		if(m_calData[i].value > max)	{max = m_calData[i].value;}
-		data.FlashCalData[i] = m_calData[i].value;
+		const uint16_t value = m_calData[i].value;
+		main_table[i] = value;
+		if (value < minimum) minimum = value;
+		if (value > maximum) maximum = value;
 	}
-	printf("\n");
-	data.status = CalStatus::valid;
-	data.MIN = min;
-	data.MAX = max;
 
-	flash_write(MAINCAL_FLASH_BASE, reinterpret_cast<uint16_t*>(&data), sizeof(FlashCalData_t)/2U);
-	createFastCal();
-}
+	FlashCalMetadata_t metadata = {
+		CALIBRATION_STORAGE_MAGIC,
+		CalStatus::invalid,
+		minimum,
+		maximum,
+		0xFFFFU
+	};
+	calibration_min_ = minimum;
+	calibration_max_ = maximum;
+	if (flash_write(MAINCAL_META_BASE, reinterpret_cast<uint16_t*>(&metadata), sizeof(metadata) / 2U) != SUCCESS)
+	{
+		return false;
+	}
+	if (yield_between_pages) vTaskDelay(1U);
+	if (flash_write(MAINCAL_FLASH_BASE, main_table, CALIBRATION_TABLE_SIZE) != SUCCESS)
+	{
+		return false;
+	}
+	if (yield_between_pages) vTaskDelay(1U);
+	if (!createFastCal(yield_between_pages))
+	{
+		return false;
+	}
 
-void AngleEncoder::createFastCal(void)
-{
-	// printf("fuck236\n");
-	uint32_t i,j;
-	uint16_t checkSum = 0;
-	uint16_t data[FLASH_ROW_SIZE];
-	for (i=0,j=0; i < 65536U; i++)
+	metadata.fast_checksum = calibration_checksum_;
+	metadata.status = CalStatus::valid;
+	if (flash_write(MAINCAL_META_BASE, reinterpret_cast<uint16_t*>(&metadata), sizeof(metadata) / 2U) != SUCCESS)
 	{
-		uint16_t x = reverseLookup(static_cast<uint16_t>(i));
-		// printf("fuck23: %d\n", x);
-		data[j] = x;
-		j++;
-		if (j >= FLASH_ROW_SIZE)
-		{
-			uint32_t dst_addr = FASTCAL_FLASH_BASE + ((i + 1U - FLASH_ROW_SIZE) * 2U);
-			// printf("fuck237: %d\n", dst_addr);
-			flash_write(dst_addr, data, FLASH_ROW_SIZE);
-			j=0;
-		}
-		checkSum += x;
+		return false;
 	}
-	if(j>0)
-	{
-		uint32_t dst_addr = FASTCAL_FLASH_BASE + (i - j)*2U;
-		flash_write(dst_addr, data, j);
-	}
-	printf("fuck237\n");
-	flash_write(FASTCAL_CHECKSUM_ADDR, &checkSum, 1U);
-	printf("fuck238\n");
+	calibration_min_ = minimum;
+	calibration_max_ = maximum;
 	m_fastCalValid = true;
+	return true;
+}
+
+bool AngleEncoder::createFastCal(bool yield_between_pages)
+{
+	static uint16_t data[FLASH_ROW_SIZE];
+	uint16_t checksum = 0U;
+	for (uint32_t i = 0U; i < 65536U; ++i)
+	{
+		data[i % FLASH_ROW_SIZE] = reverseLookup(static_cast<uint16_t>(i));
+		checksum = static_cast<uint16_t>(checksum + data[i % FLASH_ROW_SIZE]);
+		if ((i % FLASH_ROW_SIZE) == FLASH_ROW_SIZE - 1U)
+		{
+			const uint32_t page_address = FASTCAL_FLASH_BASE + (i + 1U - FLASH_ROW_SIZE) * 2U;
+			if (flash_write(page_address, data, FLASH_ROW_SIZE) != SUCCESS)
+			{
+				m_fastCalValid = false;
+				return false;
+			}
+			if (yield_between_pages) vTaskDelay(1U);
+		}
+	}
+	calibration_checksum_ = checksum;
+	return true;
 }
 
 void AngleEncoder::updateFastCalCheck(void)
@@ -143,15 +163,24 @@ void AngleEncoder::updateFastCalCheck(void)
 			NonZero = true;
 		}
 	}
-	uint16_t stored_checksum;
-    flash_read(FASTCAL_CHECKSUM_ADDR, &stored_checksum,1U);
+	const uint16_t stored_checksum = m_nvmFlashMeta->fast_checksum;
 
-	if(checkSum != stored_checksum || NonZero != true)
+	if(m_nvmFlashMeta->magic != CALIBRATION_STORAGE_MAGIC ||
+	   m_nvmFlashMeta->status != CalStatus::valid ||
+	   checkSum != stored_checksum || NonZero != true)
 	{
-		saveToFlash();
+		if (m_nvmFlashMeta->magic == CALIBRATION_STORAGE_MAGIC &&
+		    m_nvmFlashMeta->status == CalStatus::valid)
+		{
+			loadFromFlash();
+			saveToFlash(false);
+		}
 	}
 	else
 	{
+		calibration_checksum_ = stored_checksum;
+		calibration_min_ = m_nvmFlashMeta->MIN;
+		calibration_max_ = m_nvmFlashMeta->MAX;
 		m_fastCalValid = true;
 	}
 }
@@ -159,7 +188,8 @@ void AngleEncoder::updateFastCalCheck(void)
 void AngleEncoder::calibrationInit(void)
 {
 	uint16_t i;
-	if(m_nvmFlashCal->status == CalStatus::valid)
+	if(m_nvmFlashMeta->magic == CALIBRATION_STORAGE_MAGIC &&
+	   m_nvmFlashMeta->status == CalStatus::valid)
 	{
 		loadFromFlash();
 		updateFastCalCheck();

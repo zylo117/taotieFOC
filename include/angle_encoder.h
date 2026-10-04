@@ -27,14 +27,16 @@ extern "C" {
 
 #define DIVIDE_WITH_ROUND(x,y) 		    ( ( (x) + ((y) >> 1) ) / (y) )
 
-#define FLASH_ROW_SIZE                  (512U)
+#define FLASH_ROW_SIZE                  (1024U)  // 一个完整2KB Flash扇区，单位为halfword
 
 //==== Flash分配 AT32F403A 0x08000000 base ====
 // FastCal：芯片末尾完整128KB连续空间，全部归FastCal，不能插入任何其他数据
 #define FASTCAL_FLASH_BASE              (0x08020000U)  // 128k
 // MainCal主表、checksum放在FastCal区域【前面】，不属于FastCal块内部
-#define MAINCAL_FLASH_BASE              (0x0801F800U)  // 2k
-#define FASTCAL_CHECKSUM_ADDR           (0x0801FFFCU)  // 2byte
+#define MAINCAL_FLASH_BASE              (0x0801F800U)  // 兼容保留原主表地址，独占2KB扇区
+#define MAINCAL_META_BASE               (0x0801F000U)  // 与主表分离的2KB元数据扇区
+#define FASTCAL_CHECKSUM_ADDR           (MAINCAL_META_BASE + 8U)
+#define CALIBRATION_STORAGE_MAGIC       (0x2333U)
 
 enum class CalStatus : uint16_t
 {
@@ -48,11 +50,13 @@ typedef struct {
 } CalData_t;
 
 typedef struct {
-	uint16_t FlashCalData[CALIBRATION_TABLE_SIZE];
-	CalStatus status;
-	uint16_t MIN;
-	uint16_t MAX;
-} FlashCalData_t;
+    uint16_t magic;
+    CalStatus status;
+    uint16_t MIN;
+    uint16_t MAX;
+	uint16_t fast_checksum;
+} FlashCalMetadata_t;
+static_assert(sizeof(FlashCalMetadata_t) == 10U, "Flash calibration metadata layout must remain halfword-packed");
 
 typedef struct
 {
@@ -144,15 +148,22 @@ public:
     void feedCalibrationSample(uint16_t stepIndex, uint16_t raw);
     bool saveCalibration(void);
     void clearCalibration(void);
+	uint16_t calibrationMainValue(uint16_t index) const;
+	uint16_t calibrationFastValue(uint32_t index) const;
+	uint16_t calibrationChecksum() const;
 
 protected:
     //==== RAM运行时校准存储 ====
     volatile CalData_t m_calData[CALIBRATION_TABLE_SIZE];
     volatile bool m_fastCalValid = false;
+	uint16_t calibration_checksum_ = 0U;
 
     //==== Flash常量指针，直接映射物理地址 ====
-    const FlashCalData_t* const m_nvmFlashCal = reinterpret_cast<const FlashCalData_t*>(MAINCAL_FLASH_BASE);
+	const uint16_t* const m_nvmFlashCal = reinterpret_cast<const uint16_t*>(MAINCAL_FLASH_BASE);
+	const FlashCalMetadata_t* const m_nvmFlashMeta = reinterpret_cast<const FlashCalMetadata_t*>(MAINCAL_META_BASE);
     const FastCalTable_t* const m_nvmFastCal  = reinterpret_cast<const FastCalTable_t*>(FASTCAL_FLASH_BASE);
+	uint16_t calibration_min_ = 0U;
+	uint16_t calibration_max_ = ANGLE_MAX;
 
     //==================== 【原版校准内部工具函数，基类protected实现】====================
     int32_t fastAbs(int32_t v) const;
@@ -168,8 +179,8 @@ protected:
     uint16_t getCal(uint16_t actualAngle) const;
 
     void loadFromFlash(void);
-    void saveToFlash(void);
-    void createFastCal(void);
+	bool saveToFlash(bool yield_between_pages = false);
+	bool createFastCal(bool yield_between_pages = false);
     void updateFastCalCheck(void);
     void calibrationInit(void);
 };
@@ -203,10 +214,6 @@ inline bool AngleEncoder::checkCalTableComplete(void) const
 		{
 			return false;
 		}
-	}
-	if (m_nvmFlashCal->status != CalStatus::valid)
-	{
-
 	}
 	return true;
 }
@@ -255,7 +262,7 @@ inline uint16_t AngleEncoder::reverseLookup(uint16_t encoderAngle) const
 	int32_t x;
 	uint16_t y;
 	x = static_cast<int32_t>(encoderAngle);
-	if (x < static_cast<int32_t>(m_nvmFlashCal->MIN))
+	if (x < static_cast<int32_t>(calibration_min_))
 	{
 		x = x + CALIBRATION_STEPS;
 	}
@@ -337,12 +344,28 @@ inline uint16_t AngleEncoder::getCal(uint16_t actualAngle) const
 //==== 对外API实现 ====
 inline bool AngleEncoder::isNonlinearCalValid(void) const
 {
-    return checkCalTableComplete() && m_fastCalValid;
+	return m_nvmFlashMeta->magic == CALIBRATION_STORAGE_MAGIC &&
+		   m_nvmFlashMeta->status == CalStatus::valid && m_fastCalValid;
 }
 
 inline uint16_t AngleEncoder::getCorrectedRaw(uint16_t raw)
 {
     return fastReverseLookup(raw);
+}
+
+inline uint16_t AngleEncoder::calibrationMainValue(uint16_t index) const
+{
+	return index < CALIBRATION_TABLE_SIZE ? m_nvmFlashCal[index] : 0U;
+}
+
+inline uint16_t AngleEncoder::calibrationFastValue(uint32_t index) const
+{
+	return index < 65536U ? m_nvmFastCal->angle[index] : 0U;
+}
+
+inline uint16_t AngleEncoder::calibrationChecksum() const
+{
+	return m_nvmFlashMeta->fast_checksum;
 }
 
 inline void AngleEncoder::feedCalibrationSample(uint16_t stepIndex, uint16_t raw)
@@ -354,8 +377,7 @@ inline bool AngleEncoder::saveCalibration(void)
 {
     if(!checkCalTableComplete())
         return false;
-    saveToFlash();
-    return true;
+	return saveToFlash(true);
 }
 
 inline void AngleEncoder::clearCalibration(void)
