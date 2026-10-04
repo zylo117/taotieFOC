@@ -253,6 +253,8 @@ public:
     uint32_t getCurrentLoopHz() const;
     bool readCalibrationTablePair(uint8_t table, uint16_t pair_index, uint32_t* packed_values) const;
     bool readCalibrationTableChecksum(uint32_t* checksum) const;
+    uint16_t lookupCorrectedRaw(uint16_t raw_value) const;
+    uint16_t lookupOriginalRaw(uint16_t corrected_value) const;
 
     void calibrateEncoder();
 
@@ -339,6 +341,8 @@ private:
     float phase_b_current_a_;
     volatile uint16_t cpu_usage_centi_percent_;
     volatile uint16_t control_task_usage_centi_percent_;
+    uint16_t calibration_lookup_raw_value_;
+    uint16_t calibration_lookup_corrected_value_;
 
     bool loop_stats_enabled_;
     uint64_t last_position_tick_ns_;

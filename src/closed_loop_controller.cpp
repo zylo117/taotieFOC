@@ -226,6 +226,7 @@ ClosedLoopController::ClosedLoopController()
       stop_on_encoder_fault_(true), stop_on_magnetic_fault_(true), encoder_fault_active_(false),
       magnetic_fault_active_(false), output_stopped_(false), phase_a_current_a_(0.0f),
     phase_b_current_a_(0.0f), cpu_usage_centi_percent_(0U), control_task_usage_centi_percent_(0U),
+    calibration_lookup_raw_value_(0U), calibration_lookup_corrected_value_(0U),
     loop_stats_enabled_(false), last_position_tick_ns_(0ULL),
       last_velocity_tick_ns_(0ULL), last_current_tick_ns_(0ULL), position_loop_hz_(0U),
       velocity_loop_hz_(0U), current_loop_hz_(0U), position_samples_(0U), velocity_samples_(0U),
@@ -485,6 +486,18 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
         step_pulse_width_ns_ = clampStepPulseWidthNs(value);
         return true;
     }
+    if (reg == TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_RAW_TO_CORRECTED)
+    {
+        calibration_lookup_raw_value_ = static_cast<uint16_t>(value & 0xFFFFU);
+        calibration_lookup_corrected_value_ = encoder_ == nullptr ? 0U : encoder_->getCorrectedRaw(calibration_lookup_raw_value_);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_CORRECTED_TO_RAW)
+    {
+        calibration_lookup_corrected_value_ = static_cast<uint16_t>(value & 0xFFFFU);
+        calibration_lookup_raw_value_ = encoder_ == nullptr ? 0U : lookupOriginalRaw(calibration_lookup_corrected_value_);
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_TARGET_ANGLE_DEG)
     {
         setTargetAngleDeg(static_cast<float>(value) / 1000.0f);
@@ -623,6 +636,16 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS)
     {
         *value = step_pulse_width_ns_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_RAW_TO_CORRECTED)
+    {
+        *value = calibration_lookup_corrected_value_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_CORRECTED_TO_RAW)
+    {
+        *value = calibration_lookup_raw_value_;
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_TARGET_ANGLE_DEG)
@@ -1703,6 +1726,42 @@ bool ClosedLoopController::readCalibrationTablePair(uint8_t table, uint16_t pair
 
     *packed_values = (static_cast<uint32_t>(first) << 16U) | second;
     return true;
+}
+
+uint16_t ClosedLoopController::lookupCorrectedRaw(uint16_t raw_value) const
+{
+    if (encoder_ == nullptr)
+    {
+        return 0U;
+    }
+    return encoder_->getCorrectedRaw(raw_value);
+}
+
+uint16_t ClosedLoopController::lookupOriginalRaw(uint16_t corrected_value) const
+{
+    if (encoder_ == nullptr)
+    {
+        return 0U;
+    }
+
+    uint16_t best_raw = 0U;
+    uint32_t best_delta = 0xFFFFFFFFU;
+    for (uint32_t raw_value = 0U; raw_value < 65536U; ++raw_value)
+    {
+        const uint16_t corrected = encoder_->getCorrectedRaw(static_cast<uint16_t>(raw_value));
+        const uint32_t delta = corrected >= corrected_value ? static_cast<uint32_t>(corrected - corrected_value)
+                                                            : static_cast<uint32_t>(corrected_value - corrected);
+        if (delta < best_delta)
+        {
+            best_delta = delta;
+            best_raw = static_cast<uint16_t>(raw_value);
+            if (delta == 0U)
+            {
+                break;
+            }
+        }
+    }
+    return best_raw;
 }
 
 bool ClosedLoopController::readCalibrationTableChecksum(uint32_t* checksum) const

@@ -277,19 +277,19 @@ void telemetry_task_function(void* pvParameters)
         }
 
         g_usb_bridge.sendTelemetry();
-        if ((xTaskGetTickCount() - last_log_tick) >= pdMS_TO_TICKS(2000))
-        {
-            const float angle_mdeg = g_encoder.lastFrameAngle();
-            printf("KTH7823: tx=0x%04X raw=0x%04X angle=%.3f, filter_angle=%.3f MISO=%u MGH=%u MGL=%u reads=%lu ff=%lu 00=%lu\r\n",
-                   g_encoder.lastTxFrame(), g_encoder.lastRawFrame(),
-                   angle_mdeg, g_encoder.readFilteredAngle(),
-                   g_encoder.misoLevel(), g_encoder.magneticFieldHigh() ? 1U : 0U,
-                   g_encoder.magneticFieldLow() ? 1U : 0U,
-                   static_cast<unsigned long>(g_encoder.readCount()),
-                   static_cast<unsigned long>(g_encoder.allOnesCount()),
-                   static_cast<unsigned long>(g_encoder.allZerosCount()));
-            last_log_tick = xTaskGetTickCount();
-        }
+        // if ((xTaskGetTickCount() - last_log_tick) >= pdMS_TO_TICKS(2000))
+        // {
+        //     const float angle_mdeg = g_encoder.lastFrameAngle();
+        //     printf("KTH7823: tx=0x%04X raw=0x%04X angle=%.3f, filter_angle=%.3f MISO=%u MGH=%u MGL=%u reads=%lu ff=%lu 00=%lu\r\n",
+        //            g_encoder.lastTxFrame(), g_encoder.lastRawFrame(),
+        //            angle_mdeg, g_encoder.readFilteredAngle(),
+        //            g_encoder.misoLevel(), g_encoder.magneticFieldHigh() ? 1U : 0U,
+        //            g_encoder.magneticFieldLow() ? 1U : 0U,
+        //            static_cast<unsigned long>(g_encoder.readCount()),
+        //            static_cast<unsigned long>(g_encoder.allOnesCount()),
+        //            static_cast<unsigned long>(g_encoder.allZerosCount()));
+        //     last_log_tick = xTaskGetTickCount();
+        // }
         vTaskDelay(5);
     }
 }

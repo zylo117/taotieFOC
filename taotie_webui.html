@@ -694,6 +694,42 @@
             font-family: Consolas, monospace;
         }
 
+        .cal-table-lookup {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(220px, 1fr));
+            gap: 12px;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--line);
+            background: rgba(15, 23, 42, 0.45);
+        }
+
+        .lookup-box {
+            display: grid;
+            gap: 8px;
+            padding: 12px;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            background: rgba(15, 23, 42, 0.5);
+        }
+
+        .lookup-box h4 {
+            margin: 0;
+            font-size: 0.85rem;
+            color: var(--text);
+        }
+
+        .lookup-box .inline {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .lookup-box input {
+            width: 100%;
+            min-width: 120px;
+        }
+
         .cal-table-values {
             height: min(58vh, 560px);
             margin: 0;
@@ -1168,6 +1204,28 @@
             <progress id="calibrationTableProgress" max="1" value="0"></progress>
         </div>
         <div class="cal-table-checksum">快速表校验码：<strong id="calibrationTableChecksum">未读取</strong></div>
+        <div class="cal-table-lookup">
+            <div class="lookup-box">
+                <h4>原始值 → 校准后值 / 角度</h4>
+                <div class="inline">
+                    <label>编码器原始值</label>
+                    <input id="calibrationRawInput" min="0" max="65535" step="1" type="number" value="0" />
+                    <button id="calibrationRawLookupBtn" type="button">计算</button>
+                </div>
+                <div>校准后值：<strong id="calibrationRawOutputValue">--</strong></div>
+                <div>校准后角度：<strong id="calibrationRawOutputAngle">--</strong></div>
+            </div>
+            <div class="lookup-box">
+                <h4>校准后值 → 原始值 / 角度</h4>
+                <div class="inline">
+                    <label>校准后值</label>
+                    <input id="calibrationCorrectedInput" min="0" max="65535" step="1" type="number" value="0" />
+                    <button id="calibrationCorrectedLookupBtn" type="button">计算</button>
+                </div>
+                <div>原始编码器值：<strong id="calibrationCorrectedOutputValue">--</strong></div>
+                <div>原始角度：<strong id="calibrationCorrectedOutputAngle">--</strong></div>
+            </div>
+        </div>
         <pre aria-label="校准表数据" class="cal-table-values" id="calibrationTableValues"></pre>
     </dialog>
 
@@ -1183,6 +1241,7 @@
             reader: null,
             writer: null,
             registerReadWaiters: new Map(),
+            registerWriteAckWaiters: new Map(),
             lastEncoderTelemetryAt: 0,
             autoTuneActive: false,
             autoTuneCancelled: false,
@@ -1243,11 +1302,20 @@
             , controlTaskUsagePercent: 0
             , calibrationMainTable: null
             , calibrationFastTable: null
+            , calibrationFastPagesLoaded: new Uint8Array(256)
             , calibrationTableChecksum: null
             , calibrationDumpKind: null
             , calibrationDumpExpectedPairs: 0
             , calibrationDumpReceivedPairs: 0
+            , calibrationDumpPageOffset: 0
             , calibrationDumpNextKind: null
+            , calibrationLookupInFlight: false
+            , calibrationLookupSerialToken: null
+            , calibrationLookupDesynchronized: false
+            , calibrationLookupActiveDirection: null
+            , calibrationLookupLastRaw: null
+            , calibrationLookupLastCorrected: null
+            , calibrationLookupRequestId: 0
         };
 
         const OFFICIAL_REGS = {
@@ -1314,6 +1382,8 @@
             , MOTION_SCHEDULED_STEPS: 0x134
             , MOTION_COMMAND_SPEED_MRPM: 0x135
             , CALIBRATE_ENCODER: 0x136
+            , CALIBRATION_LOOKUP_RAW_TO_CORRECTED: 0x13A
+            , CALIBRATION_LOOKUP_CORRECTED_TO_RAW: 0x13B
             , CALIBRATION_TABLE_DUMP: 0x139
             , CPU_USAGE_CENTIPERCENT: 0x137
             , CONTROL_TASK_USAGE_CENTIPERCENT: 0x138
@@ -1532,10 +1602,14 @@
                 document.getElementById('calibrationTableProgress').value = 1;
                 document.getElementById('calibrationTableChecksum').textContent =
                     `0x${state.calibrationTableChecksum.toString(16).padStart(4, '0').toUpperCase()} (${state.calibrationTableChecksum})`;
-                const computed = state.calibrationFastTable
+                const allFastPagesLoaded = state.calibrationFastPagesLoaded.every((loaded) => loaded !== 0);
+                const canCheckFullFastTable = allFastPagesLoaded && state.calibrationFastTable && state.calibrationFastTable.length === 65536;
+                const computed = canCheckFullFastTable
                     ? state.calibrationFastTable.reduce((sum, value) => (sum + value) & 0xFFFF, 0)
                     : null;
-                const checksumStatus = computed === null ? '' : (computed === state.calibrationTableChecksum ? '，校验通过' : '，校验不匹配');
+                const checksumStatus = !canCheckFullFastTable
+                    ? '，当前快速表未加载完整，不能用部分页结果做全表校验'
+                    : (computed === state.calibrationTableChecksum ? '，校验通过' : '，校验不匹配');
                 document.getElementById('calibrationTableStatus').textContent = `读取完成${checksumStatus}`;
                 state.calibrationDumpKind = null;
                 return;
@@ -1548,24 +1622,49 @@
                     return;
                 }
                 if (state.calibrationDumpKind === 'main') {
-                    if (state.calibrationDumpReceivedPairs !== 512) {
+                    if (state.calibrationDumpReceivedPairs !== state.calibrationDumpExpectedPairs) {
                         document.getElementById('calibrationTableStatus').textContent = '主表数据不完整';
                         state.calibrationDumpKind = null;
                         return;
                     }
-                    void requestCalibrationTableDump('fast');
-                } else if (state.calibrationDumpKind === 'fast') {
-                    if (state.calibrationDumpReceivedPairs !== 32768) {
+                    document.getElementById('calibrationTableStatus').textContent = '主表读取完成';
+                    state.calibrationDumpKind = null;
+                    renderCalibrationTablePage();
+                    return;
+                }
+                if (state.calibrationDumpKind === 'fast') {
+                    if (state.calibrationDumpReceivedPairs !== state.calibrationDumpExpectedPairs) {
                         document.getElementById('calibrationTableStatus').textContent = '快速表数据不完整';
                         state.calibrationDumpKind = null;
                         return;
                     }
-                    void requestCalibrationTableDump('checksum');
+                    const pageIndex = Math.floor(state.calibrationDumpPageOffset / 128);
+                    state.calibrationFastPagesLoaded[pageIndex] = 1;
+                    const allFastPagesLoaded = state.calibrationFastPagesLoaded.every((loaded) => loaded !== 0);
+                    document.getElementById('calibrationTableStatus').textContent = `快速表第 ${pageIndex + 1} 页读取完成`;
+                    state.calibrationDumpKind = null;
+                    renderCalibrationTablePage();
+                    if (allFastPagesLoaded && state.calibrationFastTable && state.calibrationFastTable.length === 65536) {
+                        void requestCalibrationTableDump('checksum');
+                    }
+                    return;
                 }
                 return;
             }
 
             const registerWaiters = state.registerReadWaiters.get(frame.reg);
+            const writeAckWaiter = state.registerWriteAckWaiters.get(frame.reg);
+            if (frame.cmd === 0x82 && writeAckWaiter) {
+                window.clearTimeout(writeAckWaiter.timeout);
+                state.registerWriteAckWaiters.delete(frame.reg);
+                if (frame.value !== writeAckWaiter.expectedValue) {
+                    writeAckWaiter.reject(new Error(
+                        `WRITE ACK 值不匹配：期望 0x${writeAckWaiter.expectedValue.toString(16).padStart(8, '0').toUpperCase()}，收到 0x${frame.value.toString(16).padStart(8, '0').toUpperCase()}`
+                    ));
+                } else {
+                    writeAckWaiter.resolve(frame.value);
+                }
+            }
             // 只接受真正的“读寄存器回包”（0x81）。周期遥测（0x10）是广播，不应被当成
             // 读取命令的答复，否则同一寄存器的等待器会被提前消费，出现超时和样本丢失。
             if (registerWaiters && registerWaiters.length > 0 && frame.cmd === 0x81) {
@@ -1652,23 +1751,31 @@
             }
         }
 
-        async function requestCalibrationTableDump(kind) {
+        async function requestCalibrationTableDump(kind, pageIndex = null) {
             const type = kind === 'main' ? 0 : (kind === 'fast' ? 1 : (kind === 'checksum' ? 2 : 3));
+            const pageNumber = pageIndex === null ? 0 : clamp(Math.max(0, Math.round(Number(pageIndex))), 0, kind === 'main' ? 3 : 255);
             state.calibrationDumpKind = kind;
-            state.calibrationDumpExpectedPairs = kind === 'main' ? 512 : (kind === 'fast' ? 32768 : 0);
+            state.calibrationDumpPageOffset = pageNumber * 128;
+            state.calibrationDumpExpectedPairs = kind === 'main' ? ((pageNumber === 0) ? 512 : 128) : 128;
             state.calibrationDumpReceivedPairs = 0;
-            if (kind === 'main') state.calibrationMainTable = new Uint16Array(1024);
-            if (kind === 'fast') state.calibrationFastTable = new Uint16Array(65536);
+            if (kind === 'main') {
+                state.calibrationMainTable = new Uint16Array(1024);
+            }
+            if (kind === 'fast') {
+                if (!state.calibrationFastTable) state.calibrationFastTable = new Uint16Array(65536);
+            }
             if (kind === 'checksum') {
                 document.getElementById('calibrationTableStatus').textContent = '正在读取校验码';
                 document.getElementById('calibrationTableProgress').max = 1;
+            } else if (kind === 'main') {
+                document.getElementById('calibrationTableStatus').textContent = pageNumber === 0 ? '正在读取主表：0/1024' : `正在读取主表第 ${pageNumber + 1} 页：0/256`;
             } else {
-                document.getElementById('calibrationTableStatus').textContent = `正在读取${kind === 'main' ? '主表' : '快速表'}：0/${kind === 'main' ? 1024 : 65536}`;
+                document.getElementById('calibrationTableStatus').textContent = `正在读取快速表第 ${pageNumber + 1} 页：0/256`;
             }
             document.getElementById('calibrationTableProgress').value = 0;
             document.getElementById('calibrationTableProgress').max = Math.max(1, state.calibrationDumpExpectedPairs);
             try {
-                await writeRegister(CUSTOM_REGS.CALIBRATION_TABLE_DUMP, type);
+                await writeRegister(CUSTOM_REGS.CALIBRATION_TABLE_DUMP, ((pageNumber & 0xFFFF) << 16) | (type & 0xFFFF));
             } catch (error) {
                 state.calibrationDumpKind = null;
                 document.getElementById('calibrationTableStatus').textContent = `读取失败：${error.message}`;
@@ -1680,9 +1787,10 @@
             const expectedKind = isMain ? 'main' : 'fast';
             const table = isMain ? state.calibrationMainTable : state.calibrationFastTable;
             if (state.calibrationDumpKind !== expectedKind || !table) return;
-            if (frame.reg !== state.calibrationDumpReceivedPairs) {
+            const expectedPairIndex = state.calibrationDumpPageOffset + state.calibrationDumpReceivedPairs;
+            if (frame.reg !== expectedPairIndex) {
                 document.getElementById('calibrationTableStatus').textContent =
-                    `数据帧索引错位：期望 ${state.calibrationDumpReceivedPairs}，收到 ${frame.reg}`;
+                    `数据帧索引错位：期望 ${expectedPairIndex}，收到 ${frame.reg}`;
                 state.calibrationDumpKind = null;
                 return;
             }
@@ -1694,11 +1802,178 @@
             document.getElementById('calibrationTableProgress').value = state.calibrationDumpReceivedPairs;
             if ((state.calibrationDumpReceivedPairs & 0x7F) === 0 || state.calibrationDumpReceivedPairs === state.calibrationDumpExpectedPairs) {
                 const received = state.calibrationDumpReceivedPairs * 2;
-                const total = table.length;
+                const total = state.calibrationDumpExpectedPairs * 2;
+                const pageText = state.calibrationDumpPageOffset === 0 ? '' : `第 ${state.calibrationDumpPageOffset / 128 + 1} 页 · `;
                 document.getElementById('calibrationTableStatus').textContent =
-                    `正在读取${isMain ? '主表' : '快速表'}：${received}/${total}`;
+                    `正在读取${isMain ? '主表' : '快速表'}${pageText}${received}/${total}`;
                 if (document.getElementById('calibrationTableSelect').value === expectedKind) {
                     renderCalibrationTablePage();
+                }
+            }
+        }
+
+        function toCalibrationAngle(value) {
+            return ((Number(value) % 65536) + 65536) % 65536 * 360.0 / 65536.0;
+        }
+
+        function updateLookupInputAvailability() {
+            const rawInput = document.getElementById('calibrationRawInput');
+            const rawBtn = document.getElementById('calibrationRawLookupBtn');
+            const correctedInput = document.getElementById('calibrationCorrectedInput');
+            const correctedBtn = document.getElementById('calibrationCorrectedLookupBtn');
+            const busy = Boolean(state.calibrationLookupInFlight);
+            rawInput.disabled = busy;
+            rawInput.readOnly = busy;
+            rawBtn.disabled = busy;
+            correctedInput.disabled = busy;
+            correctedInput.readOnly = busy;
+            correctedBtn.disabled = busy;
+        }
+
+        function updateCalibrationLookupDisplays() {
+            const rawInput = document.getElementById('calibrationRawInput');
+            const correctedInput = document.getElementById('calibrationCorrectedInput');
+            const rawOutput = document.getElementById('calibrationRawOutputValue');
+            const rawAngle = document.getElementById('calibrationRawOutputAngle');
+            const correctedOutput = document.getElementById('calibrationCorrectedOutputValue');
+            const correctedAngle = document.getElementById('calibrationCorrectedOutputAngle');
+
+            if (state.calibrationLookupInFlight) {
+                updateLookupInputAvailability();
+                return;
+            }
+
+            const resetForInvalid = (input, valueOutput, angleOutput) => {
+                if (input.value.trim() === '' || !Number.isFinite(Number(input.value))) {
+                    valueOutput.textContent = '--';
+                    angleOutput.textContent = '--';
+                }
+            };
+
+            resetForInvalid(rawInput, rawOutput, rawAngle);
+            resetForInvalid(correctedInput, correctedOutput, correctedAngle);
+        }
+
+        async function requestFirmwareCalibrationLookup(direction, value) {
+            if (!state.connected || !state.writer) {
+                throw new Error('串口未连接');
+            }
+            if (state.calibrationLookupDesynchronized) {
+                throw new Error('协议状态已因超时失去同步；为避免旧回包被误认，断开并重新连接后再查询');
+            }
+            if (state.calibrationLookupSerialToken !== null) {
+                throw new Error('上一个校准查询仍在进行中，必须等待回包收回后再发下一条');
+            }
+            const isForward = direction === 'forward';
+            const reg = isForward
+                ? CUSTOM_REGS.CALIBRATION_LOOKUP_RAW_TO_CORRECTED
+                : CUSTOM_REGS.CALIBRATION_LOOKUP_CORRECTED_TO_RAW;
+            const token = Symbol('calibrationLookup');
+            state.calibrationLookupSerialToken = token;
+            const inputValue = clamp(Math.round(Number(value)), 0, 65535);
+            const startedAt = performance.now();
+            try {
+                log(`[校准互查] 开始 direction=${direction} reg=0x${reg.toString(16).padStart(4, '0')} input=${inputValue}`);
+                log(`[校准互查] 阶段 1/3：发送 WRITE，等待固件 0x82 确认`);
+                await writeRegisterAndWaitAck(reg, inputValue, 1200);
+                log(`[校准互查] 阶段 2/3：WRITE ACK 已收到，耗时 ${Math.round(performance.now() - startedAt)}ms；发送 READ`);
+                const result = await readRegisterValue(reg, 1200, 0);
+                log(`[校准互查] 阶段 3/3：READ 0x81 已收到，result=${result & 0xFFFF}，总耗时 ${Math.round(performance.now() - startedAt)}ms`);
+                return (result >>> 0) & 0xFFFF;
+            } catch (error) {
+                if (error.lookupTransactionSent) {
+                    state.calibrationLookupDesynchronized = true;
+                    log('[校准互查] 协议状态标记为不同步；本次不自动重试，也不再发新查询，需重新连接以排除迟到回包');
+                }
+                throw error;
+            } finally {
+                if (state.calibrationLookupSerialToken === token) {
+                    state.calibrationLookupSerialToken = null;
+                }
+            }
+        }
+
+        async function writeRegisterAndWaitAck(reg, value, timeoutMs = 1200) {
+            const previousWaiter = state.registerWriteAckWaiters.get(reg);
+            if (previousWaiter) {
+                throw new Error(`WRITE 0x${reg.toString(16).padStart(4, '0')} 仍有未完成的 ACK 等待`);
+            }
+            const expectedValue = value >>> 0;
+            let waiter;
+            const ackPromise = new Promise((resolve, reject) => {
+                waiter = {
+                    expectedValue,
+                    resolve,
+                    reject,
+                    timeout: window.setTimeout(() => {
+                        if (state.registerWriteAckWaiters.get(reg) === waiter) {
+                            state.registerWriteAckWaiters.delete(reg);
+                        }
+                        const error = new Error(`阶段 1/3 失败：WRITE 已提交给串口，但 ${timeoutMs}ms 内未收到 0x82 ACK`);
+                        error.lookupTransactionSent = true;
+                        reject(error);
+                    }, timeoutMs)
+                };
+                state.registerWriteAckWaiters.set(reg, waiter);
+            });
+            try {
+                await writeRegister(reg, expectedValue);
+                await ackPromise;
+                window.clearTimeout(waiter.timeout);
+            } catch (error) {
+                window.clearTimeout(waiter.timeout);
+                if (state.registerWriteAckWaiters.get(reg) === waiter) {
+                    state.registerWriteAckWaiters.delete(reg);
+                }
+                if (!error.lookupTransactionSent) error.lookupTransactionSent = true;
+                throw error;
+            }
+        }
+
+        async function runCalibrationLookup(direction) {
+            const isForward = direction === 'forward';
+            const input = document.getElementById(isForward ? 'calibrationRawInput' : 'calibrationCorrectedInput');
+            const button = document.getElementById(isForward ? 'calibrationRawLookupBtn' : 'calibrationCorrectedLookupBtn');
+            const valueOutput = document.getElementById(isForward ? 'calibrationRawOutputValue' : 'calibrationCorrectedOutputValue');
+            const angleOutput = document.getElementById(isForward ? 'calibrationRawOutputAngle' : 'calibrationCorrectedOutputAngle');
+            const inputValue = Number(input.value);
+            if (!Number.isFinite(inputValue) || input.value.trim() === '') {
+                valueOutput.textContent = '--';
+                angleOutput.textContent = '--';
+                return;
+            }
+            if (state.calibrationLookupInFlight) {
+                return;
+            }
+
+            const requestId = ++state.calibrationLookupRequestId;
+            state.calibrationLookupInFlight = true;
+            state.calibrationLookupActiveDirection = direction;
+            updateLookupInputAvailability();
+            valueOutput.textContent = '等待固件计算…';
+            angleOutput.textContent = '--';
+            button.disabled = true;
+            try {
+                const result = await requestFirmwareCalibrationLookup(direction, inputValue);
+                if (state.calibrationLookupRequestId !== requestId) {
+                    return;
+                }
+                valueOutput.textContent = `0x${result.toString(16).padStart(4, '0').toUpperCase()} (${result})`;
+                angleOutput.textContent = `${toCalibrationAngle(result).toFixed(3)}°`;
+            } catch (error) {
+                if (state.calibrationLookupRequestId !== requestId) {
+                    return;
+                }
+                valueOutput.textContent = `查询失败：${error.message}`;
+                angleOutput.textContent = '--';
+                log(`[校准互查] 查询失败 direction=${direction} input=${inputValue}: ${error.message}`);
+            } finally {
+                if (state.calibrationLookupRequestId === requestId) {
+                    state.calibrationLookupInFlight = false;
+                    state.calibrationLookupActiveDirection = null;
+                    updateLookupInputAvailability();
+                    document.getElementById('calibrationRawLookupBtn').disabled = false;
+                    document.getElementById('calibrationCorrectedLookupBtn').disabled = false;
                 }
             }
         }
@@ -1709,7 +1984,7 @@
             const values = document.getElementById('calibrationTableValues');
             const pageInput = document.getElementById('calibrationTablePageInput');
             if (!table) {
-                values.textContent = '尚未读取此表';
+                values.textContent = kind === 'main' ? '主表尚未读取' : '快速表尚未读取，切换到快速表后会按需加载';
                 document.getElementById('calibrationTablePageStatus').textContent = '未读取';
                 return;
             }
@@ -1727,6 +2002,7 @@
             }
             values.textContent = rows.join('\n');
             document.getElementById('calibrationTablePageStatus').textContent = `第 ${page}/${pageCount} 页 · ${first}-${last - 1}`;
+            updateCalibrationLookupDisplays();
         }
 
         function exportCalibrationTable() {
@@ -1754,8 +2030,9 @@
             if (!dialog.open) dialog.showModal();
             state.calibrationMainTable = null;
             state.calibrationFastTable = null;
+            state.calibrationFastPagesLoaded = new Uint8Array(256);
             state.calibrationTableChecksum = null;
-            document.getElementById('calibrationTableChecksum').textContent = '读取中';
+            document.getElementById('calibrationTableChecksum').textContent = '未读取';
             document.getElementById('calibrationTableSelect').value = 'main';
             document.getElementById('calibrationTablePageInput').value = '1';
             document.getElementById('calibrationTableValues').textContent = '';
@@ -1782,45 +2059,48 @@
             return frame;
         }
 
+        function clearPendingReadWaiters(reg) {
+            const waiters = state.registerReadWaiters.get(reg);
+            if (!waiters || waiters.length === 0) return;
+            for (const waiter of waiters) {
+                window.clearTimeout(waiter.timeout);
+                try {
+                    waiter.reject(new Error(`READ 0x${reg.toString(16).padStart(4, '0')} 等待 cmd=0x81 回包被新请求覆盖`));
+                } catch (error) {
+                    // 忽略重复结束的等待器
+                }
+            }
+            state.registerReadWaiters.delete(reg);
+        }
+
         async function readRegisterValue(reg, timeoutMs = 1500, retries = 2) {
             if (!state.connected || !state.writer) {
                 throw new Error('串口未连接，无法读取寄存器');
             }
-            let lastError;
-            for (let attempt = 0; attempt <= retries; attempt++) {
-                try {
-                    return await new Promise((resolve, reject) => {
-                        const waiters = state.registerReadWaiters.get(reg) || [];
-                        const waiter = {
-                            resolve,
-                            reject,
-                            timeout: window.setTimeout(() => {
-                                const pending = state.registerReadWaiters.get(reg) || [];
-                                const remaining = pending.filter((entry) => entry !== waiter);
-                                if (remaining.length > 0) state.registerReadWaiters.set(reg, remaining);
-                                else state.registerReadWaiters.delete(reg);
-                                reject(new Error(`READ 0x${reg.toString(16).padStart(4, '0')} 等待 cmd=0x81 回包超时 ${timeoutMs}ms（第 ${attempt + 1}/${retries + 1} 次）`));
-                            }, timeoutMs)
-                        };
-                        waiters.push(waiter);
-                        state.registerReadWaiters.set(reg, waiters);
-                        readRegister(reg).catch((error) => {
-                            window.clearTimeout(waiter.timeout);
-                            const pending = state.registerReadWaiters.get(reg) || [];
-                            const remaining = pending.filter((entry) => entry !== waiter);
-                            if (remaining.length > 0) state.registerReadWaiters.set(reg, remaining);
-                            else state.registerReadWaiters.delete(reg);
-                            reject(error);
-                        });
-                    });
-                } catch (error) {
-                    lastError = error;
-                    if (attempt < retries) {
-                        log(`[WARN] READ 0x${reg.toString(16).padStart(4, '0')} 失败：${lastError.message}；准备重试 ${attempt + 1}/${retries}`);
-                    }
-                }
+            if (retries !== 0) {
+                log(`[WARN] READ 0x${reg.toString(16).padStart(4, '0')} 需要严格串行，忽略重试参数并按单次等待处理`);
             }
-            throw lastError;
+            return await new Promise((resolve, reject) => {
+                const waiters = state.registerReadWaiters.get(reg) || [];
+                if (waiters.length > 0) {
+                    reject(new Error(`READ 0x${reg.toString(16).padStart(4, '0')} 仍有未收回的 cmd=0x81 等待，拒绝重叠请求`));
+                    return;
+                }
+                const waiter = {
+                    resolve,
+                    reject,
+                    timeout: window.setTimeout(() => {
+                        state.registerReadWaiters.delete(reg);
+                        reject(new Error(`READ 0x${reg.toString(16).padStart(4, '0')} 等待 cmd=0x81 回包超时 ${timeoutMs}ms`));
+                    }, timeoutMs)
+                };
+                state.registerReadWaiters.set(reg, [waiter]);
+                readRegister(reg).catch((error) => {
+                    window.clearTimeout(waiter.timeout);
+                    state.registerReadWaiters.delete(reg);
+                    reject(error);
+                });
+            });
         }
 
         async function writeRegister(reg, value) {
@@ -3072,17 +3352,64 @@
             document.getElementById('calibrationTableDialog').addEventListener('cancel', () => {
                 void closeCalibrationTableViewer();
             });
-            document.getElementById('calibrationTableSelect').addEventListener('change', renderCalibrationTablePage);
-            document.getElementById('calibrationTablePageInput').addEventListener('change', renderCalibrationTablePage);
-            document.getElementById('calibrationTablePrevBtn').addEventListener('click', () => {
-                const input = document.getElementById('calibrationTablePageInput');
-                input.value = String(Math.max(1, Number(input.value || 1) - 1));
+            document.getElementById('calibrationTableSelect').addEventListener('change', async () => {
+                const kind = document.getElementById('calibrationTableSelect').value;
+                if (kind === 'fast') {
+                    const pageInput = document.getElementById('calibrationTablePageInput');
+                    const page = clamp(Math.max(1, Number(pageInput.value || 1)), 1, 256);
+                    pageInput.value = String(page);
+                    await requestCalibrationTableDump('fast', page - 1);
+                    return;
+                }
                 renderCalibrationTablePage();
             });
-            document.getElementById('calibrationTableNextBtn').addEventListener('click', () => {
+            document.getElementById('calibrationTablePageInput').addEventListener('change', async () => {
+                const kind = document.getElementById('calibrationTableSelect').value;
+                if (kind === 'fast') {
+                    const page = clamp(Math.max(1, Number(document.getElementById('calibrationTablePageInput').value || 1)), 1, 256);
+                    document.getElementById('calibrationTablePageInput').value = String(page);
+                    await requestCalibrationTableDump('fast', page - 1);
+                    return;
+                }
+                renderCalibrationTablePage();
+            });
+            document.getElementById('calibrationTablePrevBtn').addEventListener('click', async () => {
+                const input = document.getElementById('calibrationTablePageInput');
+                input.value = String(Math.max(1, Number(input.value || 1) - 1));
+                const kind = document.getElementById('calibrationTableSelect').value;
+                if (kind === 'fast') {
+                    await requestCalibrationTableDump('fast', Number(input.value) - 1);
+                    return;
+                }
+                renderCalibrationTablePage();
+            });
+            document.getElementById('calibrationTableNextBtn').addEventListener('click', async () => {
                 const input = document.getElementById('calibrationTablePageInput');
                 input.value = String(Number(input.value || 1) + 1);
+                const kind = document.getElementById('calibrationTableSelect').value;
+                if (kind === 'fast') {
+                    await requestCalibrationTableDump('fast', Number(input.value) - 1);
+                    return;
+                }
                 renderCalibrationTablePage();
+            });
+            document.getElementById('calibrationRawLookupBtn').addEventListener('click', () => void runCalibrationLookup('forward'));
+            document.getElementById('calibrationCorrectedLookupBtn').addEventListener('click', () => void runCalibrationLookup('reverse'));
+            document.getElementById('calibrationRawInput').addEventListener('change', () => {
+                if (state.calibrationLookupInFlight) return;
+                void runCalibrationLookup('forward');
+            });
+            document.getElementById('calibrationCorrectedInput').addEventListener('change', () => {
+                if (state.calibrationLookupInFlight) return;
+                void runCalibrationLookup('reverse');
+            });
+            document.getElementById('calibrationRawInput').addEventListener('input', () => {
+                if (state.calibrationLookupInFlight) return;
+                updateCalibrationLookupDisplays();
+            });
+            document.getElementById('calibrationCorrectedInput').addEventListener('input', () => {
+                if (state.calibrationLookupInFlight) return;
+                updateCalibrationLookupDisplays();
             });
             document.getElementById('exportCalibrationTableBtn').addEventListener('click', exportCalibrationTable);
             document.getElementById('writeAllBtn').addEventListener('click', applyAllConfig);

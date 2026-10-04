@@ -122,6 +122,9 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_CALIBRATE_ENCODER:
     case TMC2209_EXT_PARAM_CPU_USAGE_CENTIPERCENT:
     case TMC2209_EXT_PARAM_CONTROL_TASK_USAGE_CENTIPERCENT:
+    case TMC2209_EXT_PARAM_CALIBRATION_TABLE_DUMP:
+    case TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_RAW_TO_CORRECTED:
+    case TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_CORRECTED_TO_RAW:
         return true;
     default:
         return false;
@@ -382,6 +385,11 @@ bool Tmc2209ProtocolAdapter::setCustomParameter(uint16_t id, uint32_t value)
     case TMC2209_EXT_PARAM_MOTION_COMMAND:
         custom_parameters_[index] = value;
         break;
+    case TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_RAW_TO_CORRECTED:
+    case TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_CORRECTED_TO_RAW:
+    case TMC2209_EXT_PARAM_CALIBRATION_TABLE_DUMP:
+        custom_parameters_[index] = value;
+        break;
     case TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS:
         custom_parameters_[index] = value;
         break;
@@ -448,6 +456,11 @@ bool Tmc2209ProtocolAdapter::getCustomParameter(uint16_t id, uint32_t* value) co
         *value = custom_parameters_[index];
         break;
     case TMC2209_EXT_PARAM_MOTION_COMMAND:
+        *value = custom_parameters_[index];
+        break;
+    case TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_RAW_TO_CORRECTED:
+    case TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_CORRECTED_TO_RAW:
+    case TMC2209_EXT_PARAM_CALIBRATION_TABLE_DUMP:
         *value = custom_parameters_[index];
         break;
     case TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS:

@@ -1,7 +1,10 @@
 #include "usb_cdc_protocol.h"
 
+#include <stdio.h>
 #include <string.h>
 
+#include "FreeRTOS.h"
+#include "task.h"
 #include "cdc_class.h"
 #include "usbd_core.h"
 
@@ -32,7 +35,11 @@ namespace
 
 UsbCdcProtocolBridge::UsbCdcProtocolBridge()
         : controller_(nullptr), udev_(nullptr), calibration_dump_active_(false),
-            calibration_dump_type_(0U), calibration_dump_pair_index_(0U), calibration_dump_pair_count_(0U)
+            calibration_dump_type_(0U), calibration_dump_pair_index_(0U),
+            calibration_dump_pair_count_(0U), calibration_dump_pair_offset_(0U),
+            rx_buffer_{0U}, rx_buffer_len_(0U), tx_response_queue_{},
+            tx_response_head_(0U), tx_response_tail_(0U), tx_response_count_(0U),
+            tx_telemetry_frame_{0U}, tx_telemetry_generation_(0U), tx_telemetry_pending_(false)
 {
 }
 
@@ -51,28 +58,59 @@ void UsbCdcProtocolBridge::poll()
 
     uint8_t recv_buf[kMaxRxBytes];
     const uint16_t rx_len = usb_vcp_get_rxdata(udev_, recv_buf);
-    // The upstream Web UI uses a fixed-length 10-byte protocol frame:
-    // 0x55 0xAA, cmd, reg_hi, reg_lo, value[4], crc8
-    // We accept a payload length from 10 bytes and ignore trailing bytes in the same packet.
-    const uint16_t frame_len = 10U;
-    for (uint16_t offset = 0U; offset + frame_len <= rx_len; offset += frame_len)
+    if (rx_len > 0U)
     {
-        const uint8_t* frame = recv_buf + offset;
-        if (frame[0] != kFrameHeaderA || frame[1] != kFrameHeaderB)
+        printf("[USB_RX] packet_len=%u\r\n", static_cast<unsigned>(rx_len));
+        if (rx_len > sizeof(rx_buffer_) - rx_buffer_len_)
         {
+            printf("[USB_RX] BUFFER_OVERFLOW buffered=%u incoming=%u; dropping partial frame\r\n",
+                   static_cast<unsigned>(rx_buffer_len_), static_cast<unsigned>(rx_len));
+            rx_buffer_len_ = 0U;
+        }
+        memcpy(rx_buffer_ + rx_buffer_len_, recv_buf, rx_len);
+        rx_buffer_len_ = static_cast<uint16_t>(rx_buffer_len_ + rx_len);
+    }
+
+    const uint16_t frame_len = 10U;
+    while (rx_buffer_len_ >= 2U)
+    {
+        if (rx_buffer_[0] != kFrameHeaderA || rx_buffer_[1] != kFrameHeaderB)
+        {
+            memmove(rx_buffer_, rx_buffer_ + 1U, rx_buffer_len_ - 1U);
+            rx_buffer_len_--;
             continue;
         }
+        if (rx_buffer_len_ < frame_len)
+        {
+            break;
+        }
 
-        const uint8_t crc = frame[9];
-        const uint8_t expected_crc = crc8(frame, 9U);
+        const uint8_t crc = rx_buffer_[9];
+        const uint8_t expected_crc = crc8(rx_buffer_, 9U);
         if (crc != expected_crc)
         {
+            printf("[USB_RX] CRC_FAIL cmd=0x%02X reg=0x%04X got=0x%02X expected=0x%02X\r\n",
+                   rx_buffer_[2],
+                   (static_cast<unsigned>(rx_buffer_[3]) << 8U) | static_cast<unsigned>(rx_buffer_[4]),
+                   crc, expected_crc);
+            memmove(rx_buffer_, rx_buffer_ + 1U, rx_buffer_len_ - 1U);
+            rx_buffer_len_--;
             continue;
         }
 
-        handleFrame(frame, frame_len);
+        handleFrame(rx_buffer_, frame_len);
+        rx_buffer_len_ = static_cast<uint16_t>(rx_buffer_len_ - frame_len);
+        if (rx_buffer_len_ > 0U)
+        {
+            memmove(rx_buffer_, rx_buffer_ + frame_len, rx_buffer_len_);
+        }
+    }
+    if (rx_len > 0U)
+    {
+        printf("[USB_RX] buffered_bytes=%u\r\n", static_cast<unsigned>(rx_buffer_len_));
     }
     serviceCalibrationTableDump();
+    flushTxQueue();
 }
 
 void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)
@@ -88,19 +126,24 @@ void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)
 
     if (cmd == kCmdWrite && reg == TMC2209_EXT_PARAM_CALIBRATION_TABLE_DUMP)
     {
-        calibration_dump_type_ = static_cast<uint8_t>(value);
+        const uint8_t dump_type = static_cast<uint8_t>(value & 0xFFU);
+        const uint16_t dump_page = static_cast<uint16_t>((value >> 16U) & 0xFFFFU);
+        calibration_dump_type_ = dump_type;
         calibration_dump_pair_index_ = 0U;
-        if (calibration_dump_type_ == 0U)
+        calibration_dump_pair_offset_ = 0U;
+        if (dump_type == 0U)
         {
-            calibration_dump_pair_count_ = CALIBRATION_TABLE_SIZE / 2U;
+            calibration_dump_pair_count_ = (dump_page == 0U) ? (CALIBRATION_TABLE_SIZE / 2U) : 128U;
+            calibration_dump_pair_offset_ = (dump_page == 0U) ? 0U : (dump_page * 128U);
             calibration_dump_active_ = true;
         }
-        else if (calibration_dump_type_ == 1U)
+        else if (dump_type == 1U)
         {
-            calibration_dump_pair_count_ = 32768U;
+            calibration_dump_pair_count_ = 128U;
+            calibration_dump_pair_offset_ = dump_page * 128U;
             calibration_dump_active_ = true;
         }
-        else if (calibration_dump_type_ == 2U)
+        else if (dump_type == 2U)
         {
             calibration_dump_pair_count_ = 0U;
             calibration_dump_active_ = true;
@@ -112,6 +155,39 @@ void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)
         sendFrame(0x82U, reg, value);
         return;
     }
+
+        const bool is_calibration_lookup =
+         reg == TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_RAW_TO_CORRECTED ||
+         reg == TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_CORRECTED_TO_RAW;
+        if (is_calibration_lookup && cmd == kCmdWrite)
+        {
+         printf("[CAL_LOOKUP] RX WRITE reg=0x%04X input=%lu\r\n",
+             reg, static_cast<unsigned long>(value));
+         const bool write_ok = controller_->writeParameter(reg, value);
+         uint32_t result = 0U;
+         const bool readback_ok = controller_->readParameter(reg, &result);
+         printf("[CAL_LOOKUP] COMPUTE write_ok=%u readback_ok=%u result=0x%04lX (%lu)\r\n",
+             write_ok ? 1U : 0U, readback_ok ? 1U : 0U,
+             static_cast<unsigned long>(result & 0xFFFFU),
+             static_cast<unsigned long>(result & 0xFFFFU));
+         const bool ack_sent = sendFrame(0x82U, reg, value);
+         printf("[CAL_LOOKUP] TX WRITE_ACK reg=0x%04X status=%s\r\n",
+             reg, ack_sent ? "QUEUED" : "QUEUE_FULL");
+         return;
+        }
+        if (is_calibration_lookup && cmd == kCmdRead)
+        {
+         uint32_t result = 0U;
+         const bool read_ok = controller_->readParameter(reg, &result);
+         printf("[CAL_LOOKUP] RX READ reg=0x%04X read_ok=%u result=0x%08lX (%lu)\r\n",
+             reg, read_ok ? 1U : 0U,
+             static_cast<unsigned long>(result),
+             static_cast<unsigned long>(result));
+         const bool response_sent = sendFrame(0x81U, reg, result);
+         printf("[CAL_LOOKUP] TX READ_REPLY reg=0x%04X status=%s\r\n",
+             reg, response_sent ? "QUEUED" : "QUEUE_FULL");
+         return;
+        }
 
     uint32_t reply_value = 0U;
     if (cmd == kCmdRead)
@@ -150,7 +226,88 @@ bool UsbCdcProtocolBridge::sendFrame(uint8_t cmd, uint16_t reg, uint32_t value)
     write_u32_be(frame + 5U, value);
     frame[9] = crc8(frame, 9U);
 
-    return usb_vcp_send_data(udev_, frame, sizeof(frame)) == SUCCESS;
+    bool queued = false;
+    taskENTER_CRITICAL();
+    if (cmd == 0x10U)
+    {
+        memcpy(tx_telemetry_frame_, frame, sizeof(frame));
+        tx_telemetry_generation_++;
+        tx_telemetry_pending_ = true;
+        queued = true;
+    }
+    else if (tx_response_count_ < 16U)
+    {
+        memcpy(tx_response_queue_[tx_response_tail_], frame, sizeof(frame));
+        tx_response_tail_ = static_cast<uint8_t>((tx_response_tail_ + 1U) % 16U);
+        tx_response_count_++;
+        queued = true;
+    }
+    taskEXIT_CRITICAL();
+
+    if (!queued)
+    {
+        printf("[USB_TX] QUEUE_FULL cmd=0x%02X reg=0x%04X\r\n", cmd, reg);
+    }
+    return queued;
+}
+
+void UsbCdcProtocolBridge::flushTxQueue()
+{
+    if (udev_ == nullptr)
+    {
+        return;
+    }
+
+    uint8_t frame[10];
+    bool is_response = false;
+    bool has_frame = false;
+    uint16_t telemetry_generation = 0U;
+
+    taskENTER_CRITICAL();
+    if (tx_response_count_ > 0U)
+    {
+        memcpy(frame, tx_response_queue_[tx_response_head_], sizeof(frame));
+        is_response = true;
+        has_frame = true;
+    }
+    else if (tx_telemetry_pending_)
+    {
+        memcpy(frame, tx_telemetry_frame_, sizeof(frame));
+        telemetry_generation = tx_telemetry_generation_;
+        has_frame = true;
+    }
+    taskEXIT_CRITICAL();
+
+    if (!has_frame || usb_vcp_send_data(udev_, frame, sizeof(frame)) != SUCCESS)
+    {
+        return;
+    }
+
+    if (is_response)
+    {
+        taskENTER_CRITICAL();
+        if (tx_response_count_ > 0U)
+        {
+            tx_response_head_ = static_cast<uint8_t>((tx_response_head_ + 1U) % 16U);
+            tx_response_count_--;
+        }
+        taskEXIT_CRITICAL();
+    }
+    else
+    {
+        taskENTER_CRITICAL();
+        if (tx_telemetry_pending_ && tx_telemetry_generation_ == telemetry_generation)
+        {
+            tx_telemetry_pending_ = false;
+        }
+        taskEXIT_CRITICAL();
+    }
+
+    if (frame[2] != 0x10U)
+    {
+        const uint16_t reg = (static_cast<uint16_t>(frame[3]) << 8U) | frame[4];
+        printf("[USB_TX] START cmd=0x%02X reg=0x%04X\r\n", frame[2], reg);
+    }
 }
 
 void UsbCdcProtocolBridge::sendTelemetry()
@@ -245,6 +402,7 @@ void UsbCdcProtocolBridge::serviceCalibrationTableDump()
         return;
     }
 
+    const uint16_t absolute_pair_index = static_cast<uint16_t>(calibration_dump_pair_offset_ + calibration_dump_pair_index_);
     if (calibration_dump_pair_index_ >= calibration_dump_pair_count_)
     {
         if (!sendFrame(0x86U, calibration_dump_pair_count_, calibration_dump_type_)) return;
@@ -253,16 +411,16 @@ void UsbCdcProtocolBridge::serviceCalibrationTableDump()
     }
 
     uint32_t packed_values = 0U;
-    if (!controller_->readCalibrationTablePair(calibration_dump_type_, calibration_dump_pair_index_,
+    if (!controller_->readCalibrationTablePair(calibration_dump_type_, absolute_pair_index,
                                                &packed_values))
     {
-        if (!sendFrame(0x86U, calibration_dump_pair_index_, 0xFFFFFFFFU)) return;
+        if (!sendFrame(0x86U, absolute_pair_index, 0xFFFFFFFFU)) return;
         calibration_dump_active_ = false;
         return;
     }
 
     const uint8_t response_cmd = calibration_dump_type_ == 0U ? 0x83U : 0x84U;
-    if (!sendFrame(response_cmd, calibration_dump_pair_index_, packed_values)) return;
+    if (!sendFrame(response_cmd, absolute_pair_index, packed_values)) return;
     calibration_dump_pair_index_++;
 }
 
