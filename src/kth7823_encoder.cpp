@@ -94,6 +94,8 @@ uint16_t Kth7823Encoder::readRaw()
     encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, false);
     raw = encoder_common::encoder_spi2_rw16(last_tx_frame_);
     encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, true);
+    if (isNonlinearCalValid())
+        raw = getCorrectedRaw(raw);
     last_frame_raw_ = raw;
     // 原始raw转为极坐标theta（0-2pi）
     last_frame_theta_ = static_cast<float>(raw) * 2.0F * static_cast<float>(M_PI) / 65536.0F;
