@@ -38,7 +38,7 @@ void usb_task_function(void* pvParameters);
 
 static void encoder_timer_init(void)
 {
-    constexpr uint32_t k_encoder_sample_us = 50U;
+    constexpr uint32_t k_encoder_sample_us = 25U;
     constexpr uint32_t k_tick_per_us = 250U;  // 每us的tick数，clock那里设置了分频为2，导致apb的定时器频率等于主频（at32特殊，看文档17页）
     constexpr uint32_t k_arr_value = (k_encoder_sample_us * k_tick_per_us) - 1U;
 

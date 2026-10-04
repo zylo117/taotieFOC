@@ -19,15 +19,22 @@ namespace
 
 Kth7823Encoder::Kth7823Encoder()
     : zero_angle_(0U),
+#ifdef USE_POLAR_COORDINATES_WRAP
       sum_s_(0.0F), sum_c_(0.0F),
+#else
+      sum_delta_(0),
+      angle_base_(0U),
+#endif
       filter_window_size_(EncoderFilterConfig::kDefaultWindow),
       filter_index_(0U), filter_count_(0U),
       filter_config_{EncoderFilterConfig::kDefaultWindow},
       last_frame_raw_(0U), last_frame_theta_(0.0F), filtered_theta_(0.0F), last_tx_frame_(0U),
       read_count_(0U), all_ones_count_(0U), all_zeros_count_(0U)
 {
+#ifdef USE_POLAR_COORDINATES_WRAP
     memset(win_s_, 0, sizeof(win_s_));
     memset(win_c_, 0, sizeof(win_c_));
+#endif
 }
 
 bool Kth7823Encoder::init()
@@ -118,7 +125,7 @@ float Kth7823Encoder::readFilteredAngle()
 }
 
 /**
- * @brief 【圆周角度矢量滑动平均滤波】
+ * @brief 【圆周角度矢量滑动平均滤波】 / 整形增量累加（相对角度）+ 基准角度滑动平均滤波（快，无浮点）
  * 问题背景：编码器raw是0‑65535环形角度；0与65535物理上是相邻。
  * 不能直接对uint16原始值算术平均：跨过0点会算到对面半圆，结果错误。
  * 算法原理：极坐标转直角坐标
@@ -147,6 +154,8 @@ bool Kth7823Encoder::updateFilteredSample()
         filtered_theta_ = last_frame_theta_;
         return true;
     }
+
+#ifdef USE_POLAR_COORDINATES_WRAP
 
     //===== 1、原始角度转为单位圆 X(cos), Y(sin) =====
     float theta = last_frame_theta_;
@@ -187,6 +196,56 @@ bool Kth7823Encoder::updateFilteredSample()
     float result;
     arm_atan2_f32(avg_s, avg_c, &result);
     filtered_theta_ = result;
+#else
+
+    // ------------------- 归一化环绕差值：相对于基准angle_base_ -------------------
+    int32_t delta = static_cast<int32_t>(raw) - static_cast<int32_t>(angle_base_);
+    while(delta > 32768)  delta -= 65536;
+    while(delta < -32768) delta += 65536;
+
+    // ------------------- O(1)环形滑动平均窗口 -------------------
+    if(filter_count_ < filter_window_size_)
+    {
+        //窗口填充阶段
+        delta_win_[filter_count_] = delta;
+        sum_delta_ += delta;
+        filter_count_ ++;
+        filter_index_ = 0U;
+    }
+    else
+    {
+        //窗口已满，移除旧样本，加入新样本
+        sum_delta_ -= delta_win_[filter_index_];
+        delta_win_[filter_index_] = delta;
+        sum_delta_ += delta;
+        filter_index_ = (filter_index_ + 1U) % filter_window_size_;
+    }
+
+    //计算delta平均值
+    int32_t active_cnt = (filter_count_ < filter_window_size_) ? filter_count_ : filter_window_size_;
+    float avg_delta = static_cast<float>(sum_delta_) / static_cast<float>(active_cnt);
+
+    //输出滤波后的uint16角度（环绕处理）
+    int32_t out_raw_i32 = static_cast<int32_t>(angle_base_) + static_cast<int32_t>(avg_delta + 0.5F);
+    uint16_t out_raw;
+    out_raw = static_cast<uint16_t>(out_raw_i32 & 0xFFFFU);
+
+    //==== 关键：定期刷新基准base，防止delta长期累积过大；每若干帧刷新一次 ====
+    static uint16_t refresh_cnt = 0;
+    refresh_cnt ++;
+    if(refresh_cnt >= filter_window_size_)
+    {
+        refresh_cnt = 0;
+        angle_base_ = out_raw;
+        sum_delta_ = 0;
+        filter_index_ = 0;
+        filter_count_ = 0;
+        memset(delta_win_,0,sizeof(delta_win_));
+    }
+
+    //兼容旧上层接口：把uint16角度转为弧度存入filtered_theta_
+    filtered_theta_ = static_cast<float>(out_raw) * 2.0F * static_cast<float>(M_PI) / 65536.0F;
+#endif
 
     return true;
 }
@@ -202,13 +261,15 @@ void Kth7823Encoder::configureFilter(const EncoderFilterConfig& config)
     filter_config_ = config;
     filter_window_size_ = window_size;
 
+#ifdef USE_POLAR_COORDINATES_WRAP
     memset(win_s_, 0, sizeof(win_s_));
     memset(win_c_, 0, sizeof(win_c_));
+    sum_s_ = 0.0F;
+    sum_c_ = 0.0F;
+#endif
 
     filter_index_ = 0U;
     filter_count_ = 0U;
-    sum_s_ = 0.0F;
-    sum_c_ = 0.0F;
     filtered_theta_ = 0.0F;
 }
 
