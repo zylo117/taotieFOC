@@ -134,7 +134,6 @@ float Kth7823Encoder::readFilteredAngle()
 */
 bool Kth7823Encoder::updateFilteredSample()
 {
-    // 不要用O(1)环形滑动平均，会引入浮点计算的累积误差，必须每次全部重计算
     const uint16_t raw = readRaw();
     if (raw == 0xFFFFU)
     {
@@ -149,7 +148,6 @@ bool Kth7823Encoder::updateFilteredSample()
         return true;
     }
 
-    // todo 已知是16位，完全可以创建一个16位的表存下sin/cos/atan2值，避免重复计算
     //===== 1、原始角度转为单位圆 X(cos), Y(sin) =====
     float theta = last_frame_theta_;
     float s = arm_sin_f32(theta);
@@ -160,28 +158,30 @@ bool Kth7823Encoder::updateFilteredSample()
         // -------- 窗口填充阶段，还没有填满 --------
         win_s_[filter_count_] = s;
         win_c_[filter_count_] = c;
+        sum_s_ += s;
+        sum_c_ += c;
         filter_count_++;
         filter_index_ = 0U;
     }
     else
     {
+        // -------- 窗口已满：O(1)环形滑动，减去被淘汰旧样本，加入新样本 --------
+        sum_s_ -= win_s_[filter_index_];
+        sum_c_ -= win_c_[filter_index_];
+
         win_s_[filter_index_] = s;
         win_c_[filter_index_] = c;
+
+        sum_s_ += s;
+        sum_c_ += c;
+
         filter_index_ = (filter_index_ + 1U) % filter_window_size_;
     }
 
     //=====2、求X、Y坐标平均值 =====
-    float sum_s = 0.0F;
-    float sum_c = 0.0F;
     uint8_t active_cnt = (filter_count_ < filter_window_size_) ? filter_count_ : filter_window_size_;
-    for(uint8_t i = 0U; i < active_cnt; i++)
-    {
-        sum_s += win_s_[i];
-        sum_c += win_c_[i];
-    }
-
-    float avg_s = sum_s / static_cast<float>(active_cnt);
-    float avg_c = sum_c / static_cast<float>(active_cnt);
+    float avg_s = sum_s_ / static_cast<float>(active_cnt);
+    float avg_c = sum_c_ / static_cast<float>(active_cnt);
 
     //=====3、由平均XY坐标还原得到角度弧度 atan2(Y,X) =====
     float result;
