@@ -147,6 +147,7 @@ bool Kth7823Encoder::updateFilteredSample()
         return true;
     }
 
+    // todo 已知是16位，完全可以创建一个16位的表存下sin/cos/atan2值，避免重复计算
     //===== 1、原始角度转为单位圆 X(cos), Y(sin) =====
     float theta = last_frame_theta_;
     float s = arm_sin_f32(theta);
