@@ -93,11 +93,8 @@ void AngleEncoder::saveToFlash(void)
 	data.MIN = min;
 	data.MAX = max;
 
-	printf("fuck233\n");
 	flash_write(MAINCAL_FLASH_BASE, reinterpret_cast<uint16_t*>(&data), sizeof(FlashCalData_t)/2U);
-	printf("fuck234\n");
 	createFastCal();
-	printf("fuck235\n");
 }
 
 void AngleEncoder::createFastCal(void)

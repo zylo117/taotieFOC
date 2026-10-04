@@ -1784,6 +1784,8 @@ void ClosedLoopController::updateEncoderCalibration()
     }
 
     const uint16_t raw = encoder_->readRaw();
+    // printf("[CALIBRATION] sample %3u, try: %u, raw=%5u\n", static_cast<unsigned>(calibration_sample_count_),
+    //        static_cast<unsigned>(calibration_sample_attempts_), static_cast<unsigned>(raw));
     calibration_sample_attempts_++;
     if (raw != 0xFFFFU)
     {
