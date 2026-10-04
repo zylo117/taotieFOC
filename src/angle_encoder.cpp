@@ -83,7 +83,8 @@ void AngleEncoder::saveToFlash(void)
 	printf("Calibration data\n");
 	for (i=0; i < CALIBRATION_TABLE_SIZE; i++ )
 	{
-		printf("%d: %d, ", i, m_calData[i].value);
+		if (i < 5 or i > CALIBRATION_TABLE_SIZE - 6)
+			printf("%d: %d, ", i, m_calData[i].value);
 		if(m_calData[i].value < min)	{min = m_calData[i].value;}
 		if(m_calData[i].value > max)	{max = m_calData[i].value;}
 		data.FlashCalData[i] = m_calData[i].value;
@@ -99,17 +100,20 @@ void AngleEncoder::saveToFlash(void)
 
 void AngleEncoder::createFastCal(void)
 {
+	// printf("fuck236\n");
 	uint32_t i,j;
 	uint16_t checkSum = 0;
 	uint16_t data[FLASH_ROW_SIZE];
 	for (i=0,j=0; i < 65536U; i++)
 	{
 		uint16_t x = reverseLookup(static_cast<uint16_t>(i));
+		// printf("fuck23: %d\n", x);
 		data[j] = x;
 		j++;
 		if (j >= FLASH_ROW_SIZE)
 		{
 			uint32_t dst_addr = FASTCAL_FLASH_BASE + ((i + 1U - FLASH_ROW_SIZE) * 2U);
+			// printf("fuck237: %d\n", dst_addr);
 			flash_write(dst_addr, data, FLASH_ROW_SIZE);
 			j=0;
 		}
@@ -120,7 +124,9 @@ void AngleEncoder::createFastCal(void)
 		uint32_t dst_addr = FASTCAL_FLASH_BASE + (i - j)*2U;
 		flash_write(dst_addr, data, j);
 	}
+	printf("fuck237\n");
 	flash_write(FASTCAL_CHECKSUM_ADDR, &checkSum, 1U);
+	printf("fuck238\n");
 	m_fastCalValid = true;
 }
 
