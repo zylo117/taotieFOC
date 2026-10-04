@@ -60,7 +60,7 @@ void UsbCdcProtocolBridge::poll()
     const uint16_t rx_len = usb_vcp_get_rxdata(udev_, recv_buf);
     if (rx_len > 0U)
     {
-        printf("[USB_RX] packet_len=%u\r\n", static_cast<unsigned>(rx_len));
+        // printf("[USB_RX] packet_len=%u\r\n", static_cast<unsigned>(rx_len));
         if (rx_len > sizeof(rx_buffer_) - rx_buffer_len_)
         {
             printf("[USB_RX] BUFFER_OVERFLOW buffered=%u incoming=%u; dropping partial frame\r\n",
@@ -105,10 +105,10 @@ void UsbCdcProtocolBridge::poll()
             memmove(rx_buffer_, rx_buffer_ + frame_len, rx_buffer_len_);
         }
     }
-    if (rx_len > 0U)
-    {
-        printf("[USB_RX] buffered_bytes=%u\r\n", static_cast<unsigned>(rx_buffer_len_));
-    }
+    // if (rx_len > 0U)
+    // {
+    //     printf("[USB_RX] buffered_bytes=%u\r\n", static_cast<unsigned>(rx_buffer_len_));
+    // }
     serviceCalibrationTableDump();
     flushTxQueue();
 }
@@ -161,31 +161,31 @@ void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)
          reg == TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_CORRECTED_TO_RAW;
         if (is_calibration_lookup && cmd == kCmdWrite)
         {
-         printf("[CAL_LOOKUP] RX WRITE reg=0x%04X input=%lu\r\n",
-             reg, static_cast<unsigned long>(value));
+         // printf("[CAL_LOOKUP] RX WRITE reg=0x%04X input=%lu\r\n",
+         //     reg, static_cast<unsigned long>(value));
          const bool write_ok = controller_->writeParameter(reg, value);
          uint32_t result = 0U;
          const bool readback_ok = controller_->readParameter(reg, &result);
-         printf("[CAL_LOOKUP] COMPUTE write_ok=%u readback_ok=%u result=0x%04lX (%lu)\r\n",
-             write_ok ? 1U : 0U, readback_ok ? 1U : 0U,
-             static_cast<unsigned long>(result & 0xFFFFU),
-             static_cast<unsigned long>(result & 0xFFFFU));
+         // printf("[CAL_LOOKUP] COMPUTE write_ok=%u readback_ok=%u result=0x%04lX (%lu)\r\n",
+         //     write_ok ? 1U : 0U, readback_ok ? 1U : 0U,
+         //     static_cast<unsigned long>(result & 0xFFFFU),
+         //     static_cast<unsigned long>(result & 0xFFFFU));
          const bool ack_sent = sendFrame(0x82U, reg, value);
-         printf("[CAL_LOOKUP] TX WRITE_ACK reg=0x%04X status=%s\r\n",
-             reg, ack_sent ? "QUEUED" : "QUEUE_FULL");
+         // printf("[CAL_LOOKUP] TX WRITE_ACK reg=0x%04X status=%s\r\n",
+         //     reg, ack_sent ? "QUEUED" : "QUEUE_FULL");
          return;
         }
         if (is_calibration_lookup && cmd == kCmdRead)
         {
          uint32_t result = 0U;
          const bool read_ok = controller_->readParameter(reg, &result);
-         printf("[CAL_LOOKUP] RX READ reg=0x%04X read_ok=%u result=0x%08lX (%lu)\r\n",
-             reg, read_ok ? 1U : 0U,
-             static_cast<unsigned long>(result),
-             static_cast<unsigned long>(result));
+         // printf("[CAL_LOOKUP] RX READ reg=0x%04X read_ok=%u result=0x%08lX (%lu)\r\n",
+         //     reg, read_ok ? 1U : 0U,
+         //     static_cast<unsigned long>(result),
+         //     static_cast<unsigned long>(result));
          const bool response_sent = sendFrame(0x81U, reg, result);
-         printf("[CAL_LOOKUP] TX READ_REPLY reg=0x%04X status=%s\r\n",
-             reg, response_sent ? "QUEUED" : "QUEUE_FULL");
+         // printf("[CAL_LOOKUP] TX READ_REPLY reg=0x%04X status=%s\r\n",
+         //     reg, response_sent ? "QUEUED" : "QUEUE_FULL");
          return;
         }
 
@@ -246,7 +246,7 @@ bool UsbCdcProtocolBridge::sendFrame(uint8_t cmd, uint16_t reg, uint32_t value)
 
     if (!queued)
     {
-        printf("[USB_TX] QUEUE_FULL cmd=0x%02X reg=0x%04X\r\n", cmd, reg);
+        // printf("[USB_TX] QUEUE_FULL cmd=0x%02X reg=0x%04X\r\n", cmd, reg);
     }
     return queued;
 }
@@ -306,7 +306,7 @@ void UsbCdcProtocolBridge::flushTxQueue()
     if (frame[2] != 0x10U)
     {
         const uint16_t reg = (static_cast<uint16_t>(frame[3]) << 8U) | frame[4];
-        printf("[USB_TX] START cmd=0x%02X reg=0x%04X\r\n", frame[2], reg);
+        // printf("[USB_TX] START cmd=0x%02X reg=0x%04X\r\n", frame[2], reg);
     }
 }
 
