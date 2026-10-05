@@ -12,6 +12,7 @@ public:
     Kth7823Encoder();
     bool init() override;
     uint16_t readRaw() override;
+    uint16_t readFilteredRaw() override;
     float readFilteredAngle() override;
     bool updateFilteredSample() override;
     bool magneticFieldHigh() const override;
@@ -53,7 +54,7 @@ private:
     EncoderFilterConfig filter_config_;
     volatile uint16_t last_frame_raw_;
     volatile float last_frame_theta_;   //单次原始raw对应的弧度
-    volatile float filtered_theta_;
+    volatile uint16_t filtered_raw_;
     volatile uint16_t last_tx_frame_;
     volatile uint32_t read_count_;
     volatile uint32_t all_ones_count_;

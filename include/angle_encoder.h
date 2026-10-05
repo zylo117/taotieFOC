@@ -131,6 +131,7 @@ public:
     //==== 硬件读写虚接口，子类实现 ====
     virtual bool init() = 0;
     virtual uint16_t readRaw() = 0;
+    virtual uint16_t readFilteredRaw();
     virtual float readFilteredAngle();
     virtual bool updateFilteredSample()
     {

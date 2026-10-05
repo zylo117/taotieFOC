@@ -130,6 +130,19 @@ namespace
         }
         return delta_deg;
     }
+
+    int16_t normalize_signed_delta_deg(int32_t delta_deg)
+    {
+        while (delta_deg > 32767)
+        {
+            delta_deg -= 65536;
+        }
+        while (delta_deg < -32768)
+        {
+            delta_deg += 65536;
+        }
+        return static_cast<int16_t>(delta_deg);
+    }
 }
 
 PidController::PidController()
@@ -214,13 +227,13 @@ ClosedLoopController::ClosedLoopController()
     closed_loop_compensation_enabled_(false), motion_running_(false), motion_paused_(false),
     motion_speed_rpm_(0.0f), encoder_speed_rpm_(0.0f),
       motion_position_deg_(0.0f),
-    motion_follow_error_deg_(0.0f), motion_commanded_travel_deg_(0.0f), motion_encoder_travel_deg_(0.0f),
-    motion_encoder_previous_angle_(0.0f), motion_encoder_reference_valid_(false),
+    motion_follow_error_deg_(0.0f), motion_commanded_travel_deg_(0.0f), motion_encoder_travel_raw_(0),
+    motion_encoder_previous_raw_(0), motion_encoder_reference_valid_(false),
     motion_last_step_time_us_(0U), motion_last_ramp_time_us_(0U), motion_steps_emitted_(0U),
     motion_leg_pulse_count_(0U), motion_step_accumulator_(0.0f), motion_direction_(1),
     motion_leg_reversed_(false), motion_direction_change_pending_(false),
       motion_step_high_(false), step_pulse_width_ns_(DEFAULT_STEP_PULSE_NS),
-      step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), encoder_filtered_angle_(0U),
+      step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), encoder_filtered_angle_(0.0F), encoder_filtered_raw_(0),
       magnetic_field_high_(false), magnetic_field_low_(false), last_process_time_us_(0U),
       last_step_state_(0U), last_dir_state_(0U), last_en_state_(0U),
       stop_on_encoder_fault_(true), stop_on_magnetic_fault_(true), encoder_fault_active_(false),
@@ -834,7 +847,7 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
     motion_steps_emitted_ = 0U;
     motion_steps_emitted_signed = 0U;
     motion_step_accumulator_ = 0.0f;
-    motion_encoder_previous_angle_ = encoder_ != nullptr ? encoder_->readFilteredAngle() : encoder_filtered_angle_;
+    motion_encoder_previous_raw_ = encoder_ != nullptr ? encoder_->readFilteredRaw() : encoder_filtered_raw_;
     motion_encoder_reference_valid_ = encoder_ != nullptr;
     if (driver_ != nullptr)
     {
@@ -900,12 +913,12 @@ void ClosedLoopController::startMotion()
     motion_leg_reversed_ = false;
     motion_direction_change_pending_ = true;
     motion_commanded_travel_deg_ = 0.0f;
-    motion_encoder_travel_deg_ = 0.0f;
+    motion_encoder_travel_raw_ = 0;
     motion_follow_error_deg_ = 0.0f;
     motion_encoder_reference_valid_ = encoder_ != nullptr;
     if (motion_encoder_reference_valid_)
     {
-        motion_encoder_previous_angle_ = encoder_->readFilteredAngle();
+        motion_encoder_previous_raw_ = encoder_->readFilteredRaw();
     }
     if (motion_mode_ == MOTION_MODE_POSITION_REVERSE ||
         motion_mode_ == MOTION_MODE_VELOCITY_REVERSE ||
@@ -1085,6 +1098,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     if (encoder_ != nullptr)
     {
         const float previous_encoder_angle = encoder_filtered_angle_;
+        const uint16_t previous_encoder_raw = encoder_filtered_raw_;
+        encoder_filtered_raw_ = encoder_->readFilteredRaw();
         encoder_filtered_angle_ = encoder_->readFilteredAngle();
         magnetic_field_high_ = encoder_->magneticFieldHigh();
         magnetic_field_low_ = encoder_->magneticFieldLow();
@@ -1095,13 +1110,13 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
         if (motion_running_ && motion_encoder_reference_valid_)
         {
-            const float encoder_delta = normalize_signed_delta_deg(
-                encoder_filtered_angle_ - motion_encoder_previous_angle_);
-            motion_encoder_travel_deg_ += encoder_delta;
+            const int16_t encoder_delta_raw = normalize_signed_delta_deg(static_cast<int32_t>(encoder_filtered_raw_) - static_cast<int32_t>(motion_encoder_previous_raw_));
+            motion_encoder_travel_raw_ += encoder_delta_raw;
+
             motion_follow_error_deg_ = normalize_signed_angle_error_deg(
-                motion_encoder_travel_deg_ - motion_commanded_travel_deg_);  // 比如命令要走3度，结果才走了2度，那跟随误差就是-1度
+                static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F - motion_commanded_travel_deg_);  // 比如命令要走3度，结果才走了2度，那跟随误差就是-1度
         }
-        motion_encoder_previous_angle_ = encoder_filtered_angle_;
+        motion_encoder_previous_raw_ = encoder_filtered_raw_;
     }
 
     updateEncoderCalibration();
@@ -1482,7 +1497,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
 void ClosedLoopController::stopMotion()
 {
-    printf("motion stopping!!! motion_commanded_travel_deg_: %f, motion_encoder_travel_deg_: %f\n", motion_commanded_travel_deg_, motion_encoder_travel_deg_);
+    printf("motion stopping!!! motion_commanded_travel_deg_: %f, motion_encoder_travel_deg_: %f\n", motion_commanded_travel_deg_, static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F);
     motion_running_ = false;
     motion_first_run_ = false;
     motion_paused_ = false;

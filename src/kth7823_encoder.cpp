@@ -28,7 +28,7 @@ Kth7823Encoder::Kth7823Encoder()
       filter_window_size_(EncoderFilterConfig::kDefaultWindow),
       filter_index_(0U), filter_count_(0U),
       filter_config_{EncoderFilterConfig::kDefaultWindow},
-      last_frame_raw_(0U), last_frame_theta_(0.0F), filtered_theta_(0.0F), last_tx_frame_(0U),
+      last_frame_raw_(0U), last_frame_theta_(0.0F), last_tx_frame_(0U),
       read_count_(0U), all_ones_count_(0U), all_zeros_count_(0U)
 {
 #ifdef USE_POLAR_COORDINATES_WRAP
@@ -118,10 +118,15 @@ uint16_t Kth7823Encoder::readRaw()
     return raw;
 }
 
+
+uint16_t Kth7823Encoder::readFilteredRaw()
+{
+    return filtered_raw_;
+}
+
 float Kth7823Encoder::readFilteredAngle()
 {
-    auto angle = filtered_theta_ * 180.0F / static_cast<float>(M_PI);
-    return angle < 0 ? angle + 360.0F : angle;
+    return static_cast<float>(filtered_raw_) / 65536.0F * 360.0F;
 }
 
 /**
@@ -151,7 +156,7 @@ bool Kth7823Encoder::updateFilteredSample()
     // 窗口大小0：关闭滤波，直接输出原始值
     if (filter_window_size_ == 0U)
     {
-        filtered_theta_ = last_frame_theta_;
+        filtered_raw_ = last_frame_raw_;
         return true;
     }
 
@@ -195,7 +200,8 @@ bool Kth7823Encoder::updateFilteredSample()
     //=====3、由平均XY坐标还原得到角度弧度 atan2(Y,X) =====
     float result;
     arm_atan2_f32(avg_s, avg_c, &result);
-    filtered_theta_ = result;
+    auto filtered_theta_ = result;
+    filtered_raw_ = filtered_theta_ * 65536.0F / 2.0F / static_cast<float>(M_PI);
 #else
 
     // ------------------- 归一化环绕差值：相对于基准angle_base_ -------------------
@@ -244,7 +250,7 @@ bool Kth7823Encoder::updateFilteredSample()
     }
 
     //兼容旧上层接口：把uint16角度转为弧度存入filtered_theta_
-    filtered_theta_ = static_cast<float>(out_raw) * 2.0F * static_cast<float>(M_PI) / 65536.0F;
+    filtered_raw_ = out_raw;
 #endif
 
     return true;
@@ -270,7 +276,6 @@ void Kth7823Encoder::configureFilter(const EncoderFilterConfig& config)
 
     filter_index_ = 0U;
     filter_count_ = 0U;
-    filtered_theta_ = 0.0F;
 }
 
 EncoderFilterConfig Kth7823Encoder::filterConfig() const
