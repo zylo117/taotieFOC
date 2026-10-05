@@ -379,7 +379,7 @@ void UsbCdcProtocolBridge::sendTelemetry()
         should_send = controller_->readParameter(register_to_send, &value_to_send);
         break;
     }
-    telemetry_phase = static_cast<uint8_t>((telemetry_phase + 1U) % 5U);
+    telemetry_phase = static_cast<uint8_t>((telemetry_phase + 1U) % 6U);  // 数值要等于switch内总项的数量，包括switch
     if (should_send)
     {
         sendFrame(0x10U, register_to_send, value_to_send);
