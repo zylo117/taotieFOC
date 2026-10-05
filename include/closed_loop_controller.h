@@ -314,6 +314,7 @@ private:
     volatile uint32_t motion_last_step_time_us_;
     volatile uint32_t motion_last_ramp_time_us_;
     volatile uint32_t motion_steps_emitted_;
+    volatile uint32_t motion_steps_emitted_signed;  // 指的是距离总运动位移脉冲数，有方向。等于是出发至今的带方向的累计脉冲数
     volatile uint32_t motion_dma_pending_steps_;
     volatile uint32_t motion_leg_pulse_count_;
     volatile double motion_step_accumulator_;

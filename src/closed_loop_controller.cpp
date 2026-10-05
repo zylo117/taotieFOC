@@ -832,6 +832,7 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
     motion_paused_ = false;
     motion_first_run_ = true;
     motion_steps_emitted_ = 0U;
+    motion_steps_emitted_signed = 0U;
     motion_step_accumulator_ = 0.0f;
     motion_encoder_previous_angle_ = encoder_ != nullptr ? encoder_->readFilteredAngle() : encoder_filtered_angle_;
     motion_encoder_reference_valid_ = encoder_ != nullptr;
@@ -892,6 +893,7 @@ void ClosedLoopController::startMotion()
     velocity_pid_.resetDeriv();
     motion_paused_ = false;
     motion_steps_emitted_ = 0U;
+    motion_steps_emitted_signed = 0U;
     motion_step_accumulator_ = 0.0f;
     motion_step_high_ = false;
     motion_zero_speed_recovery_logged_ = false;
@@ -1466,9 +1468,9 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         if (!closed_loop_angle_mode_enabled_)
         {
             motion_steps_emitted_ += num_steps;
+            motion_steps_emitted_signed += motion_direction_ * num_steps;  // 正向就加步数，反向就减
             const float step_angle_deg = 360.0f / static_cast<float>(getMicroStepsPerRound(driver_));
-            motion_commanded_travel_deg_ += static_cast<float>(motion_direction_) * step_angle_deg *
-                                            static_cast<float>(num_steps);
+            motion_commanded_travel_deg_ = static_cast<float>(motion_steps_emitted_signed) * step_angle_deg;
         }
         motion_step_accumulator_ -= num_steps;
     }
@@ -1488,6 +1490,7 @@ void ClosedLoopController::stopMotion()
     encoder_speed_rpm_ = 0.0f;
     target_velocity_rps_ = 0.0f;
     motion_steps_emitted_ = 0U;
+    motion_steps_emitted_signed = 0U;
     motion_leg_pulse_count_ = 0U;
     motion_leg_reversed_ = false;
     motion_direction_change_pending_ = false;
