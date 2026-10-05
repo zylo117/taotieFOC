@@ -1343,24 +1343,6 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
     const bool alternating_motion = motion_mode_ == MOTION_MODE_ALTERNATING_FORWARD ||
                                     motion_mode_ == MOTION_MODE_ALTERNATING_REVERSE;
-    if ((!alternating_motion || motion_ramp_stage_ == RAMP_STAGE_DECEL) &&
-        !closed_loop_angle_mode_enabled_ && motion_running_ && motion_start_step_s_ > 0.0f &&
-        motion_steps_emitted_ < motion_pulse_count_ &&
-        current_step_speed_ < motion_start_step_s_ * 0.05f)
-    {
-        if (!motion_zero_speed_recovery_logged_)
-        {
-            printf("[MOTION] zero-speed recovery: remaining=%lu/%lu stage=%u follow=%.3f dir=%d\r\n",
-                   static_cast<unsigned long>(motion_pulse_count_ - motion_steps_emitted_),
-                   static_cast<unsigned long>(motion_pulse_count_),
-                   static_cast<unsigned>(motion_ramp_stage_),
-                   motion_follow_error_deg_,
-                   motion_direction_);
-            motion_zero_speed_recovery_logged_ = true;
-        }
-        current_step_speed_ = motion_start_step_s_;
-        motion_speed_rpm_ = static_cast<float>(motion_direction_) * motion_start_rpm_;
-    }
 
     if (!closed_loop_angle_mode_enabled_ && driver_ != nullptr)
     {
