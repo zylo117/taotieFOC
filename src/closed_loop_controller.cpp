@@ -1469,8 +1469,6 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             const float step_angle_deg = 360.0f / static_cast<float>(getMicroStepsPerRound(driver_));
             motion_commanded_travel_deg_ += static_cast<float>(motion_direction_) * step_angle_deg *
                                             static_cast<float>(num_steps);
-            motion_follow_error_deg_ = normalize_signed_angle_error_deg(
-                motion_commanded_travel_deg_ - motion_encoder_travel_deg_);  // 比如命令要走3度，结果才走了2度，那跟随误差就是-1度
         }
         motion_step_accumulator_ -= num_steps;
     }
