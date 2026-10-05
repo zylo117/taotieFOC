@@ -7,6 +7,8 @@
 
 #include "at32f403a_407.h"
 
+// #define USE_SOFT_PULSE
+
 #define STEP_OUTPUT_PORT         GPIOB
 #define STEP_OUT_PIN             GPIO_PINS_10
 #define DIR_OUTPUT_PORT          GPIOB
@@ -14,7 +16,7 @@
 #define EN_OUTPUT_PORT           GPIOA
 #define EN_OUT_PIN               GPIO_PINS_3
 #define EN_ACTIVE_LEVEL          false
-#define DIR_FORWARD_LEVEL        true
+#define DIR_FORWARD_LEVEL        false
 
 #define TMC2209_UART_GPIO        GPIOA
 #define TMC2209_UART_PIN         GPIO_PINS_4

@@ -31,8 +31,6 @@
 extern "C" {
 #endif
 
-// #define USE_SOFT_PULSE
-
 /**
   * @brief in the following line adjust the value of high speed external crystal (hext)
   * used in your application

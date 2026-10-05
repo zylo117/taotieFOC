@@ -1390,18 +1390,6 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_step_accumulator_ = 1.0;
     }
 
-    // 只要累加器≥1，代表需要输出1个step脉冲；循环批量输出，直到没有脉冲待输出或者全部脉冲发完
-    // cpu软脉冲实现，效率低
-    // while ((motion_step_accumulator_ >= 1.0f) && (motion_steps_emitted_ < motion_pulse_count_))
-    // {
-    //     // 调用驱动输出STEP脉冲；脉冲高电平宽度固定为step_pulse_width_ns_，底层实现ns延时
-    //     driver_->sendStepPulse(step_pulse_width_ns_);
-    //     // 已经发出的脉冲计数+1
-    //     motion_steps_emitted_++;
-    //     // 已经消耗1步，累加器减去1，小数部分保留，留给下一次调度
-    //     motion_step_accumulator_ -= 1.0f;
-    // }
-
     // TMR2 是 32 位计数器，因此 ARR 序列必须是 32 位。
     // 这里复用同一份周期表，正转和反转都只需要切换 DIR 输出 + 重新装载同一块 RAM，
     // 这样既能完成“正转一圈 -> 反转一圈”，又不会把 RAM 翻倍消耗掉。
@@ -1475,11 +1463,22 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
         //     printf("shitfuck, delta_step_ns: %.6f us, step_ticks < 2*min_k_step_pulse_ticks %lu us, lower your iter rate.\n", delta_step_ns / 1000.f, stepper_common::k_step_pulse_ticks * 2);
         // }
-
+#ifdef USE_SOFT_PULSE
+        // 只要累加器≥1，代表需要输出1个step脉冲；循环批量输出，直到没有脉冲待输出或者全部脉冲发完
+        // cpu软脉冲实现，效率低
+        for (int i = 0; i < num_steps; i++)
+        {
+            // 调用驱动输出STEP脉冲；脉冲高电平宽度固定为step_pulse_width_ns_，底层实现ns延时
+            driver_->sendStepPulse(step_pulse_width_ns_);
+        }
+#else
+        // todo 注意这里仅恒速脉冲，也就是每个rampupdate中仅开头一段时间就尽可能快地把脉冲恒速跑完，虽然间隔很短，但总会带来一些卡顿的问题，后期应该改成平滑插入脉冲
+        // todo 注意这里目前仅支持每次rampupdate仅支持最多一次换向。后续需要根据换向次数和位置提前规划好换向点并安排好guard ticks
         generate_constant_speed_step_sequence(arr_seq_cycle, seq_count, step_ticks);
         add_dir_to_step_sequence(arr_seq_cycle, seq_count, stepper_common::guard_tick,
                      motion_direction_change_pending_);
         start_step_sequence(arr_seq_cycle, seq_count, stepper_common::k_psc, stepper_common::k_step_pulse_ticks, current_direction);
+#endif
         motion_direction_change_pending_ = false;
 
         if (!closed_loop_angle_mode_enabled_)
