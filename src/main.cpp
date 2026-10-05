@@ -18,23 +18,27 @@
 #include "usb_cdc_protocol.h"
 #include "tmc2209_driver.h"
 #include "kth7823_encoder.h"
+#include "phase_current.h"
 
 TaskHandle_t led5_handler;
 TaskHandle_t control_handler;
 TaskHandle_t telemetry_handler;
 TaskHandle_t usb_handler;
+TaskHandle_t current_adc_handler;
 
 static ClosedLoopController g_controller;
 static Tmc2209Driver g_driver;
 static Tmc2209ProtocolAdapter g_protocol;
 static Kth7823Encoder g_encoder;
 static UsbCdcProtocolBridge g_usb_bridge;
+static PhaseCurrentMonitor g_phase_current;
 static usbd_core_type g_usb_core;
 
 void led5_task_function(void* pvParameters);
 void control_task_function(void* pvParameters);
 void telemetry_task_function(void* pvParameters);
 void usb_task_function(void* pvParameters);
+void current_adc_task_function(void* pvParameters);
 
 static void encoder_timer_init(void)
 {
@@ -59,6 +63,18 @@ static void control_timer_init(void)
     tmr_base_init(TMR4, 1000U - 1U, system_core_clock / 20000000U - 1U);
     tmr_cnt_dir_set(TMR4, TMR_COUNT_UP);
     tmr_clock_source_div_set(TMR4, TMR_CLOCK_DIV1);
+
+    tmr_output_config_type output_config;
+    tmr_output_default_para_init(&output_config);
+    output_config.oc_mode = TMR_OUTPUT_CONTROL_PWM_MODE_A;
+    output_config.oc_output_state = FALSE;
+    output_config.occ_output_state = FALSE;
+    output_config.oc_polarity = TMR_OUTPUT_ACTIVE_HIGH;
+    output_config.occ_polarity = TMR_OUTPUT_ACTIVE_HIGH;
+    tmr_output_channel_config(TMR4, TMR_SELECT_CHANNEL_4, &output_config);
+    tmr_channel_value_set(TMR4, TMR_SELECT_CHANNEL_4, 500U);
+    tmr_channel_enable(TMR4, TMR_SELECT_CHANNEL_4, TRUE);
+
     tmr_interrupt_enable(TMR4, TMR_OVF_INT, TRUE);
     nvic_irq_enable(TMR4_GLOBAL_IRQn, 1U, 0U);
     tmr_counter_enable(TMR4, TRUE);
@@ -109,6 +125,30 @@ extern "C" void TMR3_GLOBAL_IRQHandler(void)
         tmr_flag_clear(TMR3, TMR_OVF_FLAG);
         g_encoder.updateFilteredSample();
     }
+}
+
+extern "C" void DMA1_Channel1_IRQHandler(void)
+{
+    BaseType_t higher_priority_task_woken = pdFALSE;
+    if (dma_interrupt_flag_get(DMA1_HDT1_FLAG) != RESET)
+    {
+        dma_flag_clear(DMA1_HDT1_FLAG);
+        if (current_adc_handler != NULL)
+        {
+            xTaskNotifyFromISR(current_adc_handler, PhaseCurrentMonitor::kDmaNotifyFirstHalf,
+                               eSetValueWithOverwrite, &higher_priority_task_woken);
+        }
+    }
+    if (dma_interrupt_flag_get(DMA1_FDT1_FLAG) != RESET)
+    {
+        dma_flag_clear(DMA1_FDT1_FLAG);
+        if (current_adc_handler != NULL)
+        {
+            xTaskNotifyFromISR(current_adc_handler, PhaseCurrentMonitor::kDmaNotifySecondHalf,
+                               eSetValueWithOverwrite, &higher_priority_task_woken);
+        }
+    }
+    portYIELD_FROM_ISR(higher_priority_task_woken);
 }
 
 extern "C" void usb_delay_ms(uint32_t ms)
@@ -198,6 +238,16 @@ int main(void)
                     (TaskHandle_t*)&usb_handler) != pdPASS)
     {
         printf("USB task could not be created as there was insufficient heap memory remaining.\r\n");
+    }
+
+    if (xTaskCreate((TaskFunction_t)current_adc_task_function,
+                    (const char*)"Current_ADC_task",
+                    (uint16_t)256,
+                    (void*)NULL,
+                    (UBaseType_t)2,
+                    (TaskHandle_t*)&current_adc_handler) != pdPASS)
+    {
+        printf("Current ADC task could not be created as there was insufficient heap memory remaining.\r\n");
     }
 
     taskEXIT_CRITICAL();
@@ -302,5 +352,30 @@ void usb_task_function(void* pvParameters)
     {
         g_usb_bridge.poll();
         vTaskDelay(1);
+    }
+}
+
+void current_adc_task_function(void* pvParameters)
+{
+    (void)pvParameters;
+    if (!g_phase_current.init())
+    {
+        printf("[CURRENT_ADC] ADC calibration timed out; sampling disabled\r\n");
+        vTaskSuspend(NULL);
+    }
+
+    uint32_t notification_value = 0U;
+
+    while (1)
+    {
+        if (xTaskNotifyWait(0U, 0xFFFFFFFFU, &notification_value, portMAX_DELAY) != pdTRUE)
+        {
+            continue;
+        }
+
+        g_phase_current.handleDmaNotification(notification_value);
+        g_controller.setPhaseCurrentTelemetry(
+            g_phase_current.phaseCurrentA(),
+            g_phase_current.phaseCurrentB());
     }
 }

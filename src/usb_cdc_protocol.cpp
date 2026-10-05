@@ -323,8 +323,6 @@ void UsbCdcProtocolBridge::sendTelemetry()
         TMC2209_EXT_PARAM_ENCODER_FAULT,
         TMC2209_EXT_PARAM_MAGNETIC_FAULT,
         TMC2209_EXT_PARAM_OUTPUT_STOP,
-        TMC2209_EXT_PARAM_AB_CURRENT_A,
-        TMC2209_EXT_PARAM_AB_CURRENT_B,
         TMC2209_EXT_PARAM_POS_LOOP_HZ,
         TMC2209_EXT_PARAM_VEL_LOOP_HZ,
         TMC2209_EXT_PARAM_CUR_LOOP_HZ,
@@ -366,6 +364,14 @@ void UsbCdcProtocolBridge::sendTelemetry()
         register_to_send = TMC2209_EXT_PARAM_MOTION_COMMAND;
         should_send = controller_->readParameter(register_to_send, &value_to_send);
         break;
+    case 3U:
+        register_to_send = TMC2209_EXT_PARAM_AB_CURRENT_A;
+        should_send = controller_->readParameter(register_to_send, &value_to_send);
+        break;
+    case 4U:
+        register_to_send = TMC2209_EXT_PARAM_AB_CURRENT_B;
+        should_send = controller_->readParameter(register_to_send, &value_to_send);
+        break;
     default:
         register_to_send = telemetry_regs[telemetry_index];
         telemetry_index = static_cast<uint16_t>((telemetry_index + 1U) %
@@ -373,7 +379,7 @@ void UsbCdcProtocolBridge::sendTelemetry()
         should_send = controller_->readParameter(register_to_send, &value_to_send);
         break;
     }
-    telemetry_phase = static_cast<uint8_t>((telemetry_phase + 1U) % 4U);
+    telemetry_phase = static_cast<uint8_t>((telemetry_phase + 1U) % 5U);
     if (should_send)
     {
         sendFrame(0x10U, register_to_send, value_to_send);

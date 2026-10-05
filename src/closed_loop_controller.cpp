@@ -370,8 +370,10 @@ void ClosedLoopController::syncProtocolTelemetry()
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_FAULT, encoder_fault_active_ ? 1U : 0U);
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_FAULT, magnetic_fault_active_ ? 1U : 0U);
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_OUTPUT_STOP, output_stopped_ ? 1U : 0U);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_A, static_cast<uint32_t>(phase_a_current_a_ * 1000.0f));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_B, static_cast<uint32_t>(phase_b_current_a_ * 1000.0f));
+    protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_A,
+                                  static_cast<uint32_t>(static_cast<int32_t>(phase_a_current_a_ * 1000.0f)));
+    protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_B,
+                                  static_cast<uint32_t>(static_cast<int32_t>(phase_b_current_a_ * 1000.0f)));
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_POS_LOOP_HZ, position_loop_hz_);
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_VEL_LOOP_HZ, velocity_loop_hz_);
     protocol_->setCustomParameter(TMC2209_EXT_PARAM_CUR_LOOP_HZ, current_loop_hz_);
