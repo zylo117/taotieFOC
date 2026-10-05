@@ -1480,7 +1480,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
 void ClosedLoopController::stopMotion()
 {
-    printf("motion stopping!!!");
+    printf("motion stopping!!! motion_commanded_travel_deg_: %f, motion_encoder_travel_deg_: %f\n", motion_commanded_travel_deg_, motion_encoder_travel_deg_);
     motion_running_ = false;
     motion_first_run_ = false;
     motion_paused_ = false;
