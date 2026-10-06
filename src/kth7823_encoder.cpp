@@ -28,7 +28,7 @@ Kth7823Encoder::Kth7823Encoder()
       filter_window_size_(EncoderFilterConfig::kDefaultWindow),
       filter_index_(0U), filter_count_(0U),
       filter_config_{EncoderFilterConfig::kDefaultWindow},
-      last_frame_raw_(0U), last_frame_theta_(0.0F), last_tx_frame_(0U),
+      last_frame_raw_(0U), last_tx_frame_(0U),
       read_count_(0U), all_ones_count_(0U), all_zeros_count_(0U)
 {
 #ifdef USE_POLAR_COORDINATES_WRAP
@@ -102,10 +102,10 @@ uint16_t Kth7823Encoder::readRaw()
     raw = encoder_common::encoder_spi2_rw16(last_tx_frame_);
     encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, true);
     if (isNonlinearCalValid())
+    {
         raw = getCorrectedRaw(raw);
+    }
     last_frame_raw_ = raw;
-    // 原始raw转为极坐标theta（0-2pi）
-    last_frame_theta_ = static_cast<float>(raw) * 2.0F * static_cast<float>(M_PI) / 65536.0F;
     read_count_++;
     if (raw == 0xFFFFU)
     {
@@ -163,7 +163,8 @@ bool Kth7823Encoder::updateFilteredSample()
 #ifdef USE_POLAR_COORDINATES_WRAP
 
     //===== 1、原始角度转为单位圆 X(cos), Y(sin) =====
-    float theta = last_frame_theta_;
+    // 原始raw转为极坐标theta（0-2pi）
+    float theta = static_cast<float>(last_frame_raw_) * 2.0F * static_cast<float>(M_PI) / 65536.0F;
     float s = arm_sin_f32(theta);
     float c = arm_cos_f32(theta);
 
@@ -232,7 +233,7 @@ bool Kth7823Encoder::updateFilteredSample()
     float avg_delta = static_cast<float>(sum_delta_) / static_cast<float>(active_cnt);
 
     //输出滤波后的uint16角度（环绕处理）
-    int32_t out_raw_i32 = static_cast<int32_t>(angle_base_) + static_cast<int32_t>(avg_delta + 0.5F);
+    int32_t out_raw_i32 = static_cast<int32_t>(angle_base_) + static_cast<int32_t>(lroundf(avg_delta));
     uint16_t out_raw;
     out_raw = static_cast<uint16_t>(out_raw_i32 & 0xFFFFU);
 
@@ -286,17 +287,6 @@ EncoderFilterConfig Kth7823Encoder::filterConfig() const
 uint16_t Kth7823Encoder::lastRawFrame() const
 {
     return last_frame_raw_;
-}
-
-float Kth7823Encoder::lastFrameTheta() const
-{
-    return last_frame_theta_;
-}
-
-// 极坐标theta转0-360度角度
-float Kth7823Encoder::lastFrameAngle() const
-{
-    return last_frame_theta_ * 180.0F / static_cast<float>(M_PI);
 }
 
 uint16_t Kth7823Encoder::lastTxFrame() const

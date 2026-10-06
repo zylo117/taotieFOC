@@ -18,8 +18,6 @@ public:
     bool magneticFieldHigh() const override;
     bool magneticFieldLow() const override;
     uint16_t lastRawFrame() const;
-    float lastFrameTheta() const;
-    float lastFrameAngle() const;
     uint16_t lastTxFrame() const;
     uint32_t readCount() const;
     uint32_t allOnesCount() const;
@@ -53,7 +51,6 @@ private:
     uint8_t filter_count_;
     EncoderFilterConfig filter_config_;
     volatile uint16_t last_frame_raw_;
-    volatile float last_frame_theta_;   //单次原始raw对应的弧度
     volatile uint16_t filtered_raw_;
     volatile uint16_t last_tx_frame_;
     volatile uint32_t read_count_;
