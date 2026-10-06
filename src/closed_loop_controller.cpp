@@ -1787,6 +1787,8 @@ void ClosedLoopController::calibrateEncoder()
         return;
     }
 
+    encoder_->clearCalibration();  // 避免raw读成以前校准表的结果影响新校准
+
     step_pulse_width_ns_ = 200U;
     k_step_pulse_ticks = std::ceil(static_cast<float>(step_pulse_width_ns_) / static_cast<float>(stepper_common::target_tick_time));
     calibration_saved_start_rpm_ = motion_start_rpm_;
