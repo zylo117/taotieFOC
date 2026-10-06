@@ -1113,6 +1113,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             const int16_t encoder_delta_raw = normalize_signed_delta_deg(static_cast<int32_t>(encoder_filtered_raw_) - static_cast<int32_t>(motion_encoder_previous_raw_));
             motion_encoder_travel_raw_ += encoder_delta_raw;
 
+            // 下一步才计算上一步的理论步数（因为用了定时器后，脉冲是异步发出的， 直接算就等于理论步数领先实际了
+            const float step_angle_deg = 360.0f / static_cast<float>(getMicroStepsPerRound(driver_));
+            motion_commanded_travel_deg_ = static_cast<float>(motion_steps_emitted_signed) * step_angle_deg;
+
             motion_follow_error_deg_ = normalize_signed_angle_error_deg(
                 static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F - motion_commanded_travel_deg_);  // 比如命令要走3度，结果才走了2度，那跟随误差就是-1度
         }
@@ -1484,8 +1488,6 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         {
             motion_steps_emitted_ += num_steps;
             motion_steps_emitted_signed += motion_direction_ * num_steps;  // 正向就加步数，反向就减
-            const float step_angle_deg = 360.0f / static_cast<float>(getMicroStepsPerRound(driver_));
-            motion_commanded_travel_deg_ = static_cast<float>(motion_steps_emitted_signed) * step_angle_deg;
         }
         motion_step_accumulator_ -= num_steps;
     }
