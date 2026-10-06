@@ -1123,7 +1123,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_encoder_previous_raw_ = encoder_filtered_raw_;
     }
 
-    updateEncoderCalibration();
+    updateEncoderCalibration(encoder_filtered_raw_);
 
     if (motion_running_ && !closed_loop_angle_mode_enabled_ && closed_loop_compensation_enabled_)
     {
@@ -1808,6 +1808,7 @@ void ClosedLoopController::calibrateEncoder()
 
 bool ClosedLoopController::startEncoderCalibrationMove(uint16_t index)
 {
+    printf("[CALIBRATION] moving to index: %u from angle: %f\r\n", index, encoder_->readFilteredAngle());
     const uint32_t steps_per_round = getMicroStepsPerRound(driver_);
     const uint64_t table_size = CALIBRATION_TABLE_SIZE;
     const uint32_t first_step = static_cast<uint32_t>(
@@ -1840,7 +1841,7 @@ bool ClosedLoopController::startEncoderCalibrationMove(uint16_t index)
     return true;
 }
 
-void ClosedLoopController::updateEncoderCalibration()
+void ClosedLoopController::updateEncoderCalibration(const uint16_t raw)
 {
     if (calibration_stage_ == CALIBRATION_HOMING)
     {
@@ -1887,7 +1888,6 @@ void ClosedLoopController::updateEncoderCalibration()
         return;
     }
 
-    const uint16_t raw = encoder_->readRaw();
     // printf("[CALIBRATION] sample %3u, try: %u, raw=%5u\n", static_cast<unsigned>(calibration_sample_count_),
     //        static_cast<unsigned>(calibration_sample_attempts_), static_cast<unsigned>(raw));
     calibration_sample_attempts_++;
@@ -1921,6 +1921,12 @@ void ClosedLoopController::updateEncoderCalibration()
             calibration_sample_max_ = unwrapped;
         }
         calibration_sample_count_++;
+    } else
+    {
+        printf("[CALIBRATION] invalid encoder sample: %d at index=%u, attempt=%u\r\n",
+            raw,
+            static_cast<unsigned>(calibration_index_),
+            static_cast<unsigned>(calibration_sample_attempts_));
     }
 
     if (calibration_sample_count_ < 202U)

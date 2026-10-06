@@ -260,7 +260,7 @@ public:
 
 private:
     void updateLoopFrequencyStats(uint64_t time_ns);
-    void updateEncoderCalibration();
+    void updateEncoderCalibration(uint16_t raw);
     void finishEncoderCalibration(bool save_table);
     bool startEncoderCalibrationMove(uint16_t index);
     StepperDriver* driver_;
