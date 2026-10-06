@@ -141,9 +141,8 @@ public:
     virtual bool magneticFieldHigh() const { return false; }
     virtual bool magneticFieldLow() const { return false; }
     virtual void setZero(float zero_angle) = 0;
-    virtual bool calibrate(const EncoderCalibrationConfig& config, EncoderCalibrationResult* result) = 0;
 
-    //==================== 【校准对外API】全部基类实现，子类无需重写 ====================
+    //校准对外api
     bool isNonlinearCalValid(void) const;
     uint16_t getCorrectedRaw(uint16_t raw);
     void feedCalibrationSample(uint16_t stepIndex, uint16_t raw);
