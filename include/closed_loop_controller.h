@@ -272,10 +272,7 @@ private:
     volatile int32_t motion_encoder_travel_raw_;
     volatile uint16_t motion_encoder_previous_raw_;
     volatile bool motion_encoder_reference_valid_;
-    volatile uint64_t motion_last_step_time_ns_;
     volatile uint64_t motion_last_ramp_time_ns_;
-    volatile uint32_t motion_last_step_time_us_;
-    volatile uint32_t motion_last_ramp_time_us_;
     volatile uint32_t motion_steps_emitted_;
     volatile uint32_t motion_steps_emitted_signed;  // 指的是距离总运动位移脉冲数，有方向。等于是出发至今的带方向的累计脉冲数
     volatile uint32_t motion_dma_pending_steps_;

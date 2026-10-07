@@ -158,7 +158,7 @@ ClosedLoopController::ClosedLoopController()
       motion_position_deg_(0.0f),
     motion_follow_error_deg_(0.0f), motion_commanded_travel_deg_(0.0f), motion_encoder_travel_raw_(0),
     motion_encoder_previous_raw_(0), motion_encoder_reference_valid_(false),
-    motion_last_step_time_us_(0U), motion_last_ramp_time_us_(0U), motion_steps_emitted_(0U),
+    motion_steps_emitted_(0U),
     motion_leg_pulse_count_(0U), motion_step_accumulator_(0.0f), motion_direction_(1),
     motion_leg_reversed_(false), motion_direction_change_pending_(false),
       motion_step_high_(false), step_pulse_width_ns_(DEFAULT_STEP_PULSE_NS),
@@ -923,6 +923,8 @@ void ClosedLoopController::startMotion()
         printf("accel_total_steps_: %lu\n", accel_total_steps_);
         printf("decel_total_steps_: %lu\n", decel_total_steps_);
         printf("cruise_total_steps_: %lu\n", cruise_total_steps_);
+        printf("positionPID: %f,%f,%f\n", position_pid_.kp, position_pid_.ki, position_pid_.kd);
+        printf("velocityPID: %f,%f,%f\n", velocity_pid_.kp, velocity_pid_.ki, velocity_pid_.kd);
 
         // 关键标记：剩余步数 <= steps_to_decel_ 就进入减速阶段
         steps_to_decel_ = decel_total_steps_;
@@ -1051,7 +1053,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     if (motion_running_ && !closed_loop_angle_mode_enabled_ && closed_loop_compensation_enabled_)
     {
         const bool latter_half = motion_steps_emitted_ >= motion_pulse_count_ / 2U;
-        pid_auto_tuner_.addSample(motion_follow_error_deg_, latter_half);
+        pid_auto_tuner_.addSample(-motion_follow_error_deg_, latter_half);
     }
 
     // 如果当前没有运动在运行，直接退出
@@ -1063,12 +1065,12 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
     if (motion_first_run_)
     {
-        motion_last_step_time_ns_ = now_ns;
         motion_last_ramp_time_ns_ = now_ns;
         // printf("fuck0 motion_last_ramp_time_ns_: %f\n", motion_last_ramp_time_ns_/1e9);
         motion_first_run_ = false;
     }
 
+    // 获取两次rampUpdate生成之间真实流逝的纳秒
     uint64_t delta_ramp_ns = now_ns - motion_last_ramp_time_ns_;
     if (delta_ramp_ns > 0U && encoder_ != nullptr)
     {
@@ -1146,6 +1148,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     }
     else
     {
+        // 往返摇摆运动模式
         const bool alternating_motion = motion_mode_ == MOTION_MODE_ALTERNATING_FORWARD ||
                                         motion_mode_ == MOTION_MODE_ALTERNATING_REVERSE;
         if (alternating_motion && !motion_leg_reversed_ && motion_leg_pulse_count_ > 0U &&
@@ -1169,27 +1172,6 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         {
             if (calibration_stage_ == CALIBRATION_MOVING)
             {
-                // static uint64_t dma_done_since_ns = 0ULL;
-                // if (dma_flag_get(DMA1_FDT2_FLAG) == RESET)
-                // {
-                //     dma_done_since_ns = 0ULL;
-                //     syncProtocolTelemetry();
-                //     return;
-                // }
-                // if (dma_done_since_ns == 0ULL)
-                // {
-                //     stepper_common::stepper_stop_motion_timer();
-                //     dma_done_since_ns = now_ns;
-                //     syncProtocolTelemetry();
-                //     return;
-                // }
-                // if (now_ns - dma_done_since_ns < 1000000ULL)
-                // {
-                //     syncProtocolTelemetry();
-                //     return;
-                // }
-
-                // dma_done_since_ns = 0ULL;
                 motion_running_ = false;
                 motion_first_run_ = false;
                 current_step_speed_ = 0.0f;
@@ -1264,12 +1246,13 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
         // 位置跟随误差定义为“命令 - 实际”。如果命令已经领先真实位置，说明该减速；
         // 这里必须取反后再送入位置 PID，否则正误差会被误当成要求继续加速。
-        const float position_reference_rps = position_pid_.update(motion_follow_error_deg_ / 360.0f, dt);
+        const float position_reference_rps = position_pid_.update(-motion_follow_error_deg_ / 360.0f, dt);
         const float measured_motion_rps = encoder_speed_rpm_ / 60.0f;
         const float velocity_error_rps = position_reference_rps - measured_motion_rps;
         const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt);
         const float max_correction_rps = motion_max_rpm_ / 60.0f;
-        const float correction_rps = fast_clamp(position_reference_rps + velocity_correction_rps,
+        const float added_rps = position_reference_rps + velocity_correction_rps;
+        const float correction_rps = fast_clamp(added_rps,
                                                 -max_correction_rps,
                                                 max_correction_rps);
         const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
@@ -1279,6 +1262,19 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const float limited_correction_step_s = fast_clamp(correction_step_s,
                                                            -max_correction_step_s,
                                                            max_correction_step_s);
+
+        if (now_ns % 1000 == 0)
+            printf("motion_follow_error_deg_: %f, position_reference_rps: %f, "
+                   "measured_motion_rps: %f, velocity_error_rps: %f, velocity_correction_rps: %f "
+                   "added_rps: %f, correction_rps: %f, correction_step_s: %f,"
+                   " max_correction_step_s: %f, limited_correction_step_s:%f,"
+                   " current_step_speed_:%f \n",
+                   motion_follow_error_deg_, position_reference_rps,
+                   measured_motion_rps, velocity_error_rps, velocity_correction_rps,
+                   added_rps, correction_rps, correction_step_s,
+                   max_correction_step_s, limited_correction_step_s,
+                   current_step_speed_);
+
         current_step_speed_ = fast_clamp(current_step_speed_ + limited_correction_step_s,
                                          0.0f,
                                          motion_max_step_s_);
@@ -1294,20 +1290,13 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_speed_rpm_ = current_step_speed_ * 60.0f / static_cast<float>(micro_steps_per_round);
     }
 
-    // 更新本次的时间戳，作为下一次调用的“上一次时间点”
-    // printf("fuck1 motion_last_ramp_time_ns_: %f, now_ns: %f\n", motion_last_ramp_time_ns_/1e9, now_ns/1e9);
-    motion_last_ramp_time_ns_ = now_ns;
-    // printf("fuck2 motion_last_ramp_time_ns_: %f, now_ns: %f\n", motion_last_ramp_time_ns_/1e9, now_ns/1e9);
-
     // ========== 2.DDA微分累加器：生成步进脉冲，核心部分 ==========
     // DDA原理：步进步数增量 = 瞬时速度(step/s) × 流逝时间(s)
     // 即使任务被抢占延迟很久，delta_step_ns会记录真实流逝时间，累加器累积需要输出的步数
     // while循环一次性输出多个脉冲，做到调度抖动下不丢脉冲
 
-    // 获取两次脉冲生成之间真实流逝的纳秒
-    const uint64_t delta_step_ns = now_ns - motion_last_step_time_ns_;
     // 时间单位换算：纳秒 → 秒
-    const double dt_step_s = static_cast<double>(delta_step_ns) / 1.0e9f;
+    const double dt_step_s = static_cast<double>(delta_ramp_ns) / 1.0e9f;
 
     // 累加本次时间内应该产生的步数（浮点数，允许小数累积）
     motion_step_accumulator_ += fast_abs(current_step_speed_) * dt_step_s;
@@ -1352,13 +1341,13 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const uint64_t direction_switch_guard_time_ns = 2 * stepper_common::guard_tick * stepper_common::target_tick_time;
         const uint64_t reserved_time_ns = 5;
         const uint64_t overhead_ns = reserved_time_ns + direction_switch_guard_time_ns;
-        if (delta_step_ns <= overhead_ns)
+        if (delta_ramp_ns <= overhead_ns)
         {
-            motion_last_step_time_ns_ = now_ns;
+            motion_last_ramp_time_ns_ = now_ns;
             syncProtocolTelemetry();
             return;
         }
-        const uint64_t remaining_time = delta_step_ns - overhead_ns;
+        const uint64_t remaining_time = delta_ramp_ns - overhead_ns;
         const uint64_t remaining_ticks = remaining_time / stepper_common::target_tick_time;
 
         // 要尽快执行，不可以用下面那种平均的平滑模式，会丢步
@@ -1369,7 +1358,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // // 因为硬件TMR定时器+DMA工作是异步的，耗时必须短于软件定时器迭代时间，否则就会输出延迟
         // if (delta_step_ns < max_iter_time_ns)
         // {
-        //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
+        //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_ramp_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_ramp_time_ns_ / 1000.f, delta_step_ns / 1000.f);
         //     printf("shitfuck, delta_step_ns: %.6f us < max_iter_time_ns: %.6f us, lower your iter rate.\n", delta_step_ns / 1000.f, max_iter_time_ns / 1000.f);
         // }
 
@@ -1386,7 +1375,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // const uint32_t step_ticks = static_cast<uint32_t>(step_ticks_wide);
         // if (step_ticks < stepper_common::k_step_pulse_ticks * 2)
         // {
-        //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_step_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_step_time_ns_ / 1000.f, delta_step_ns / 1000.f);
+        //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_ramp_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_ramp_time_ns_ / 1000.f, delta_step_ns / 1000.f);
         //     printf("shitfuck, delta_step_ns: %.6f us, step_ticks < 2*min_k_step_pulse_ticks %lu us, lower your iter rate.\n", delta_step_ns / 1000.f, stepper_common::k_step_pulse_ticks * 2);
         // }
 #ifdef USE_SOFT_PULSE
@@ -1415,8 +1404,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_step_accumulator_ -= num_steps;
     }
 
-    // 更新脉冲模块的时间戳
-    motion_last_step_time_ns_ = now_ns;
+    // 更新本次ramp的时间戳，作为下一次调用的“上一次时间点”
+    motion_last_ramp_time_ns_ = now_ns;
     syncProtocolTelemetry();
 }
 
@@ -1435,7 +1424,6 @@ void ClosedLoopController::stopMotion()
     motion_leg_reversed_ = false;
     motion_direction_change_pending_ = false;
     motion_step_accumulator_ = 0.0f;
-    motion_last_step_time_ns_ = 0ULL;
     motion_last_ramp_time_ns_ = 0ULL;
     // printf("fuck3 motion_last_ramp_time_ns_: %f\n", motion_last_ramp_time_ns_/1e9);
     motion_step_high_ = false;
