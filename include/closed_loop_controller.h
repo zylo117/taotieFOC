@@ -14,6 +14,7 @@
 #endif
 
 #define MAX_PULSE_ARR_LEN 128U
+// #define CLAMP_FOC_SPEED
 
 #include <cmath>
 

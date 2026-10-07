@@ -1252,28 +1252,33 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt);
         const float max_correction_rps = motion_max_rpm_ / 60.0f;
         const float added_rps = position_reference_rps + velocity_correction_rps;
+        static const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
+#ifdef CLAMP_FOC_SPEED
         const float correction_rps = fast_clamp(added_rps,
                                                 -max_correction_rps,
                                                 max_correction_rps);
-        const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
         const float correction_step_s = correction_rps * static_cast<float>(motion_direction_) *
                                         static_cast<float>(micro_steps_per_round);
         const float max_correction_step_s = motion_accel_step_s2_ * dt;
         const float limited_correction_step_s = fast_clamp(correction_step_s,
                                                            -max_correction_step_s,
                                                            max_correction_step_s);
+#else
+        const float limited_correction_step_s = added_rps * static_cast<float>(motion_direction_) *
+                                        static_cast<float>(micro_steps_per_round);
+#endif
 
-        if (now_ns % 1000 == 0)
-            printf("motion_follow_error_deg_: %f, position_reference_rps: %f, "
-                   "measured_motion_rps: %f, velocity_error_rps: %f, velocity_correction_rps: %f "
-                   "added_rps: %f, correction_rps: %f, correction_step_s: %f,"
-                   " max_correction_step_s: %f, limited_correction_step_s:%f,"
-                   " current_step_speed_:%f \n",
-                   motion_follow_error_deg_, position_reference_rps,
-                   measured_motion_rps, velocity_error_rps, velocity_correction_rps,
-                   added_rps, correction_rps, correction_step_s,
-                   max_correction_step_s, limited_correction_step_s,
-                   current_step_speed_);
+        // if (now_ns % 1000 == 0)
+        //     printf("motion_follow_error_deg_: %f, position_reference_rps: %f, "
+        //            "measured_motion_rps: %f, velocity_error_rps: %f, velocity_correction_rps: %f "
+        //            "added_rps: %f, correction_rps: %f, correction_step_s: %f,"
+        //            " max_correction_step_s: %f, limited_correction_step_s:%f,"
+        //            " current_step_speed_:%f \n",
+        //            motion_follow_error_deg_, position_reference_rps,
+        //            measured_motion_rps, velocity_error_rps, velocity_correction_rps,
+        //            added_rps, correction_rps, correction_step_s,
+        //            max_correction_step_s, limited_correction_step_s,
+        //            current_step_speed_);
 
         current_step_speed_ = fast_clamp(current_step_speed_ + limited_correction_step_s,
                                          0.0f,
