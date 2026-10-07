@@ -1088,15 +1088,15 @@
                             <h3 style="margin-top:0;">位置 PID</h3>
                             <div class="field">
                                 <label>Kp</label>
-                                <input id="posKp" min="0" max="30000" step="0.01" type="number" value="60.0"/>
+                                <input id="posKp" min="0" max="30000" step="100" type="number" value="18000.0"/>
                             </div>
                             <div class="field mt">
                                 <label>Ki</label>
-                                <input id="posKi" min="0" max="3000" step="0.01" type="number" value="20.0"/>
+                                <input id="posKi" min="0" max="3000" step="1" type="number" value="10.0"/>
                             </div>
                             <div class="field mt">
                                 <label>Kd</label>
-                                <input id="posKd" min="0" max="30000" step="0.01" type="number" value="60.0"/>
+                                <input id="posKd" min="0" max="30000" step="100" type="number" value="18000.0"/>
                             </div>
                         </div>
 
@@ -1104,15 +1104,15 @@
                             <h3 style="margin-top:0;">速度 PID</h3>
                             <div class="field">
                                 <label>Kp</label>
-                                <input id="velKp" min="0" max="3000" step="0.01" type="number" value="30.0"/>
+                                <input id="velKp" min="0" max="30000" step="100" type="number" value="18000.0"/>
                             </div>
                             <div class="field mt">
                                 <label>Ki</label>
-                                <input id="velKi" min="0" max="3000" step="0.01" type="number" value="8.0"/>
+                                <input id="velKi" min="0" max="3000" step="1" type="number" value="10.0"/>
                             </div>
                             <div class="field mt">
                                 <label>Kd</label>
-                                <input id="velKd" min="0" max="3000" step="0.01" type="number" value="20.0"/>
+                                <input id="velKd" min="0" max="30000" step="100" type="number" value="18000.0"/>
                             </div>
                         </div>
                     </div>
@@ -1134,7 +1134,7 @@
                         <div class="card">
                             <div class="field">
                                 <label>最大速度（RPM）</label>
-                                <input id="tuneMaxSpeed" min="3" max="600" step="1" type="number" value="60"/>
+                                <input id="tuneMaxSpeed" min="3" max="6000" step="1" type="number" value="60"/>
                             </div>
                             <div class="field mt">
                                 <label>加速度（RPM/s）</label>
@@ -2347,9 +2347,9 @@
                 [CUSTOM_REGS.POSITION_KP, params.posKp, 30000],
                 [CUSTOM_REGS.POSITION_KI, params.posKi, 3000],
                 [CUSTOM_REGS.POSITION_KD, params.posKd, 30000],
-                [CUSTOM_REGS.VELOCITY_KP, params.velKp, 3000],
+                [CUSTOM_REGS.VELOCITY_KP, params.velKp, 30000],
                 [CUSTOM_REGS.VELOCITY_KI, params.velKi, 3000],
-                [CUSTOM_REGS.VELOCITY_KD, params.velKd, 3000]
+                [CUSTOM_REGS.VELOCITY_KD, params.velKd, 30000]
             ];
             for (const [register, gain, maxGain] of registers) {
                 await writeRegister(register, Math.round(clamp(gain, 0, maxGain) * 1000));
@@ -2362,9 +2362,9 @@
                 posKp: [CUSTOM_REGS.POSITION_KP, 30000],
                 posKi: [CUSTOM_REGS.POSITION_KI, 3000],
                 posKd: [CUSTOM_REGS.POSITION_KD, 30000],
-                velKp: [CUSTOM_REGS.VELOCITY_KP, 3000],
+                velKp: [CUSTOM_REGS.VELOCITY_KP, 30000],
                 velKi: [CUSTOM_REGS.VELOCITY_KI, 3000],
-                velKd: [CUSTOM_REGS.VELOCITY_KD, 3000]
+                velKd: [CUSTOM_REGS.VELOCITY_KD, 30000]
             };
             const parameter = registerByInput[input.id];
             if (!parameter) return;
@@ -2597,7 +2597,7 @@
         }
 
         function getTuneActionProfiles() {
-            const maxSpeedRpm = clamp(Number(document.getElementById('tuneMaxSpeed').value || 60), 5, 600);
+            const maxSpeedRpm = clamp(Number(document.getElementById('tuneMaxSpeed').value || 60), 5, 6000);
             const accelRpmS = clamp(Number(document.getElementById('tuneAccel').value || 180), 10, 3000);
             const turnsPerDirection = clamp(Number(document.getElementById('tuneTestTurns').value || 5), 1, 5);
             return createPulseTuneProfiles(maxSpeedRpm, accelRpmS, turnsPerDirection, true);
@@ -2794,7 +2794,7 @@
             document.getElementById('tuneResults').textContent = '正在读取硬件参数';
             appendTuneLog('开始多速度、多加速度的正反向脉冲闭环整定');
 
-            const maxSpeedRpm = clamp(Number(document.getElementById('tuneMaxSpeed').value || 60), 5, 600);
+            const maxSpeedRpm = clamp(Number(document.getElementById('tuneMaxSpeed').value || 60), 5, 6000);
             const accelRpmS = clamp(Number(document.getElementById('tuneAccel').value || 180), 10, 3000);
             const stepRatio = clamp(Number(document.getElementById('tuneGainStep').value || 0.25), 0.05, 0.5);
             let bestGains = null;

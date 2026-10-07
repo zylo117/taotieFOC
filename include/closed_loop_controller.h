@@ -140,18 +140,11 @@ public:
     // 对外读取指定寄存器参数。
     bool readParameter(uint16_t reg, uint32_t* value);
 
-    // 读取外部步进方向/使能/步进状态，并同步到闭环控制器状态机。
-    void syncStepDirection();
-
-    // 从 TMR2 捕获环形 buffer 中消费 STEP/DIR 事件，并按事件顺序更新控制器状态。
-    void consumeQueuedStepDirEvents();
-
     // 设置目标位置步数。
     void setTargetStep(int32_t target_step);
 
     // 设定目标角度（0~360°），开启基于编码器反馈的闭环位置控制。
     void setTargetAngleDeg(float angle_deg);
-    float getTargetAngleDeg() const;
     float getTargetAngleErrorDeg() const;
 
     // 设置目标速度（转/秒）。

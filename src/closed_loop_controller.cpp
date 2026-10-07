@@ -453,11 +453,10 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
     {
         const float max_gain = reg == TMC2209_EXT_PARAM_POSITION_KP || reg == TMC2209_EXT_PARAM_POSITION_KD
             ? 30000.0f
-            : (reg == TMC2209_EXT_PARAM_POSITION_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KP ||
-               reg == TMC2209_EXT_PARAM_VELOCITY_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KD)
+            : (reg == TMC2209_EXT_PARAM_POSITION_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KI)
                 ? 3000.0f
-                : 30000.0f;
-        const float gain = fast_clamp(static_cast<float>(value) / 1000.0f, 0.0f, max_gain);
+                : 30000.0f;  // pid最大值分别限制在30000/3000/30000
+        const float gain = fast_clamp(static_cast<float>(value) / 1000.0f, 0.0f, max_gain); // 这些除以1000是因为上位机是传整形过来的，直接除以1000保留三位小数
         if (reg == TMC2209_EXT_PARAM_POSITION_KP) base_position_kp_ = gain;
         if (reg == TMC2209_EXT_PARAM_POSITION_KI) base_position_ki_ = gain;
         if (reg == TMC2209_EXT_PARAM_POSITION_KD) base_position_kd_ = gain;
@@ -784,11 +783,6 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
     }
 }
 
-float ClosedLoopController::getTargetAngleDeg() const
-{
-    return target_angle_deg_;
-}
-
 float ClosedLoopController::getTargetAngleErrorDeg() const
 {
     return closed_loop_angle_error_deg_;
@@ -1090,7 +1084,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // 以真实机械角度误差做闭环控制，单位是度/圈；
         // 微分步数只影响输出脉冲密度，不改变 PID 的误差定义，
         // 因此不同驱动或不同细分设置不会让同一组 PID 失效。
-        const float desired_error_deg = normalize_signed_angle_error_deg(target_angle_deg_ - motion_position_deg_);
+        const float desired_error_deg = normalize_signed_angle_error_deg(target_angle_deg_ - motion_position_deg_);  // 目标-实际
         closed_loop_angle_error_deg_ = desired_error_deg;
 
         if (dt > 0.0f)
@@ -1460,11 +1454,6 @@ bool ClosedLoopController::isMotionRunning() const
 float ClosedLoopController::getMotionSpeedRpm() const
 {
     return motion_speed_rpm_;
-}
-
-float ClosedLoopController::getMotionPositionDeg() const
-{
-    return motion_position_deg_;
 }
 
 void ClosedLoopController::setPid(float kp, float ki, float kd)

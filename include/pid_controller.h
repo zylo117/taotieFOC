@@ -5,7 +5,7 @@
 #ifndef TAOTIEFOC_PID_CONTROLLER_H
 #define TAOTIEFOC_PID_CONTROLLER_H
 
-#define MAX_PID_OUTPUT          2000.0f
+#define MAX_PID_OUTPUT          50000.0f
 #define MAX_I_TERM              100.0f
 
 // PidController 是一个通用 PID 控制器。
