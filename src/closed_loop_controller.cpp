@@ -1093,7 +1093,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         {
             const float position_error_rev = desired_error_deg / 360.0f;
             const float position_reference_rps = position_pid_.update(position_error_rev, dt);
-            const float velocity_error_rps = position_reference_rps - (encoder_speed_rpm_ / 60.0f);
+            // const float velocity_error_rps = position_reference_rps - (encoder_speed_rpm_ / 60.0f);
+            const float base_speed_rps = current_step_speed_ / static_cast<float>(getMicroStepsPerRound(driver_));
+            const float total_ref_rps = base_speed_rps + position_reference_rps;
+            const float velocity_error_rps = total_ref_rps - (encoder_speed_rpm_ / 60.0f);
             const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt);
             const float max_rps = angle_max_rpm_ / 60.0f;
             const float unconstrained_rps = fast_clamp(position_reference_rps + velocity_correction_rps,
@@ -1248,7 +1251,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // 这里必须取反后再送入位置 PID，否则正误差会被误当成要求继续加速。
         const float position_reference_rps = position_pid_.update(-motion_follow_error_deg_ / 360.0f, dt);
         const float measured_motion_rps = encoder_speed_rpm_ / 60.0f;
-        const float velocity_error_rps = position_reference_rps - measured_motion_rps;
+        // 总期望速度 = 基础速度 + 位置环修正量
+        const float base_speed_rps = current_step_speed_ / static_cast<float>(getMicroStepsPerRound(driver_));
+        const float total_ref_rps = base_speed_rps + position_reference_rps;
+        const float velocity_error_rps = total_ref_rps - measured_motion_rps;
         const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt);
         const float max_correction_rps = motion_max_rpm_ / 60.0f;
         const float added_rps = position_reference_rps + velocity_correction_rps;
@@ -1270,19 +1276,21 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
         // if (now_ns % 1000 == 0)
         //     printf("motion_follow_error_deg_: %f, position_reference_rps: %f, "
-        //            "measured_motion_rps: %f, velocity_error_rps: %f, velocity_correction_rps: %f "
-        //            "added_rps: %f, correction_rps: %f, correction_step_s: %f,"
-        //            " max_correction_step_s: %f, limited_correction_step_s:%f,"
-        //            " current_step_speed_:%f \n",
+        //            "measured_motion_rps: %f, commanded_speed_rps: %f, velocity_error_rps: %f, velocity_correction_rps: %f "
+        //            "added_rps: %f, "
+        //            // "correction_rps: %f, correction_step_s: %f, max_correction_step_s: %f, "
+        //            "limited_correction_step_s:%f, "
+        //            "current_step_speed_:%f \n",
         //            motion_follow_error_deg_, position_reference_rps,
-        //            measured_motion_rps, velocity_error_rps, velocity_correction_rps,
-        //            added_rps, correction_rps, correction_step_s,
-        //            max_correction_step_s, limited_correction_step_s,
+        //            measured_motion_rps, base_speed_rps, velocity_error_rps, velocity_correction_rps,
+        //            added_rps,
+        //            // correction_rps, correction_step_s, max_correction_step_s,
+        //            limited_correction_step_s,
         //            current_step_speed_);
 
         current_step_speed_ = fast_clamp(current_step_speed_ + limited_correction_step_s,
                                          0.0f,
-                                         motion_max_step_s_);
+                                         motion_max_step_s_ * 2);
         motion_speed_rpm_ = current_step_speed_ * 60.0f / static_cast<float>(micro_steps_per_round);
     }
 
