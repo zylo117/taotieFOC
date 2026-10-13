@@ -1043,7 +1043,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             motion_commanded_travel_deg_ = static_cast<float>(motion_steps_emitted_signed) * step_angle_deg;
 
             motion_follow_error_deg_ = normalize_signed_angle_error_deg(
-                static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F - motion_commanded_travel_deg_);  // 比如命令要走3度，结果才走了2度，那跟随误差就是-1度
+                static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F - motion_commanded_travel_deg_);  // 比如命令要走3度，结果才走了2度，那跟随误差就是-1度。实际-目标
         }
         motion_encoder_previous_raw_ = encoder_filtered_raw_;
     }
@@ -1077,7 +1077,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
         const float measured_rpm = (encoder_delta_deg / 360.0f) * (60.0f / dt);
         // 平滑计算电机的实际转速
-        encoder_speed_rpm_ = encoder_speed_rpm_ * 0.98f + measured_rpm * 0.02f;
+        // encoder_speed_rpm_ = encoder_speed_rpm_ * 0.98f + measured_rpm * 0.02f;
+        encoder_speed_rpm_ = measured_rpm;
     }
 
     if (closed_loop_angle_mode_enabled_)
@@ -1092,18 +1093,20 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         if (dt > 0.0f)
         {
             const float position_error_rev = desired_error_deg / 360.0f;
-            const float position_reference_rps = position_pid_.update(position_error_rev, dt);
+            const float position_reference_rps = position_pid_.update(position_error_rev, dt);  // 根据误差角算出位置环的速度修正量
             // const float velocity_error_rps = position_reference_rps - (encoder_speed_rpm_ / 60.0f);
             const float base_speed_rps = current_step_speed_ / static_cast<float>(getMicroStepsPerRound(driver_));
-            const float total_ref_rps = base_speed_rps + position_reference_rps;
-            const float velocity_error_rps = total_ref_rps - (encoder_speed_rpm_ / 60.0f);
-            const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt);
+            const float total_ref_rps = base_speed_rps + position_reference_rps;  // 总期望速度 = 基础速度 + 位置环修正量
+            const float velocity_error_rps = total_ref_rps - (encoder_speed_rpm_ / 60.0f);  // 总期望速度和实际速度的速度差
+            const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt); // 根据总期望速度和实际速度的速度差和当前的速度计算速度环修正量（已包含位置环的修正）
+
             const float max_rps = angle_max_rpm_ / 60.0f;
-            const float unconstrained_rps = fast_clamp(position_reference_rps + velocity_correction_rps,
+            const float unconstrained_rps = fast_clamp(velocity_correction_rps,
                                                        -max_rps,
                                                        max_rps);
-            const float target_direction_rps = desired_error_deg >= 0.0f ? 1.0f : -1.0f;
-            const float directed_rps = unconstrained_rps * target_direction_rps < 0.0f
+
+            const float target_direction = desired_error_deg >= 0.0f ? 1.0f : -1.0f;
+            const float directed_rps =  unconstrained_rps * target_direction < 0.0f
                 ? 0.0f
                 : unconstrained_rps;
             const float accel_limit_rps2 = angle_accel_rpm_s_ / 60.0f;
@@ -1131,10 +1134,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             {
                 motion_direction_ = calibration_rps >= 0.0f ? 1 : -1;
             }
-            if (driver_ != nullptr)
-            {
-                driver_->setDirection(motion_direction_ > 0);
-            }
+            // if (driver_ != nullptr)
+            // {
+            //     driver_->setDirection(motion_direction_ > 0);
+            // }
         }
 
         // 注释掉这段，这段代码不能启用，因为我需要它摇摆才能测好pid，但是以后需要强制定在某个角度可能有用
@@ -1252,25 +1255,29 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const float position_reference_rps = position_pid_.update(-motion_follow_error_deg_ / 360.0f, dt);
         const float measured_motion_rps = encoder_speed_rpm_ / 60.0f;
         // 总期望速度 = 基础速度 + 位置环修正量
-        const float base_speed_rps = current_step_speed_ / static_cast<float>(getMicroStepsPerRound(driver_));
+        static const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
+        const float base_speed_rps = current_step_speed_ / static_cast<float>(micro_steps_per_round);
         const float total_ref_rps = base_speed_rps + position_reference_rps;
         const float velocity_error_rps = total_ref_rps - measured_motion_rps;
         const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt);
-        const float max_correction_rps = motion_max_rpm_ / 60.0f;
-        const float added_rps = position_reference_rps + velocity_correction_rps;
-        static const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
+        const float max_rps = motion_max_rpm_ / 60.0f;
+
+        const float target_direction = (-motion_follow_error_deg_) >= 0.0f ? 1.0f : -1.0f;
 #ifdef CLAMP_FOC_SPEED
-        const float correction_rps = fast_clamp(added_rps,
-                                                -max_correction_rps,
-                                                max_correction_rps);
-        const float correction_step_s = correction_rps * static_cast<float>(motion_direction_) *
-                                        static_cast<float>(micro_steps_per_round);
-        const float max_correction_step_s = motion_accel_step_s2_ * dt;
-        const float limited_correction_step_s = fast_clamp(correction_step_s,
-                                                           -max_correction_step_s,
-                                                           max_correction_step_s);
+        const float unconstrained_rps = fast_clamp(velocity_correction_rps,
+                                                               -max_rps,
+                                                               max_rps);
+        const float directed_rps = unconstrained_rps * target_direction < 0.0f
+            ? 0.0f
+            : unconstrained_rps;
+        const float accel_limit_rps2 = angle_accel_rpm_s_ / 60.0f;
+        const float previous_rps = motion_speed_rpm_ / 60.0f;
+        const float max_delta_rps = accel_limit_rps2 * dt;
+        const float desired_rps = fast_clamp(directed_rps,
+                                             previous_rps - max_delta_rps,
+                                             previous_rps + max_delta_rps);
 #else
-        const float limited_correction_step_s = added_rps * static_cast<float>(motion_direction_) *
+        const float limited_correction_step_s = velocity_correction_rps * static_cast<float>(motion_direction_) *
                                         static_cast<float>(micro_steps_per_round);
 #endif
 
@@ -1288,10 +1295,32 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         //            limited_correction_step_s,
         //            current_step_speed_);
 
-        current_step_speed_ = fast_clamp(current_step_speed_ + limited_correction_step_s,
-                                         0.0f,
-                                         motion_max_step_s_ * 2);
+        // current_step_speed_ = fast_clamp(current_step_speed_ + limited_correction_step_s,
+        //                                  0.0f,
+        //                                  motion_max_step_s_ * 2);
+        // current_step_speed_ = current_step_speed_ + velocity_correction_rps * target_direction * static_cast<float>(micro_steps_per_round);
+
+
+        // const float unconstrained_rps = fast_clamp(velocity_correction_rps,
+        //                                            -max_rps,
+        //                                            max_rps);
+
+        // TODO 命令的目标角度本身就有问题，先修复那个
+        // const float directed_rps =  velocity_correction_rps * target_direction < 0.0f
+        //     ? 0.0f
+        //     : velocity_correction_rps;
+        const float directed_rps = velocity_correction_rps * target_direction;
+        const float accel_limit_rps2 = angle_accel_rpm_s_ / 60.0f;
+        const float previous_rps = motion_speed_rpm_ / 60.0f;
+        const float max_delta_rps = accel_limit_rps2 * dt;
+        // const float desired_rps = fast_clamp(directed_rps,
+        //                                      previous_rps - max_delta_rps,
+        //                                      previous_rps + max_delta_rps);
+        const float desired_rps = base_speed_rps + directed_rps;
+        current_step_speed_ = desired_rps * static_cast<float>(micro_steps_per_round);
+
         motion_speed_rpm_ = current_step_speed_ * 60.0f / static_cast<float>(micro_steps_per_round);
+        motion_direction_ = static_cast<int8_t>(current_step_speed_ > 0.0f ? 1.0f : -1.0f);
     }
 
     const bool alternating_motion = motion_mode_ == MOTION_MODE_ALTERNATING_FORWARD ||
