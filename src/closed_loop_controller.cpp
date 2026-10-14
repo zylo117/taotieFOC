@@ -839,10 +839,6 @@ void ClosedLoopController::startMotion()
     motion_encoder_travel_raw_ = 0;
     motion_follow_error_deg_ = 0.0f;
     motion_encoder_reference_valid_ = encoder_ != nullptr;
-    if (motion_encoder_reference_valid_)
-    {
-        motion_encoder_previous_raw_ = encoder_->readFilteredRaw();
-    }
     if (motion_mode_ == MOTION_MODE_POSITION_REVERSE ||
         motion_mode_ == MOTION_MODE_VELOCITY_REVERSE ||
         motion_mode_ == MOTION_MODE_HOME_REVERSE ||
@@ -1023,7 +1019,6 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     if (encoder_ != nullptr)
     {
         const float previous_encoder_angle = encoder_filtered_angle_;
-        const uint16_t previous_encoder_raw = encoder_filtered_raw_;
         encoder_filtered_raw_ = encoder_->readFilteredRaw();
         encoder_filtered_angle_ = encoder_->readFilteredAngle();
         magnetic_field_high_ = encoder_->magneticFieldHigh();
