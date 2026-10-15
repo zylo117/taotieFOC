@@ -17,6 +17,7 @@
 // #define CLAMP_FOC_SPEED
 
 #include <cmath>
+#include <vector>
 
 #include "core_cm4.h"
 #include "pid_controller.h"
@@ -270,7 +271,7 @@ private:
     volatile float motion_position_deg_;
     volatile float motion_follow_error_deg_;
     volatile float motion_commanded_travel_deg_;
-    volatile int32_t motion_encoder_travel_raw_;
+    volatile int64_t motion_encoder_travel_raw_;
     volatile uint16_t motion_encoder_previous_raw_;
     volatile bool motion_encoder_reference_valid_;
     volatile uint64_t motion_last_ramp_time_ns_;
@@ -317,6 +318,12 @@ private:
     uint32_t position_samples_;
     uint32_t velocity_samples_;
     uint32_t current_samples_;
+
+    std::vector<float> motion_commanded_travel_deg_list_;
+    std::vector<float> motion_encoder_travel_angle_list_;
+
+    // 死区角，就是命令脉冲和实际电机轴之间的死区角度，单位是角度。因为电机响应永远落后于命令脉冲，为了消除这个系统误差，避免闭环过度修正，就要在移动超过这个角度后才计算跟随误差角，然后才让闭环介入
+    float dead_zone_angles = 30;
 
     // ====================== 【补充梯形加减速预计算】======================
     // 梯形加减速预计算参数（startMotion里一次性算出）

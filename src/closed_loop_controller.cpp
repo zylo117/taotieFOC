@@ -1030,15 +1030,36 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
         if (motion_running_ && motion_encoder_reference_valid_)
         {
-            const int16_t encoder_delta_raw = normalize_signed_delta_deg(static_cast<int32_t>(encoder_filtered_raw_) - static_cast<int32_t>(motion_encoder_previous_raw_));
-            motion_encoder_travel_raw_ += encoder_delta_raw;
-
-            // 下一步才计算上一步的理论步数（因为用了定时器后，脉冲是异步发出的， 直接算就等于理论步数领先实际了
+            // 下一步才计算上一步的理论步数（因为用了定时器后，脉冲是异步发出的， 直接算就等于理论步数领先实际了，所以放到下一ramp才计算理论跑了多少
             const float step_angle_deg = 360.0f / static_cast<float>(getMicroStepsPerRound(driver_));
             motion_commanded_travel_deg_ = static_cast<float>(motion_steps_emitted_signed) * step_angle_deg;
 
-            motion_follow_error_deg_ = normalize_signed_angle_error_deg(
-                static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F - motion_commanded_travel_deg_);  // 比如命令要走3度，结果才走了2度，那跟随误差就是-1度。实际-目标
+            if (closed_loop_angle_mode_enabled_ or motion_commanded_travel_deg_ > dead_zone_angles)
+            {
+                const int16_t encoder_delta_raw = normalize_signed_delta_deg(static_cast<int32_t>(encoder_filtered_raw_) - static_cast<int32_t>(motion_encoder_previous_raw_));
+                motion_encoder_travel_raw_ += encoder_delta_raw;
+
+                auto motion_encoder_travel_angle_ = static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F;
+
+                motion_follow_error_deg_ = normalize_signed_angle_error_deg(
+                    motion_encoder_travel_angle_ - motion_commanded_travel_deg_);  // 比如命令要走3度，结果才走了2度，那跟随误差就是-1度。实际-目标
+            }
+            else if (motion_commanded_travel_deg_ <= dead_zone_angles)
+            {
+                motion_follow_error_deg_ = 0.0;
+                // 超过死区角度才让编码器角度和命令角度一致，然后才计算编码器角度
+                motion_encoder_travel_raw_ = static_cast<int32_t>(motion_commanded_travel_deg_ * 65536.0F / 360.0F);
+            }
+
+            // if (motion_steps_emitted_ < 300)
+            // {
+            //     motion_commanded_travel_deg_list_.emplace_back(motion_commanded_travel_deg_);
+            //     motion_encoder_travel_angle_list_.emplace_back(motion_encoder_travel_angle_);
+            // } else if (motion_pulse_count_ - motion_steps_emitted_ < 300)
+            // {
+            //     motion_commanded_travel_deg_list_.emplace_back(motion_commanded_travel_deg_);
+            //     motion_encoder_travel_angle_list_.emplace_back(motion_encoder_travel_angle_);
+            // }
         }
         motion_encoder_previous_raw_ = encoder_filtered_raw_;
     }
@@ -1448,6 +1469,19 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
 void ClosedLoopController::stopMotion()
 {
+    // for (int i = 0; i < 300; i++)
+    // {
+    //     printf("fuck:commanded_travel_deg: %.3f, encoder_travel_angle: %.3f\n", motion_commanded_travel_deg_list_[i], motion_encoder_travel_angle_list_[i]);
+    // }
+    // for (int i = motion_commanded_travel_deg_list_.size() - 300; i < motion_commanded_travel_deg_list_.size(); i++)
+    // {
+    //     printf("shit:commanded_travel_deg: %.3f, encoder_travel_angle: %.3f\n", motion_commanded_travel_deg_list_[i], motion_encoder_travel_angle_list_[i]);
+    // }
+    // motion_commanded_travel_deg_list_.clear();
+    // motion_encoder_travel_angle_list_.clear();
+    // motion_commanded_travel_deg_list_.resize(0);
+    // motion_encoder_travel_angle_list_.resize(0);
+
     printf("motion stopping!!! motion_commanded_travel_deg_: %f, motion_encoder_travel_deg_: %f\n", motion_commanded_travel_deg_, static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F);
     motion_running_ = false;
     motion_first_run_ = false;
@@ -1457,6 +1491,8 @@ void ClosedLoopController::stopMotion()
     target_velocity_rps_ = 0.0f;
     motion_steps_emitted_ = 0U;
     motion_steps_emitted_signed = 0U;
+    motion_commanded_travel_deg_ = 0;
+    motion_encoder_travel_raw_ = 0U;
     motion_leg_pulse_count_ = 0U;
     motion_leg_reversed_ = false;
     motion_direction_change_pending_ = false;
