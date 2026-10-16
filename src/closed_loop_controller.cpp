@@ -1020,12 +1020,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     {
         const float previous_encoder_angle = encoder_filtered_angle_;
         encoder_filtered_raw_ = encoder_->readFilteredRaw();
-        encoder_filtered_angle_ = encoder_->readFilteredAngle();
         magnetic_field_high_ = encoder_->magneticFieldHigh();
         magnetic_field_low_ = encoder_->magneticFieldLow();
         reportMagneticFieldAlarm(magnetic_field_high_ || magnetic_field_low_);
 
-        motion_position_deg_ = encoder_filtered_angle_;
         encoder_delta_deg = normalize_signed_delta_deg(encoder_filtered_angle_ - previous_encoder_angle);
 
         if (motion_running_ && motion_encoder_reference_valid_)
@@ -1093,6 +1091,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // 以真实机械角度误差做闭环控制，单位是度/圈；
         // 微分步数只影响输出脉冲密度，不改变 PID 的误差定义，
         // 因此不同驱动或不同细分设置不会让同一组 PID 失效。
+        encoder_filtered_angle_ = encoder_->readFilteredAngle();
+        motion_position_deg_ = encoder_filtered_angle_;
         const float desired_error_deg = normalize_signed_angle_error_deg(target_angle_deg_ - motion_position_deg_);  // 目标-实际
         closed_loop_angle_error_deg_ = desired_error_deg;
 
