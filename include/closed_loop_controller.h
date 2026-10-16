@@ -322,9 +322,6 @@ private:
     std::vector<float> motion_commanded_travel_deg_list_;
     std::vector<float> motion_encoder_travel_angle_list_;
 
-    // 死区角，就是命令脉冲和实际电机轴之间的死区角度，单位是角度。因为电机响应永远落后于命令脉冲，为了消除这个系统误差，避免闭环过度修正，就要在移动超过这个角度后才计算跟随误差角，然后才让闭环介入
-    float dead_zone_angles = 30;
-
     // ====================== 【补充梯形加减速预计算】======================
     // 梯形加减速预计算参数（startMotion里一次性算出）
     float motion_accel_step_s2_; // 加速度：微步/s²
