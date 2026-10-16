@@ -775,6 +775,7 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
     motion_steps_emitted_ = 0U;
     motion_steps_emitted_signed = 0U;
     motion_step_accumulator_ = 0.0f;
+    compensated_motion_step_accumulator_ = 0.0f;
     motion_encoder_previous_raw_ = encoder_ != nullptr ? encoder_->readFilteredRaw() : encoder_filtered_raw_;
     motion_encoder_reference_valid_ = encoder_ != nullptr;
     if (driver_ != nullptr)
@@ -831,6 +832,7 @@ void ClosedLoopController::startMotion()
     motion_steps_emitted_ = 0U;
     motion_steps_emitted_signed = 0U;
     motion_step_accumulator_ = 0.0f;
+    compensated_motion_step_accumulator_ = 0.0f;
     motion_step_high_ = false;
     motion_zero_speed_recovery_logged_ = false;
     motion_leg_reversed_ = false;
@@ -928,6 +930,8 @@ void ClosedLoopController::startMotion()
 
         // 复位步累积器，用于固定频率定时器里的脉冲生成（经典DDA微分器思路）
         motion_step_accumulator_ = 0.0f;
+        compensated_motion_step_accumulator_ = 0.0f;
+        encoder_filtered_angle_ = 0.0f;
         // ===================================================================
 
         // 全部参数准备好再开始
@@ -1020,6 +1024,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     {
         const float previous_encoder_angle = encoder_filtered_angle_;
         encoder_filtered_raw_ = encoder_->readFilteredRaw();
+        encoder_filtered_angle_ = encoder_->readFilteredAngle();
+        motion_position_deg_ = encoder_filtered_angle_;
         magnetic_field_high_ = encoder_->magneticFieldHigh();
         magnetic_field_low_ = encoder_->magneticFieldLow();
         reportMagneticFieldAlarm(magnetic_field_high_ || magnetic_field_low_);
@@ -1081,8 +1087,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
         const float measured_rpm = (encoder_delta_deg / 360.0f) * (60.0f / dt);
         // 平滑计算电机的实际转速
-        encoder_speed_rpm_ = encoder_speed_rpm_ * 0.98f + measured_rpm * 0.02f;
-        // encoder_speed_rpm_ = measured_rpm;
+        // encoder_speed_rpm_ = encoder_speed_rpm_ * 0.9f + measured_rpm * 0.1f;
+        encoder_speed_rpm_ = measured_rpm;
     }
 
     if (closed_loop_angle_mode_enabled_)
@@ -1091,8 +1097,6 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // 以真实机械角度误差做闭环控制，单位是度/圈；
         // 微分步数只影响输出脉冲密度，不改变 PID 的误差定义，
         // 因此不同驱动或不同细分设置不会让同一组 PID 失效。
-        encoder_filtered_angle_ = encoder_->readFilteredAngle();
-        motion_position_deg_ = encoder_filtered_angle_;
         const float desired_error_deg = normalize_signed_angle_error_deg(target_angle_deg_ - motion_position_deg_);  // 目标-实际
         closed_loop_angle_error_deg_ = desired_error_deg;
 
@@ -1104,10 +1108,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             const float base_speed_rps = current_step_speed_ / static_cast<float>(getMicroStepsPerRound(driver_));
             const float total_ref_rps = base_speed_rps + position_reference_rps;  // 总期望速度 = 基础速度 + 位置环修正量
             const float velocity_error_rps = total_ref_rps - (encoder_speed_rpm_ / 60.0f);  // 总期望速度和实际速度的速度差
-            const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt); // 根据总期望速度和实际速度的速度差和当前的速度计算速度环修正量（已包含位置环的修正）
+            const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt); // 根据总期望速度和实际速度的速度差和当前的速度计算速度环修正量
 
             const float max_rps = angle_max_rpm_ / 60.0f;
-            const float unconstrained_rps = fast_clamp(velocity_correction_rps,
+            const float unconstrained_rps = fast_clamp(position_reference_rps + velocity_correction_rps,
                                                        -max_rps,
                                                        max_rps);
 
@@ -1128,6 +1132,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             if (calibration_stage_ == CALIBRATION_HOMING && calibration_rps == 0.0f)
             {
                 motion_step_accumulator_ = 0.0f;
+                compensated_motion_step_accumulator_ = 0.0f;
                 position_pid_.resetIntegral();
                 position_pid_.resetDeriv();
                 velocity_pid_.resetIntegral();
@@ -1152,6 +1157,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         //     current_step_speed_ = 0.0f;
         //     motion_speed_rpm_ = 0.0f;
         //     motion_step_accumulator_ = 0.0f;
+        //     compensated_motion_step_accumulator_ = 0.0f;
         //     position_pid_.resetIntegral();
         //     position_pid_.resetDeriv();
         //     velocity_pid_.resetIntegral();
@@ -1174,6 +1180,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             current_step_speed_ = 0.0f;
             motion_speed_rpm_ = 0.0f;
             motion_step_accumulator_ = 0.0f;
+            compensated_motion_step_accumulator_ = 0.0f;
             printf("[MOTION] turnaround: leg_steps=%lu total=%lu dir=%d\r\n",
                    static_cast<unsigned long>(motion_leg_pulse_count_),
                    static_cast<unsigned long>(motion_pulse_count_),
@@ -1189,6 +1196,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
                 current_step_speed_ = 0.0f;
                 motion_speed_rpm_ = 0.0f;
                 motion_step_accumulator_ = 0.0f;
+                compensated_motion_step_accumulator_ = 0.0f;
                 calibration_stage_ = CALIBRATION_SAMPLING;
                 calibration_sample_count_ = 0U;
                 calibration_sample_attempts_ = 0U;
@@ -1253,7 +1261,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     }
 
     if (closed_loop_compensation_enabled_ && motion_running_ && !closed_loop_angle_mode_enabled_ &&
-        encoder_ != nullptr && delta_ramp_ns > 0U && motion_max_step_s_ > 0.0f)
+        encoder_ != nullptr && delta_ramp_ns > 0U && motion_max_step_s_ > 0.0f && fast_abs(motion_follow_error_deg_) > closed_loop_threshold_angle_)
     {
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
         // 位置跟随误差定义为“命令 - 实际”。如果命令已经领先真实位置，说明该减速；
@@ -1315,18 +1323,15 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // const float directed_rps =  velocity_correction_rps * target_direction < 0.0f
         //     ? 0.0f
         //     : velocity_correction_rps;
-        const float directed_rps = velocity_correction_rps * target_direction;
+        const float directed_rps = (position_reference_rps + velocity_correction_rps) * target_direction;
         const float accel_limit_rps2 = angle_accel_rpm_s_ / 60.0f;
         const float previous_rps = motion_speed_rpm_ / 60.0f;
         const float max_delta_rps = accel_limit_rps2 * dt;
         // const float desired_rps = fast_clamp(directed_rps,
         //                                      previous_rps - max_delta_rps,
         //                                      previous_rps + max_delta_rps);
-        const float desired_rps = base_speed_rps + directed_rps;
-        current_step_speed_ = desired_rps * static_cast<float>(micro_steps_per_round);
 
-        motion_speed_rpm_ = current_step_speed_ * 60.0f / static_cast<float>(micro_steps_per_round);
-        motion_direction_ = static_cast<int8_t>(current_step_speed_ > 0.0f ? 1.0f : -1.0f);
+        compensated_rps_ = directed_rps;
     }
 
     const bool alternating_motion = motion_mode_ == MOTION_MODE_ALTERNATING_FORWARD ||
@@ -1348,22 +1353,30 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
     // 累加本次时间内应该产生的步数（浮点数，允许小数累积）
     motion_step_accumulator_ += fast_abs(current_step_speed_) * dt_step_s;
+
+    const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
+    const auto compensated_step_speed_ = compensated_rps_ * static_cast<float>(micro_steps_per_round);
+
+    compensated_motion_step_accumulator_ += fast_abs(current_step_speed_ + compensated_step_speed_) * dt_step_s;
+
     if (closed_loop_angle_mode_enabled_ && motion_step_accumulator_ > 1.0)
     {
         motion_step_accumulator_ = 1.0;
+        compensated_motion_step_accumulator_ = 1.0;
     }
 
     // TMR2 是 32 位计数器，因此 ARR 序列必须是 32 位。
     // 这里复用同一份周期表，正转和反转都只需要切换 DIR 输出 + 重新装载同一块 RAM，
     // 这样既能完成“正转一圈 -> 反转一圈”，又不会把 RAM 翻倍消耗掉。
 
-    if ((motion_step_accumulator_ >= 1.0f) &&
+    if ((compensated_motion_step_accumulator_ >= 1.0f) &&
         (closed_loop_angle_mode_enabled_ || motion_steps_emitted_ < motion_pulse_count_))
     {
         // 人为规定第一个和最后arr周期是用来提前和延后换向的，
         // 如果是同向，这两个的arr周期为0，否则arr为guard_tick
         static uint32_t arr_seq_cycle[MAX_PULSE_ARR_LEN + 2];
-        uint32_t num_steps = static_cast<uint32_t>(floor(motion_step_accumulator_));
+        auto num_steps = static_cast<uint32_t>(floor(compensated_motion_step_accumulator_));
+        auto num_original_command_steps = static_cast<uint32_t>(floor(motion_step_accumulator_));
         if (!closed_loop_angle_mode_enabled_)
         {
             const uint32_t remaining_total_steps = motion_pulse_count_ - motion_steps_emitted_;
@@ -1446,10 +1459,11 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
         if (!closed_loop_angle_mode_enabled_)
         {
-            motion_steps_emitted_ += num_steps;
-            motion_steps_emitted_signed += motion_direction_ * num_steps;  // 正向就加步数，反向就减
+            motion_steps_emitted_ += num_original_command_steps;
+            motion_steps_emitted_signed += motion_direction_ * num_original_command_steps;  // 正向就加步数，反向就减
         }
-        motion_step_accumulator_ -= num_steps;
+        motion_step_accumulator_ -= num_original_command_steps;
+        compensated_motion_step_accumulator_ -= num_steps;
     }
 
     // 更新本次ramp的时间戳，作为下一次调用的“上一次时间点”
@@ -1487,6 +1501,7 @@ void ClosedLoopController::stopMotion()
     motion_leg_reversed_ = false;
     motion_direction_change_pending_ = false;
     motion_step_accumulator_ = 0.0f;
+    compensated_motion_step_accumulator_ = 0.0f;
     motion_last_ramp_time_ns_ = 0ULL;
     // printf("fuck3 motion_last_ramp_time_ns_: %f\n", motion_last_ramp_time_ns_/1e9);
     motion_step_high_ = false;

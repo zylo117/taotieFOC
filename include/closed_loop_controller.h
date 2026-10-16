@@ -280,6 +280,7 @@ private:
     volatile uint32_t motion_dma_pending_steps_;
     volatile uint32_t motion_leg_pulse_count_;
     volatile double motion_step_accumulator_;
+    volatile double compensated_motion_step_accumulator_;
     volatile int8_t motion_direction_;
     volatile bool motion_leg_reversed_;
     volatile bool motion_direction_change_pending_;
@@ -321,6 +322,10 @@ private:
 
     std::vector<float> motion_commanded_travel_deg_list_;
     std::vector<float> motion_encoder_travel_angle_list_;
+
+    float closed_loop_threshold_angle_ = 1.8f;
+    float compensated_rps_ = 0.0f;
+    double compensated_microsteps = 0.0f;
 
     // ====================== 【补充梯形加减速预计算】======================
     // 梯形加减速预计算参数（startMotion里一次性算出）
