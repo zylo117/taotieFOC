@@ -276,7 +276,7 @@ private:
     volatile bool motion_encoder_reference_valid_;
     volatile uint64_t motion_last_ramp_time_ns_;
     volatile uint64_t motion_steps_emitted_;
-    volatile int64_t motion_steps_emitted_signed;  // 指的是距离总运动位移脉冲数，有方向。等于是出发至今的带方向的累计脉冲数
+    volatile int32_t motion_steps_emitted_signed;  // 指的是距离总运动位移脉冲数，有方向。等于是出发至今的带方向的累计脉冲数
     volatile uint32_t motion_dma_pending_steps_;
     volatile uint32_t motion_leg_pulse_count_;
     volatile double motion_step_accumulator_;
@@ -325,7 +325,6 @@ private:
 
     float closed_loop_threshold_angle_ = 1.8f;
     float compensated_rps_ = 0.0f;
-    double compensated_microsteps = 0.0f;
 
     // ====================== 【补充梯形加减速预计算】======================
     // 梯形加减速预计算参数（startMotion里一次性算出）

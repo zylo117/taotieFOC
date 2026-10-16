@@ -776,6 +776,7 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
     motion_steps_emitted_signed = 0U;
     motion_step_accumulator_ = 0.0f;
     compensated_motion_step_accumulator_ = 0.0f;
+    compensated_rps_ = 0.0f;
     motion_encoder_previous_raw_ = encoder_ != nullptr ? encoder_->readFilteredRaw() : encoder_filtered_raw_;
     motion_encoder_reference_valid_ = encoder_ != nullptr;
     if (driver_ != nullptr)
@@ -833,6 +834,7 @@ void ClosedLoopController::startMotion()
     motion_steps_emitted_signed = 0U;
     motion_step_accumulator_ = 0.0f;
     compensated_motion_step_accumulator_ = 0.0f;
+    compensated_rps_ = 0.0f;
     motion_step_high_ = false;
     motion_zero_speed_recovery_logged_ = false;
     motion_leg_reversed_ = false;
@@ -931,6 +933,7 @@ void ClosedLoopController::startMotion()
         // 复位步累积器，用于固定频率定时器里的脉冲生成（经典DDA微分器思路）
         motion_step_accumulator_ = 0.0f;
         compensated_motion_step_accumulator_ = 0.0f;
+        compensated_rps_ = 0.0f;
         encoder_filtered_angle_ = 0.0f;
         // ===================================================================
 
@@ -1133,6 +1136,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             {
                 motion_step_accumulator_ = 0.0f;
                 compensated_motion_step_accumulator_ = 0.0f;
+                compensated_rps_ = 0.0f;
                 position_pid_.resetIntegral();
                 position_pid_.resetDeriv();
                 velocity_pid_.resetIntegral();
@@ -1158,6 +1162,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         //     motion_speed_rpm_ = 0.0f;
         //     motion_step_accumulator_ = 0.0f;
         //     compensated_motion_step_accumulator_ = 0.0f;
+        //     compensated_rps_ = 0.0f;
         //     position_pid_.resetIntegral();
         //     position_pid_.resetDeriv();
         //     velocity_pid_.resetIntegral();
@@ -1181,6 +1186,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             motion_speed_rpm_ = 0.0f;
             motion_step_accumulator_ = 0.0f;
             compensated_motion_step_accumulator_ = 0.0f;
+            compensated_rps_ = 0.0f;
             printf("[MOTION] turnaround: leg_steps=%lu total=%lu dir=%d\r\n",
                    static_cast<unsigned long>(motion_leg_pulse_count_),
                    static_cast<unsigned long>(motion_pulse_count_),
@@ -1197,6 +1203,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
                 motion_speed_rpm_ = 0.0f;
                 motion_step_accumulator_ = 0.0f;
                 compensated_motion_step_accumulator_ = 0.0f;
+                compensated_rps_ = 0.0f;
                 calibration_stage_ = CALIBRATION_SAMPLING;
                 calibration_sample_count_ = 0U;
                 calibration_sample_attempts_ = 0U;
@@ -1363,6 +1370,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     {
         motion_step_accumulator_ = 1.0;
         compensated_motion_step_accumulator_ = 1.0;
+        compensated_rps_ = 0.0;
     }
 
     // TMR2 是 32 位计数器，因此 ARR 序列必须是 32 位。
