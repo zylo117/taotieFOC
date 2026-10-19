@@ -308,40 +308,47 @@ void ClosedLoopController::syncProtocolTelemetry()
         fault_flags |= FAULT_OUTPUT_STOPPED;
     }
 
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_FAULT_STATUS, fault_flags);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_FAULT, encoder_fault_active_ ? 1U : 0U);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_FAULT, magnetic_fault_active_ ? 1U : 0U);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_OUTPUT_STOP, output_stopped_ ? 1U : 0U);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_A,
-                                  static_cast<uint32_t>(static_cast<int32_t>(phase_a_current_a_ * 1000.0f)));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_B,
-                                  static_cast<uint32_t>(static_cast<int32_t>(phase_b_current_a_ * 1000.0f)));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_POS_LOOP_HZ, position_loop_hz_);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_VEL_LOOP_HZ, velocity_loop_hz_);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_CUR_LOOP_HZ, current_loop_hz_);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_LAST_FAULT, fault_flags);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_TARGET_POSITION, static_cast<uint32_t>(target_step_));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_ACTUAL_POSITION, static_cast<uint32_t>(actual_step_));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_FOLLOW_ERROR, static_cast<uint32_t>(follow_error_));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_RAW, encoder_filtered_angle_);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG, static_cast<uint32_t>(static_cast<int32_t>(getEncoderAngleMilliDegrees() * 1000.0f)));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_HIGH, magnetic_field_high_ ? 1U : 0U);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_LOW, magnetic_field_low_ ? 1U : 0U);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_START_RPM, static_cast<uint32_t>(motion_start_rpm_));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAX_RPM, static_cast<uint32_t>(motion_max_rpm_));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_ACCEL_RPM_S, static_cast<uint32_t>(motion_accel_rpm_s_));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_ANGLE_MAX_RPM, static_cast<uint32_t>(angle_max_rpm_));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_ANGLE_ACCEL_RPM_S, static_cast<uint32_t>(angle_accel_rpm_s_));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_PULSE_COUNT, motion_pulse_count_);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_MODE, static_cast<uint32_t>(motion_mode_));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_COMMAND, motion_running_ ? 1U : 0U);
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_SPEED_RPM,
-                                  static_cast<uint32_t>(static_cast<int32_t>(encoder_speed_rpm_)));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_POSITION_DEG,
-                                  static_cast<uint32_t>(static_cast<int32_t>(closed_loop_angle_error_deg_ * 1000.0f)));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_TARGET_ANGLE_DEG,
-                                  static_cast<uint32_t>(static_cast<int32_t>(target_angle_deg_ * 1000.0f)));
-    protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, step_pulse_width_ns_);
+    if (ramp_loop_idx % 20000 == 0)
+    {
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_FAULT_STATUS, fault_flags);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_FAULT, encoder_fault_active_ ? 1U : 0U);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_OUTPUT_STOP, output_stopped_ ? 1U : 0U);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_POS_LOOP_HZ, position_loop_hz_);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_VEL_LOOP_HZ, velocity_loop_hz_);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_CUR_LOOP_HZ, current_loop_hz_);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_LAST_FAULT, fault_flags);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_START_RPM, static_cast<uint32_t>(motion_start_rpm_));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAX_RPM, static_cast<uint32_t>(motion_max_rpm_));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ACCEL_RPM_S, static_cast<uint32_t>(motion_accel_rpm_s_));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ANGLE_MAX_RPM, static_cast<uint32_t>(angle_max_rpm_));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ANGLE_ACCEL_RPM_S, static_cast<uint32_t>(angle_accel_rpm_s_));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_PULSE_COUNT, motion_pulse_count_);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_SPEED_RPM,
+                                      static_cast<uint32_t>(static_cast<int32_t>(encoder_speed_rpm_)));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, step_pulse_width_ns_);
+    } else if (ramp_loop_idx % 200 == 0)
+    {
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_FAULT, magnetic_fault_active_ ? 1U : 0U);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_A,
+                                      static_cast<uint32_t>(static_cast<int32_t>(phase_a_current_a_ * 1000.0f)));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_B,
+                                      static_cast<uint32_t>(static_cast<int32_t>(phase_b_current_a_ * 1000.0f)));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_TARGET_POSITION, static_cast<uint32_t>(target_step_));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ACTUAL_POSITION, static_cast<uint32_t>(actual_step_));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_FOLLOW_ERROR, static_cast<uint32_t>(follow_error_));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_RAW, encoder_filtered_angle_);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG, static_cast<uint32_t>(static_cast<int32_t>(getEncoderAngleMilliDegrees() * 1000.0f)));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_HIGH, magnetic_field_high_ ? 1U : 0U);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_LOW, magnetic_field_low_ ? 1U : 0U);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_MODE, static_cast<uint32_t>(motion_mode_));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_COMMAND, motion_running_ ? 1U : 0U);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_TARGET_ANGLE_DEG,
+                                      static_cast<uint32_t>(static_cast<int32_t>(target_angle_deg_ * 1000.0f)));
+    } else
+    {
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_POSITION_DEG,
+                                      static_cast<uint32_t>(static_cast<int32_t>(closed_loop_angle_error_deg_ * 1000.0f)));
+    }
 }
 
 bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
@@ -1013,6 +1020,8 @@ void start_step_sequence(uint32_t *seq, uint32_t seq_count, uint32_t k_psc, uint
  */
 void ClosedLoopController::rampUpdate(uint64_t now_ns)
 {
+    ramp_loop_idx++;
+
     // 更新FOC频率信息
     updateLoopFrequencyStats(now_ns);
 
