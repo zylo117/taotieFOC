@@ -1277,7 +1277,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     }
 
     if (closed_loop_compensation_enabled_ && motion_running_ && !closed_loop_angle_mode_enabled_ &&
-        encoder_ != nullptr && delta_ramp_ns > 0U && motion_max_step_s_ > 0.0f && fast_abs(motion_follow_error_deg_) > closed_loop_threshold_angle_)
+        encoder_ != nullptr && delta_ramp_ns > 0U && motion_max_step_s_ > 0.0f)
     {
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
         // 位置跟随误差定义为“命令 - 实际”。如果命令已经领先真实位置，说明该减速；
