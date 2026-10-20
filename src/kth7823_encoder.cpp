@@ -126,7 +126,7 @@ uint16_t Kth7823Encoder::readFilteredRaw()
 
 float Kth7823Encoder::readFilteredAngle()
 {
-    return static_cast<float>(filtered_raw_) / 65536.0F * 360.0F;
+    return static_cast<float>(filtered_raw_) * 360.0F / 65536.0F;
 }
 
 /**
