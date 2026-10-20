@@ -1099,8 +1099,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
         const float measured_rpm = (encoder_delta_deg / 360.0f) * (60.0f / dt);
         // 平滑计算电机的实际转速
-        // encoder_speed_rpm_ = encoder_speed_rpm_ * 0.9f + measured_rpm * 0.1f;
-        encoder_speed_rpm_ = measured_rpm;
+        encoder_speed_rpm_ = encoder_speed_rpm_ * 0.9f + measured_rpm * 0.1f;
+        // encoder_speed_rpm_ = measured_rpm;
     }
 
     if (closed_loop_angle_mode_enabled_)
