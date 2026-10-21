@@ -1,7 +1,6 @@
 #include "closed_loop_controller.h"
 #include "at32f403a_407_board.h"
 
-#define STEP_EDGE_TIMEOUT_US    200U
 #define STEP_PERIOD_US_DEFAULT  5000U
 #define FULL_STEPS_PER_ROUND    200U  // 1.8度步进
 #define DEFAULT_MICROSTEPS      64U
@@ -952,7 +951,7 @@ void ClosedLoopController::startMotion()
     }
 }
 
-void generate_constant_speed_step_sequence(uint32_t *seq, uint32_t seq_count, uint32_t arr) {
+void generate_constant_speed_step_sequence(uint32_t *seq, const uint32_t seq_count, const uint32_t arr) {
     for (uint32_t i = 1; i < seq_count - 1; i++){  //头尾一个是用来换向的，不是脉冲用的
         // 这里就贪方便匀速，实际测试要改成各种匀加速，S加速
         seq[i] = arr;

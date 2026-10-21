@@ -13,7 +13,7 @@
 #define USE_HARD_FLOAT_ACCELERATION 1
 #endif
 
-#define MAX_PULSE_ARR_LEN 128U
+#define MAX_PULSE_ARR_LEN 128U  // 20khz也就是50us一个rampupdate，所以每个ramp最多可以跑250个脉冲（算100ns各起伏一次为一个完整脉冲）
 // #define CLAMP_FOC_SPEED
 
 #include <cmath>
