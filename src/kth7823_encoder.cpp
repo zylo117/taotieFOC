@@ -229,13 +229,12 @@ bool Kth7823Encoder::updateFilteredSample()
     }
 
     //计算delta平均值
-    int32_t active_cnt = (filter_count_ < filter_window_size_) ? filter_count_ : filter_window_size_;
-    float avg_delta = static_cast<float>(sum_delta_) / static_cast<float>(active_cnt);
+    const int32_t active_cnt = (filter_count_ < filter_window_size_) ? filter_count_ : filter_window_size_;
+    const float avg_delta = static_cast<float>(sum_delta_) / static_cast<float>(active_cnt);
 
     //输出滤波后的uint16角度（环绕处理）
-    int32_t out_raw_i32 = static_cast<int32_t>(angle_base_) + static_cast<int32_t>(lroundf(avg_delta));
-    uint16_t out_raw;
-    out_raw = static_cast<uint16_t>(out_raw_i32 & 0xFFFFU);
+    const int32_t out_raw_i32 = static_cast<int32_t>(angle_base_) + static_cast<int32_t>(lroundf(avg_delta));
+    auto out_raw = static_cast<uint16_t>(out_raw_i32 & 0xFFFFU);
 
     //==== 关键：定期刷新基准base，防止delta长期累积过大；每若干帧刷新一次 ====
     static uint16_t refresh_cnt = 0;
