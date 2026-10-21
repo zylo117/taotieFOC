@@ -328,6 +328,8 @@ private:
 
     uint16_t ramp_loop_idx = 0;
 
+    uint32_t max_step_per_ramp = 0;
+
     // ====================== 【补充梯形加减速预计算】======================
     // 梯形加减速预计算参数（startMotion里一次性算出）
     float motion_accel_step_s2_; // 加速度：微步/s²

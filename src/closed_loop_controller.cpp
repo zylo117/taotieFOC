@@ -944,6 +944,8 @@ void ClosedLoopController::startMotion()
         encoder_filtered_angle_ = 0.0f;
         // ===================================================================
 
+        max_step_per_ramp = 0;
+
         // 全部参数准备好再开始
         motion_first_run_ = true;
         motion_running_ = true;
@@ -1393,6 +1395,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // 如果是同向，这两个的arr周期为0，否则arr为guard_tick
         static uint32_t arr_seq_cycle[MAX_PULSE_ARR_LEN + 2];
         auto num_steps = static_cast<uint32_t>(floor(compensated_motion_step_accumulator_));
+
+        if (num_steps > max_step_per_ramp)
+            max_step_per_ramp = num_steps;
+
         auto num_original_command_steps = static_cast<uint32_t>(floor(motion_step_accumulator_));
         if (!closed_loop_angle_mode_enabled_)
         {
@@ -1503,6 +1509,7 @@ void ClosedLoopController::stopMotion()
     // motion_commanded_travel_deg_list_.resize(0);
     // motion_encoder_travel_angle_list_.resize(0);
 
+    printf("max_step_per_ramp: max_step_per_ramp: %ld\n", max_step_per_ramp);
     printf("motion stopping!!! motion_commanded_travel_deg_: %f, motion_encoder_travel_deg_: %f\n", motion_commanded_travel_deg_, static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F);
     motion_running_ = false;
     motion_first_run_ = false;
