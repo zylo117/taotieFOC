@@ -1603,7 +1603,7 @@ void ClosedLoopController::stopMotion()
     // motion_commanded_travel_deg_list_.resize(0);
     // motion_encoder_travel_angle_list_.resize(0);
 
-    printf("max_step_per_ramp: %lu\n", max_step_per_ramp);
+    printf("max_step_per_ramp: %lu\n", static_cast<unsigned long>(max_step_per_ramp));
     printf("motion stopping!!! motion_commanded_travel_deg_: %f, motion_encoder_travel_deg_: %f\n", motion_commanded_travel_deg_, static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F);
     motion_running_ = false;
     motion_first_run_ = false;

@@ -1098,6 +1098,13 @@
                                 <input id="holdCurrent" max="3" min="0" step="0.01" type="number" value="0.2"/>
                             </div>
                             <div class="field full-span">
+                                <label>步距角</label>
+                                <select id="stepAngle">
+                                    <option value="1.8">1.8度</option>
+                                    <option value="0.9">0.9度</option>
+                                </select>
+                            </div>
+                            <div class="field full-span">
                                 <label>静音模式</label>
                                 <select id="silentMode">
                                     <option value="1">启用</option>
@@ -2283,35 +2290,54 @@
             if (state.connected) await writeRegister(0x11F, 0);
         }
 
-        async function waitForLoadAngleSpeed(targetRpm, accelRpmS) {
+        async function waitForLoadAngleSpeed(targetRpm, accelRpmS, intervalMs) {
             if (targetRpm === 0) {
                 await stopLoadAngleMotion();
                 await loadAngleDelay(300);
                 return;
             }
-            // 这里模拟原来上位机的测速控制逻辑：已配置好启动/最大/加速度参数，
-            // 不应再在启动时写入一个超大 pulse_count 伪装成“无限运动”，否则会
-            // 直接把 ramp 预计算推到 INT32_MAX 级别，造成抖动和卡死。
+            await writeRegisterAndWaitAck(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0);  // 关闭闭环
+            // 关键修正：测速控制/负载角校准的起步动作，必须先给 startMotion() 一个有限且合理的 pulseCount。
+            // 如果不先写 0x11D，就会让 firmware 在 startMotion() 里拿到旧值/脏值，出现超大脉冲数和起步卡死。
+            const timeoutMs = Math.max(15000, Math.min(120000, (targetRpm / accelRpmS * 2 + 5) * 1000));
+            const pulseCount = targetRpm / 60 * 360 / Number(document.getElementById('stepAngle').value || 1.8) * Number(document.getElementById('microsteps').value || 32) * timeoutMs / 1000 * 3;
             await writeRegisterAndWaitAck(0x11A, Math.min(10, targetRpm));
             await writeRegisterAndWaitAck(0x11B, targetRpm);
             await writeRegisterAndWaitAck(0x11C, accelRpmS);
+            await writeRegisterAndWaitAck(0x11D, pulseCount);
             await writeRegisterAndWaitAck(0x11E, 2);
             await writeRegisterAndWaitAck(0x123, 200);
             await writePidParameters();
             await writeRegisterAndWaitAck(0x11F, 1);
 
-            const timeoutMs = Math.max(15000, Math.min(120000, (targetRpm / accelRpmS * 2 + 5) * 1000));
             const deadline = performance.now() + timeoutMs;
-            const tolerance = Math.max(3, targetRpm * 0.03);
+            const tolerance = Math.max(6, Math.min(24, targetRpm * 0.12));
+            const avgWindowMs = Math.max(1500, Math.min(5000, targetRpm * 30));
+            const avgPeriodMs = 80;
+            const speedHistory = [];
             let stableReads = 0;
+            let lastMeasuredRpm = 0;
+            const startWindowAt = performance.now();
             while (performance.now() < deadline && !state.loadAngleCalibrationCancelled) {
                 const measuredRpm = Math.abs(readSigned32(await readRegisterValue(CUSTOM_REGS.SPEED_RPM)));
-                stableReads = Math.abs(measuredRpm - targetRpm) <= tolerance ? stableReads + 1 : 0;
+                const now = performance.now();
+                speedHistory.push({time: now, rpm: measuredRpm});
+                while (speedHistory.length > 0 && now - speedHistory[0].time > avgWindowMs) {
+                    speedHistory.shift();
+                }
+                const averagedMeasuredRpm = speedHistory.length === 0
+                    ? measuredRpm
+                    : speedHistory.reduce((sum, sample) => sum + sample.rpm, 0) / speedHistory.length;
+                lastMeasuredRpm = averagedMeasuredRpm;
+                const withinTolerance = Math.abs(averagedMeasuredRpm - targetRpm) <= tolerance;
+                stableReads = withinTolerance ? stableReads + 1 : 0;
+                const statusText = `目标 ${targetRpm} RPM / 平均 ${averagedMeasuredRpm.toFixed(1)} RPM / 容差 ±${tolerance.toFixed(1)} RPM / 稳定 ${stableReads}/3`;
+                document.getElementById('loadAngleStatus').textContent = `等待稳定：${statusText}`;
                 if (stableReads >= 3) return;
-                await loadAngleDelay(200);
+                await loadAngleDelay(Math.max(avgPeriodMs, 200));
             }
             if (state.loadAngleCalibrationCancelled) throw new Error('已停止校准');
-            throw new Error(`转速 ${targetRpm} RPM 未能在限定时间内稳定`);
+            throw new Error(`转速 ${targetRpm} RPM 未能在限定时间内稳定（平均 ${lastMeasuredRpm.toFixed(1)} RPM，目标 ${targetRpm} RPM，容差 ±${tolerance.toFixed(1)} RPM）`);
         }
 
         function readSigned32(value) {
@@ -2352,7 +2378,7 @@
                 if (state.loadAngleCalibrationCancelled) throw new Error('已停止校准');
                 const speedRpm = config.speeds[index];
                 await stopLoadAngleMotion();
-                await waitForLoadAngleSpeed(speedRpm, config.accelRpmS);
+                await waitForLoadAngleSpeed(speedRpm, config.accelRpmS, intervalMs);
                 const holdStart = performance.now();
                 await loadAngleDelay(centeredDelayMs);
                 const angleMdeg = speedRpm === 0 ? 0 : await collectLoadAngleMean(config);
