@@ -6,6 +6,7 @@
 
 #include "angle_encoder.h"
 #include "closed_loop_protocol.h"
+#include "load_angle.h"
 #include "pid_auto_tuner.h"
 #include "stepper_driver.h"
 
@@ -231,6 +232,12 @@ private:
     StepperDriver* driver_;
     AngleEncoder* encoder_;
     ClosedLoopDriverProtocol* protocol_;
+    LoadAngle load_angle_;
+    uint16_t load_angle_point_index_;
+    uint16_t load_angle_point_speed_rpm_;
+    int32_t load_angle_point_mdeg_;
+    uint16_t load_angle_query_speed_rpm_;
+    bool load_angle_fit_saved_;
     PidController position_pid_;
     PidController velocity_pid_;
     PidAutoTuner pid_auto_tuner_;

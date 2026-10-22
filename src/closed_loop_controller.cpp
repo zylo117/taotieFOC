@@ -143,7 +143,9 @@ namespace
 }
 
 ClosedLoopController::ClosedLoopController()
-    : driver_(nullptr), encoder_(nullptr), protocol_(nullptr),
+        : driver_(nullptr), encoder_(nullptr), protocol_(nullptr), load_angle_point_index_(0U),
+            load_angle_point_speed_rpm_(0U), load_angle_point_mdeg_(0), load_angle_query_speed_rpm_(0U),
+            load_angle_fit_saved_(false),
       base_position_kp_(60.0f), base_position_ki_(20.0f), base_position_kd_(60.0f),
       base_velocity_kp_(30.0f), base_velocity_ki_(8.0f), base_velocity_kd_(20.0f),
       adaptive_pid_enabled_(false), adaptive_config_{0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
@@ -217,6 +219,8 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
         encoder_->init();
         encoder_zero_ = encoder_->readFilteredAngle();
     }
+
+    load_angle_fit_saved_ = load_angle_.loadFromFlash();
 
     if (driver_ != nullptr)
     {
@@ -364,6 +368,46 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
     if (reg == TMC2209_EXT_PARAM_ENCODER_ZERO)
     {
         setEncoderZero(static_cast<uint16_t>(value));
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_UPLOAD_COUNT)
+    {
+        load_angle_fit_saved_ = false;
+        return load_angle_.beginUpload(static_cast<uint16_t>(value));
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_INDEX)
+    {
+        load_angle_point_index_ = static_cast<uint16_t>(value);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_SPEED_RPM)
+    {
+        load_angle_point_speed_rpm_ = static_cast<uint16_t>(value);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_MDEG)
+    {
+        load_angle_point_mdeg_ = static_cast<int32_t>(value);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_COMMIT)
+    {
+        return value != 0U && load_angle_.setPoint(load_angle_point_index_,
+                                                    load_angle_point_speed_rpm_,
+                                                    load_angle_point_mdeg_);
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FIT)
+    {
+        if (value == 0U)
+        {
+            return true;
+        }
+        load_angle_fit_saved_ = load_angle_.fit() && load_angle_.saveToFlash();
+        return load_angle_fit_saved_;
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_QUERY_SPEED_RPM)
+    {
+        load_angle_query_speed_rpm_ = static_cast<uint16_t>(value);
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_START_RPM)
@@ -601,6 +645,57 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     {
         *value = static_cast<uint32_t>(static_cast<int32_t>(target_angle_deg_ * 1000.0f));
         return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_INDEX)
+    {
+        *value = load_angle_point_index_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_SPEED_RPM)
+    {
+        uint16_t speed_rpm = load_angle_point_speed_rpm_;
+        int32_t load_angle_mdeg = load_angle_point_mdeg_;
+        load_angle_.getPoint(load_angle_point_index_, &speed_rpm, &load_angle_mdeg);
+        *value = speed_rpm;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_MDEG)
+    {
+        uint16_t speed_rpm = load_angle_point_speed_rpm_;
+        int32_t load_angle_mdeg = load_angle_point_mdeg_;
+        load_angle_.getPoint(load_angle_point_index_, &speed_rpm, &load_angle_mdeg);
+        *value = static_cast<uint32_t>(load_angle_mdeg);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_QUERY_SPEED_RPM)
+    {
+        *value = load_angle_query_speed_rpm_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_QUERY_MDEG)
+    {
+        *value = static_cast<uint32_t>(load_angle_.getLoadAngleMilliDegrees(load_angle_query_speed_rpm_));
+        return load_angle_.isFitted();
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_COUNT)
+    {
+        *value = load_angle_.pointCount();
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FIT)
+    {
+        *value = load_angle_fit_saved_ ? 1U : 0U;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_SLOPE)
+    {
+        *value = static_cast<uint32_t>(static_cast<int32_t>(load_angle_.slopeDegPerRpm() * 1000000.0f));
+        return load_angle_.isFitted();
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_INTERCEPT)
+    {
+        *value = static_cast<uint32_t>(static_cast<int32_t>(load_angle_.interceptDeg() * 1000.0f));
+        return load_angle_.isFitted();
     }
     if (reg == TMC2209_EXT_PARAM_POSITION_KP)
     {
@@ -1508,7 +1603,7 @@ void ClosedLoopController::stopMotion()
     // motion_commanded_travel_deg_list_.resize(0);
     // motion_encoder_travel_angle_list_.resize(0);
 
-    printf("max_step_per_ramp: %ld\n", max_step_per_ramp);
+    printf("max_step_per_ramp: %lu\n", max_step_per_ramp);
     printf("motion stopping!!! motion_commanded_travel_deg_: %f, motion_encoder_travel_deg_: %f\n", motion_commanded_travel_deg_, static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F);
     motion_running_ = false;
     motion_first_run_ = false;

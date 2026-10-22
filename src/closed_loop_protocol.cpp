@@ -125,6 +125,17 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_CALIBRATION_TABLE_DUMP:
     case TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_RAW_TO_CORRECTED:
     case TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_CORRECTED_TO_RAW:
+    case TMC2209_EXT_PARAM_LOAD_ANGLE_UPLOAD_COUNT:
+    case TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_INDEX:
+    case TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_SPEED_RPM:
+    case TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_MDEG:
+    case TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_COMMIT:
+    case TMC2209_EXT_PARAM_LOAD_ANGLE_FIT:
+    case TMC2209_EXT_PARAM_LOAD_ANGLE_QUERY_SPEED_RPM:
+    case TMC2209_EXT_PARAM_LOAD_ANGLE_QUERY_MDEG:
+    case TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_COUNT:
+    case TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_SLOPE:
+    case TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_INTERCEPT:
         return true;
     default:
         return false;
@@ -332,7 +343,7 @@ bool Tmc2209ProtocolAdapter::setCustomParameter(uint16_t id, uint32_t value)
         return false;
     }
     const uint16_t index = static_cast<uint16_t>(id - 0x100U);
-    if (index >= 64U)
+    if (index >= 71U)
     {
         return false;
     }
@@ -413,7 +424,7 @@ bool Tmc2209ProtocolAdapter::getCustomParameter(uint16_t id, uint32_t* value) co
         return false;
     }
     const uint16_t index = static_cast<uint16_t>(id - 0x100U);
-    if (index >= 64U)
+    if (index >= 71U)
     {
         return false;
     }

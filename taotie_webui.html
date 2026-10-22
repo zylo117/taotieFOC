@@ -648,6 +648,40 @@
             background: rgba(0, 0, 0, 0.72);
         }
 
+        .load-angle-dialog {
+            width: min(760px, calc(100vw - 32px));
+            max-width: 760px;
+            padding: 18px;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            color: var(--text);
+            background: #111827;
+            box-shadow: var(--shadow);
+        }
+
+        .load-angle-dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
+        .load-angle-head,
+        .load-angle-actions,
+        .load-angle-status {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        .load-angle-head h2 { margin: 0; font-size: 1.05rem; }
+        .load-angle-actions { justify-content: flex-start; margin: 14px 0; }
+        .load-angle-status { color: var(--muted); font-size: 0.86rem; margin-bottom: 10px; }
+        .load-angle-chart { display: block; width: 100%; height: 340px; border: 1px solid var(--line); background: #0b1220; }
+        .load-angle-equation { margin-top: 10px; color: var(--muted); font-size: 0.9rem; }
+        .load-angle-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+        .load-angle-settings label { display: grid; gap: 5px; color: var(--muted); font-size: 0.8rem; }
+        .load-angle-settings input { min-width: 0; width: 100%; padding: 8px; }
+        .load-angle-legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 9px; color: var(--muted); font-size: 0.8rem; }
+        .load-angle-legend span { display: inline-flex; align-items: center; gap: 6px; }
+        .load-angle-legend i { width: 9px; height: 9px; border-radius: 50%; background: #38bdf8; }
+        .load-angle-legend .fit-dot { background: #f59e0b; }
+        @media (max-width: 640px) { .load-angle-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
         .cal-table-head,
         .cal-table-controls,
         .cal-table-status {
@@ -785,6 +819,7 @@
             <button class="primary" id="connectBtn">连接串口</button>
             <button id="readAllBtn">读取全部</button>
             <button id="calibrateEncoderBtn">磁编码器校准</button>
+            <button id="loadAngleCalibrationBtn">负载角校准</button>
             <button id="viewCalibrationTableBtn">查看校准表</button>
             <button class="warn" id="tuneBtn">自动整定</button>
             <span class="badge" id="cpuUsageBadge">CPU --%</span>
@@ -1229,6 +1264,34 @@
         <pre aria-label="校准表数据" class="cal-table-values" id="calibrationTableValues"></pre>
     </dialog>
 
+    <dialog class="load-angle-dialog" id="loadAngleDialog">
+        <div class="load-angle-head">
+            <h2>速度-负载角校准</h2>
+            <button id="closeLoadAngleDialogBtn" type="button">关闭</button>
+        </div>
+        <div class="load-angle-actions">
+            <button class="primary" id="startLoadAngleCalibrationBtn" type="button">开始校准</button>
+            <button class="danger" id="cancelLoadAngleCalibrationBtn" type="button" disabled>停止校准</button>
+            <button id="refreshLoadAngleCalibrationBtn" type="button">读取已保存数据</button>
+        </div>
+        <div class="load-angle-settings">
+            <label>起始转速 (RPM)<input id="loadAngleStartRpm" type="number" min="0" max="12000" step="1" value="0"></label>
+            <label>结束转速 (RPM)<input id="loadAngleStopRpm" type="number" min="0" max="12000" step="1" value="3000"></label>
+            <label>速度步进 (RPM)<input id="loadAngleStepRpm" type="number" min="1" max="12000" step="1" value="50"></label>
+            <label>每点间隔 (秒)<input id="loadAngleIntervalSec" type="number" min="2" max="120" step="0.5" value="2"></label>
+            <label>中心采样窗 (秒)<input id="loadAngleSampleWindowSec" type="number" min="0.2" max="30" step="0.1" value="1"></label>
+            <label>采样间隔 (毫秒)<input id="loadAngleSamplePeriodMs" type="number" min="20" max="1000" step="10" value="100"></label>
+            <label>加速度 (RPM/s)<input id="loadAngleAccelRpmS" type="number" min="1" max="12000" step="1" value="6000"></label>
+        </div>
+        <div class="load-angle-status">
+            <span aria-live="polite" id="loadAngleStatus">等待读取固件数据</span>
+            <span id="loadAngleProgress">0 / 0</span>
+        </div>
+        <canvas aria-label="速度与负载角关系图" class="load-angle-chart" id="loadAngleChart"></canvas>
+        <div class="load-angle-legend"><span><i></i>上位机采样均值</span><span><i class="fit-dot"></i>固件拟合查询</span></div>
+        <div class="load-angle-equation" id="loadAngleEquation">固件拟合函数：--</div>
+    </dialog>
+
     <script>
         const logArea = document.getElementById('logArea');
         const connBadge = document.getElementById('connBadge');
@@ -1316,6 +1379,9 @@
             , calibrationLookupLastRaw: null
             , calibrationLookupLastCorrected: null
             , calibrationLookupRequestId: 0
+            , loadAngleCalibrationRunning: false
+            , loadAngleCalibrationCancelled: false
+            , loadAngleMaxSpeedRpm: 3000
         };
 
         const OFFICIAL_REGS = {
@@ -1381,10 +1447,23 @@
             , PID_TUNE_SAMPLE_COUNT: 0x133
             , MOTION_SCHEDULED_STEPS: 0x134
             , MOTION_COMMAND_SPEED_MRPM: 0x135
+            , SPEED_RPM: 0x120
+            , FOLLOW_ERROR_DEG: 0x121
             , CALIBRATE_ENCODER: 0x136
             , CALIBRATION_LOOKUP_RAW_TO_CORRECTED: 0x13A
             , CALIBRATION_LOOKUP_CORRECTED_TO_RAW: 0x13B
             , CALIBRATION_TABLE_DUMP: 0x139
+            , LOAD_ANGLE_UPLOAD_COUNT: 0x13C
+            , LOAD_ANGLE_POINT_INDEX: 0x13D
+            , LOAD_ANGLE_POINT_SPEED_RPM: 0x13E
+            , LOAD_ANGLE_POINT_MDEG: 0x13F
+            , LOAD_ANGLE_POINT_COMMIT: 0x140
+            , LOAD_ANGLE_FIT: 0x141
+            , LOAD_ANGLE_QUERY_SPEED_RPM: 0x142
+            , LOAD_ANGLE_QUERY_MDEG: 0x143
+            , LOAD_ANGLE_POINT_COUNT: 0x144
+            , LOAD_ANGLE_FIT_SLOPE: 0x145
+            , LOAD_ANGLE_FIT_INTERCEPT: 0x146
             , CPU_USAGE_CENTIPERCENT: 0x137
             , CONTROL_TASK_USAGE_CENTIPERCENT: 0x138
             , MAX_RPM: 0x11B
@@ -1438,6 +1517,17 @@
             , [CUSTOM_REGS.MOTION_COMMAND_SPEED_MRPM, ['0x0135', 'MOTION_COMMAND_SPEED', '当前命令速度，单位 0.001 RPM']]
             , [CUSTOM_REGS.CPU_USAGE_CENTIPERCENT, ['0x0137', 'CPU_USAGE', 'MCU 总 CPU 占用率，单位 0.01%']]
             , [CUSTOM_REGS.CONTROL_TASK_USAGE_CENTIPERCENT, ['0x0138', 'CONTROL_TASK_USAGE', 'Control_task CPU 占用率，单位 0.01%']]
+            , [CUSTOM_REGS.LOAD_ANGLE_UPLOAD_COUNT, ['0x013C', 'LOAD_ANGLE_UPLOAD_COUNT', '上位机待上传拟合点数']]
+            , [CUSTOM_REGS.LOAD_ANGLE_POINT_INDEX, ['0x013D', 'LOAD_ANGLE_POINT_INDEX', '待写入的拟合点索引']]
+            , [CUSTOM_REGS.LOAD_ANGLE_POINT_SPEED_RPM, ['0x013E', 'LOAD_ANGLE_POINT_SPEED_RPM', '拟合点速度，单位 RPM']]
+            , [CUSTOM_REGS.LOAD_ANGLE_POINT_MDEG, ['0x013F', 'LOAD_ANGLE_POINT_MDEG', '拟合点负载角，单位 0.001°']]
+            , [CUSTOM_REGS.LOAD_ANGLE_POINT_COMMIT, ['0x0140', 'LOAD_ANGLE_POINT_COMMIT', '提交当前拟合点']]
+            , [CUSTOM_REGS.LOAD_ANGLE_FIT, ['0x0141', 'LOAD_ANGLE_FIT', '固件执行拟合并保存']]
+            , [CUSTOM_REGS.LOAD_ANGLE_QUERY_SPEED_RPM, ['0x0142', 'LOAD_ANGLE_QUERY_SPEED_RPM', '设置待查询速度，单位 RPM']]
+            , [CUSTOM_REGS.LOAD_ANGLE_QUERY_MDEG, ['0x0143', 'LOAD_ANGLE_QUERY_MDEG', '固件拟合查询值，单位 0.001°']]
+            , [CUSTOM_REGS.LOAD_ANGLE_POINT_COUNT, ['0x0144', 'LOAD_ANGLE_POINT_COUNT', '已保存拟合点数']]
+            , [CUSTOM_REGS.LOAD_ANGLE_FIT_SLOPE, ['0x0145', 'LOAD_ANGLE_FIT_SLOPE', '固件拟合斜率，单位 0.000001°/RPM']]
+            , [CUSTOM_REGS.LOAD_ANGLE_FIT_INTERCEPT, ['0x0146', 'LOAD_ANGLE_FIT_INTERCEPT', '固件拟合截距，单位 0.001°']]
             , [0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
             , [0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
             , [0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
@@ -2045,6 +2135,306 @@
             }
             state.calibrationDumpKind = null;
             document.getElementById('calibrationTableDialog').close();
+        }
+
+        function drawLoadAngleChart(points, maxSpeedRpm = 3000) {
+            const canvas = document.getElementById('loadAngleChart');
+            const rect = canvas.getBoundingClientRect();
+            const pixelRatio = window.devicePixelRatio || 1;
+            canvas.width = Math.max(1, Math.round(rect.width * pixelRatio));
+            canvas.height = Math.max(1, Math.round(rect.height * pixelRatio));
+            const context = canvas.getContext('2d');
+            context.scale(pixelRatio, pixelRatio);
+            context.clearRect(0, 0, rect.width, rect.height);
+
+            const left = 58;
+            const right = rect.width - 18;
+            const top = 18;
+            const bottom = rect.height - 42;
+            const values = points.flatMap((point) => Number.isFinite(point.fitAngleDeg)
+                ? [point.angleDeg, point.fitAngleDeg]
+                : [point.angleDeg]);
+            const minValue = values.length ? Math.min(...values) : -1;
+            const maxValue = values.length ? Math.max(...values) : 1;
+            const padding = Math.max(0.5, (maxValue - minValue) * 0.12);
+            const minAngle = minValue - padding;
+            const maxAngle = maxValue + padding;
+            const x = (rpm) => left + (rpm / Math.max(1, maxSpeedRpm)) * (right - left);
+            const y = (angle) => bottom - ((angle - minAngle) / (maxAngle - minAngle)) * (bottom - top);
+
+            context.font = '12px Segoe UI, sans-serif';
+            context.lineWidth = 1;
+            context.strokeStyle = 'rgba(148, 163, 184, 0.2)';
+            context.fillStyle = '#94a3b8';
+            for (let tick = 0; tick <= 4; tick++) {
+                const tickY = top + (tick / 4) * (bottom - top);
+                const angle = maxAngle - (tick / 4) * (maxAngle - minAngle);
+                context.beginPath();
+                context.moveTo(left, tickY);
+                context.lineTo(right, tickY);
+                context.stroke();
+                context.fillText(`${angle.toFixed(2)}°`, 6, tickY + 4);
+            }
+            const speedTicks = 6;
+            for (let tick = 0; tick <= speedTicks; tick++) {
+                const rpm = maxSpeedRpm * tick / speedTicks;
+                const tickX = x(rpm);
+                context.beginPath();
+                context.moveTo(tickX, top);
+                context.lineTo(tickX, bottom);
+                context.stroke();
+                context.fillText(String(Math.round(rpm)), tickX - 12, bottom + 20);
+            }
+
+            if (points.length > 0) {
+                context.strokeStyle = '#f59e0b';
+                context.lineWidth = 2;
+                context.beginPath();
+                const fittedPoints = points.filter((point) => Number.isFinite(point.fitAngleDeg))
+                    .sort((a, b) => a.speedRpm - b.speedRpm);
+                fittedPoints.forEach((point, index) => {
+                    if (index === 0) context.moveTo(x(point.speedRpm), y(point.fitAngleDeg));
+                    else context.lineTo(x(point.speedRpm), y(point.fitAngleDeg));
+                });
+                if (fittedPoints.length > 1) context.stroke();
+
+                context.fillStyle = '#38bdf8';
+                for (const point of points) {
+                    context.beginPath();
+                    context.arc(x(point.speedRpm), y(point.angleDeg), 2.5, 0, Math.PI * 2);
+                    context.fill();
+                }
+            } else {
+                context.fillStyle = '#94a3b8';
+                context.fillText('尚无固件校准点', left + 12, top + 24);
+            }
+            context.fillStyle = '#cbd5e1';
+            context.fillText('速度 (RPM)', (left + right) / 2 - 30, rect.height - 8);
+            context.save();
+            context.translate(15, (top + bottom) / 2);
+            context.rotate(-Math.PI / 2);
+            context.fillText('负载角 (°)', -34, 0);
+            context.restore();
+        }
+
+        async function refreshLoadAngleCalibration() {
+            if (!state.connected) throw new Error('串口未连接');
+            const fitted = await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_FIT);
+            if ((fitted >>> 0) !== 1) throw new Error('固件中没有已保存的有效拟合');
+            const count = await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_POINT_COUNT);
+            const safeCount = Math.min(1024, count >>> 0);
+            const points = [];
+            for (let index = 0; index < safeCount; index++) {
+                await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_POINT_INDEX, index);
+                const speedRpm = await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_POINT_SPEED_RPM);
+                const angleMdeg = await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_POINT_MDEG);
+                await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_QUERY_SPEED_RPM, speedRpm >>> 0);
+                const fitMdeg = await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_QUERY_MDEG);
+                points.push({
+                    speedRpm: speedRpm >>> 0,
+                    angleDeg: (angleMdeg | 0) / 1000,
+                    fitAngleDeg: (fitMdeg | 0) / 1000
+                });
+            }
+            const slope = (await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_FIT_SLOPE) | 0) / 1000000;
+            const intercept = (await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_FIT_INTERCEPT) | 0) / 1000;
+            document.getElementById('loadAngleProgress').textContent = `${safeCount} / ${safeCount}`;
+            document.getElementById('loadAngleEquation').textContent =
+                `固件拟合函数：负载角 = ${slope.toFixed(8)} × 转速 + ${intercept.toFixed(3)}°`;
+            state.loadAngleMaxSpeedRpm = Math.max(1, ...points.map((point) => point.speedRpm));
+            drawLoadAngleChart(points, state.loadAngleMaxSpeedRpm);
+            document.getElementById('loadAngleStatus').textContent = `已读取 ${safeCount} 个固件保存点及拟合查询值`;
+        }
+
+        function loadAngleSweepConfig() {
+            const startRpm = Math.round(Number(document.getElementById('loadAngleStartRpm').value));
+            const stopRpm = Math.round(Number(document.getElementById('loadAngleStopRpm').value));
+            const stepRpm = Math.round(Number(document.getElementById('loadAngleStepRpm').value));
+            const intervalSec = Number(document.getElementById('loadAngleIntervalSec').value);
+            const sampleWindowSec = Number(document.getElementById('loadAngleSampleWindowSec').value);
+            const samplePeriodMs = Number(document.getElementById('loadAngleSamplePeriodMs').value);
+            const accelRpmS = Math.round(Number(document.getElementById('loadAngleAccelRpmS').value));
+            if (![startRpm, stopRpm, stepRpm, intervalSec, sampleWindowSec, samplePeriodMs, accelRpmS].every(Number.isFinite) ||
+                startRpm < 0 || stopRpm < 0 || startRpm > 12000 || stopRpm > 12000 || startRpm === stopRpm ||
+                stepRpm < 1 || intervalSec < 2 || sampleWindowSec <= 0 || sampleWindowSec > intervalSec ||
+                samplePeriodMs < 20 || accelRpmS < 1) {
+                throw new Error('请检查速度范围、步进量、采样窗口和间隔设置');
+            }
+            const direction = stopRpm > startRpm ? 1 : -1;
+            const speeds = [startRpm];
+            while (speeds[speeds.length - 1] !== stopRpm) {
+                const next = speeds[speeds.length - 1] + direction * stepRpm;
+                speeds.push(direction > 0 ? Math.min(next, stopRpm) : Math.max(next, stopRpm));
+                if (speeds.length > 1024) throw new Error('速度点超过固件上限 1024');
+            }
+            for (let index = speeds.length - 2; index >= 0; index--) {
+                speeds.push(speeds[index]);
+                if (speeds.length > 1024) throw new Error('往返校准点超过固件上限 1024');
+            }
+            if (speeds.length < 2) throw new Error('拟合至少需要两个速度点');
+            return {startRpm, stopRpm, stepRpm, intervalSec, sampleWindowSec, samplePeriodMs, accelRpmS, speeds};
+        }
+
+        function loadAngleDelay(ms) {
+            return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, ms)));
+        }
+
+        async function stopLoadAngleMotion() {
+            if (state.connected) await writeRegister(0x11F, 0);
+        }
+
+        async function waitForLoadAngleSpeed(targetRpm, accelRpmS) {
+            if (targetRpm === 0) {
+                await stopLoadAngleMotion();
+                await loadAngleDelay(300);
+                return;
+            }
+            // 这里模拟原来上位机的测速控制逻辑：已配置好启动/最大/加速度参数，
+            // 不应再在启动时写入一个超大 pulse_count 伪装成“无限运动”，否则会
+            // 直接把 ramp 预计算推到 INT32_MAX 级别，造成抖动和卡死。
+            await writeRegisterAndWaitAck(0x11A, Math.min(10, targetRpm));
+            await writeRegisterAndWaitAck(0x11B, targetRpm);
+            await writeRegisterAndWaitAck(0x11C, accelRpmS);
+            await writeRegisterAndWaitAck(0x11E, 2);
+            await writeRegisterAndWaitAck(0x123, 200);
+            await writePidParameters();
+            await writeRegisterAndWaitAck(0x11F, 1);
+
+            const timeoutMs = Math.max(15000, Math.min(120000, (targetRpm / accelRpmS * 2 + 5) * 1000));
+            const deadline = performance.now() + timeoutMs;
+            const tolerance = Math.max(3, targetRpm * 0.03);
+            let stableReads = 0;
+            while (performance.now() < deadline && !state.loadAngleCalibrationCancelled) {
+                const measuredRpm = Math.abs(readSigned32(await readRegisterValue(CUSTOM_REGS.SPEED_RPM)));
+                stableReads = Math.abs(measuredRpm - targetRpm) <= tolerance ? stableReads + 1 : 0;
+                if (stableReads >= 3) return;
+                await loadAngleDelay(200);
+            }
+            if (state.loadAngleCalibrationCancelled) throw new Error('已停止校准');
+            throw new Error(`转速 ${targetRpm} RPM 未能在限定时间内稳定`);
+        }
+
+        function readSigned32(value) {
+            return value | 0;
+        }
+
+        async function collectLoadAngleMean(config) {
+            const windowMs = config.sampleWindowSec * 1000;
+            const startAt = performance.now();
+            const endAt = startAt + windowMs;
+            const samples = [];
+            let nextAt = startAt;
+            while (performance.now() < endAt && !state.loadAngleCalibrationCancelled) {
+                const errorMdeg = readSigned32(await readRegisterValue(CUSTOM_REGS.FOLLOW_ERROR_DEG));
+                samples.push(-errorMdeg);
+                nextAt += config.samplePeriodMs;
+                await loadAngleDelay(Math.max(0, nextAt - performance.now()));
+            }
+            if (state.loadAngleCalibrationCancelled) throw new Error('已停止校准');
+            if (samples.length < 3) throw new Error('采样窗口内有效样本不足，至少需要 3 个');
+            let sum = 0;
+            let min = Infinity;
+            let max = -Infinity;
+            for (const sample of samples) {
+                sum += sample;
+                min = Math.min(min, sample);
+                max = Math.max(max, sample);
+            }
+            return Math.round((sum - min - max) / (samples.length - 2));
+        }
+
+        async function captureLoadAnglePoints(config) {
+            const points = [];
+            const windowMs = config.sampleWindowSec * 1000;
+            const intervalMs = config.intervalSec * 1000;
+            const centeredDelayMs = (intervalMs - windowMs) / 2;
+            for (let index = 0; index < config.speeds.length; index++) {
+                if (state.loadAngleCalibrationCancelled) throw new Error('已停止校准');
+                const speedRpm = config.speeds[index];
+                await stopLoadAngleMotion();
+                await waitForLoadAngleSpeed(speedRpm, config.accelRpmS);
+                const holdStart = performance.now();
+                await loadAngleDelay(centeredDelayMs);
+                const angleMdeg = speedRpm === 0 ? 0 : await collectLoadAngleMean(config);
+                points.push({speedRpm, angleMdeg, angleDeg: angleMdeg / 1000, fitAngleDeg: null});
+                document.getElementById('loadAngleProgress').textContent = `${index + 1} / ${config.speeds.length}`;
+                document.getElementById('loadAngleStatus').textContent = `采样中：${speedRpm} RPM，${index + 1}/${config.speeds.length}`;
+                drawLoadAngleChart(points, Math.max(config.startRpm, config.stopRpm, 1));
+                await loadAngleDelay(Math.max(0, holdStart + intervalMs - performance.now()));
+            }
+            await stopLoadAngleMotion();
+            return points;
+        }
+
+        async function uploadLoadAnglePoints(points) {
+            await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_UPLOAD_COUNT, points.length);
+            for (let index = 0; index < points.length; index++) {
+                const point = points[index];
+                await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_POINT_INDEX, index);
+                await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_POINT_SPEED_RPM, point.speedRpm);
+                await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_POINT_MDEG, point.angleMdeg >>> 0);
+                await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_POINT_COMMIT, 1);
+                document.getElementById('loadAngleStatus').textContent = `上传均值点：${index + 1}/${points.length}`;
+            }
+            await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_FIT, 1);
+            const fitSaved = await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_FIT);
+            if ((fitSaved >>> 0) !== 1) throw new Error('固件拟合或 Flash 保存失败');
+        }
+
+        async function startLoadAngleCalibration() {
+            if (!state.connected) {
+                document.getElementById('loadAngleStatus').textContent = '请先连接串口';
+                return;
+            }
+            let config;
+            try {
+                config = loadAngleSweepConfig();
+            } catch (error) {
+                document.getElementById('loadAngleStatus').textContent = error.message;
+                return;
+            }
+            state.loadAngleCalibrationRunning = true;
+            state.loadAngleCalibrationCancelled = false;
+            const startButton = document.getElementById('startLoadAngleCalibrationBtn');
+            const cancelButton = document.getElementById('cancelLoadAngleCalibrationBtn');
+            startButton.disabled = true;
+            cancelButton.disabled = false;
+            document.getElementById('closeLoadAngleDialogBtn').disabled = true;
+            document.getElementById('loadAngleProgress').textContent = `0 / ${config.speeds.length}`;
+            document.getElementById('loadAngleEquation').textContent = '固件拟合函数：等待本轮采样上传与拟合';
+            try {
+                const points = await captureLoadAnglePoints(config);
+                document.getElementById('loadAngleStatus').textContent = '上传采样均值并由固件拟合...';
+                await uploadLoadAnglePoints(points);
+                document.getElementById('loadAngleStatus').textContent = '拟合完成，读取固件查询值...';
+                await refreshLoadAngleCalibration();
+                document.getElementById('loadAngleStatus').textContent = '采样完成；曲线查询值及拟合系数均来自固件';
+            } catch (error) {
+                await stopLoadAngleMotion().catch(() => {});
+                document.getElementById('loadAngleStatus').textContent = `校准失败：${error.message}`;
+                log(`[负载角校准] ${error.message}`);
+            } finally {
+                state.loadAngleCalibrationRunning = false;
+                startButton.disabled = false;
+                cancelButton.disabled = true;
+                document.getElementById('closeLoadAngleDialogBtn').disabled = false;
+            }
+        }
+
+        async function openLoadAngleCalibration() {
+            const dialog = document.getElementById('loadAngleDialog');
+            if (!dialog.open) dialog.showModal();
+            if (!state.connected) {
+                document.getElementById('loadAngleStatus').textContent = '请先连接串口以读取固件数据';
+                drawLoadAngleChart([], 3000);
+                return;
+            }
+            try {
+                await refreshLoadAngleCalibration();
+            } catch (error) {
+                document.getElementById('loadAngleStatus').textContent = `读取失败：${error.message}`;
+                drawLoadAngleChart([], 3000);
+            }
         }
 
         async function readRegister(reg) {
@@ -3348,6 +3738,29 @@
         function bindControls() {
             document.getElementById('connectBtn').addEventListener('click', connectSerial);
             document.getElementById('readAllBtn').addEventListener('click', readAllConfig);
+            document.getElementById('loadAngleCalibrationBtn').addEventListener('click', openLoadAngleCalibration);
+            document.getElementById('closeLoadAngleDialogBtn').addEventListener('click', () => {
+                document.getElementById('loadAngleDialog').close();
+            });
+            document.getElementById('loadAngleDialog').addEventListener('cancel', (event) => {
+                if (state.loadAngleCalibrationRunning) event.preventDefault();
+            });
+            document.getElementById('startLoadAngleCalibrationBtn').addEventListener('click', startLoadAngleCalibration);
+            document.getElementById('cancelLoadAngleCalibrationBtn').addEventListener('click', async () => {
+                if (!state.loadAngleCalibrationRunning) return;
+                state.loadAngleCalibrationCancelled = true;
+                document.getElementById('loadAngleStatus').textContent = '正在停止当前运动...';
+                await stopLoadAngleMotion();
+            });
+            document.getElementById('refreshLoadAngleCalibrationBtn').addEventListener('click', async () => {
+                if (state.loadAngleCalibrationRunning) return;
+                try {
+                    await refreshLoadAngleCalibration();
+                    document.getElementById('loadAngleStatus').textContent = '数据来自固件校准表与拟合结果';
+                } catch (error) {
+                    document.getElementById('loadAngleStatus').textContent = `读取失败：${error.message}`;
+                }
+            });
             document.getElementById('viewCalibrationTableBtn').addEventListener('click', openCalibrationTableViewer);
             document.getElementById('closeCalibrationTableBtn').addEventListener('click', closeCalibrationTableViewer);
             document.getElementById('calibrationTableDialog').addEventListener('cancel', () => {
