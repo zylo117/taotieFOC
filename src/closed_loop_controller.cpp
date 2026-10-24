@@ -689,12 +689,17 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     }
     if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_SLOPE)
     {
-        *value = static_cast<uint32_t>(static_cast<int32_t>(load_angle_.slopeDegPerRpm() * 1000000.0f));
+        *value = static_cast<uint32_t>(static_cast<int32_t>(load_angle_.powerCoefficient() * 1000000.0f));
         return load_angle_.isFitted();
     }
     if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_INTERCEPT)
     {
         *value = static_cast<uint32_t>(static_cast<int32_t>(load_angle_.interceptDeg() * 1000.0f));
+        return load_angle_.isFitted();
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_EXPONENT)
+    {
+        *value = static_cast<uint32_t>(static_cast<int32_t>(load_angle_.exponent() * 1000000.0f));
         return load_angle_.isFitted();
     }
     if (reg == TMC2209_EXT_PARAM_POSITION_KP)

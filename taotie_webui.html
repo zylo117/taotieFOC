@@ -1471,6 +1471,7 @@
             , LOAD_ANGLE_POINT_COUNT: 0x144
             , LOAD_ANGLE_FIT_SLOPE: 0x145
             , LOAD_ANGLE_FIT_INTERCEPT: 0x146
+            , LOAD_ANGLE_FIT_EXPONENT: 0x147
             , CPU_USAGE_CENTIPERCENT: 0x137
             , CONTROL_TASK_USAGE_CENTIPERCENT: 0x138
             , MAX_RPM: 0x11B
@@ -1533,8 +1534,9 @@
             , [CUSTOM_REGS.LOAD_ANGLE_QUERY_SPEED_RPM, ['0x0142', 'LOAD_ANGLE_QUERY_SPEED_RPM', '设置待查询速度，单位 RPM']]
             , [CUSTOM_REGS.LOAD_ANGLE_QUERY_MDEG, ['0x0143', 'LOAD_ANGLE_QUERY_MDEG', '固件拟合查询值，单位 0.001°']]
             , [CUSTOM_REGS.LOAD_ANGLE_POINT_COUNT, ['0x0144', 'LOAD_ANGLE_POINT_COUNT', '已保存拟合点数']]
-            , [CUSTOM_REGS.LOAD_ANGLE_FIT_SLOPE, ['0x0145', 'LOAD_ANGLE_FIT_SLOPE', '固件拟合斜率，单位 0.000001°/RPM']]
+            , [CUSTOM_REGS.LOAD_ANGLE_FIT_SLOPE, ['0x0145', 'LOAD_ANGLE_POWER_COEFFICIENT', '幂律系数 c，单位 °/RPM^a × 1000000']]
             , [CUSTOM_REGS.LOAD_ANGLE_FIT_INTERCEPT, ['0x0146', 'LOAD_ANGLE_FIT_INTERCEPT', '固件拟合截距，单位 0.001°']]
+            , [CUSTOM_REGS.LOAD_ANGLE_FIT_EXPONENT, ['0x0147', 'LOAD_ANGLE_FIT_EXPONENT', '幂律指数 a，单位 0.000001']]
             , [0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
             , [0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
             , [0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
@@ -2243,11 +2245,12 @@
                     fitAngleDeg: (fitMdeg | 0) / 1000
                 });
             }
-            const slope = (await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_FIT_SLOPE) | 0) / 1000000;
+            const coefficient = (await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_FIT_SLOPE) | 0) / 1000000;
             const intercept = (await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_FIT_INTERCEPT) | 0) / 1000;
+            const exponent = (await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_FIT_EXPONENT) | 0) / 1000000;
             document.getElementById('loadAngleProgress').textContent = `${safeCount} / ${safeCount}`;
             document.getElementById('loadAngleEquation').textContent =
-                `固件拟合函数：负载角 = ${slope.toFixed(8)} × 转速 + ${intercept.toFixed(3)}°`;
+                `固件幂律拟合：负载角 = ${intercept.toFixed(3)}° + ${coefficient.toFixed(8)} × RPM^${exponent.toFixed(4)}`;
             state.loadAngleMaxSpeedRpm = Math.max(1, ...points.map((point) => point.speedRpm));
             drawLoadAngleChart(points, state.loadAngleMaxSpeedRpm);
             document.getElementById('loadAngleStatus').textContent = `已读取 ${safeCount} 个固件保存点及拟合查询值`;
@@ -2299,8 +2302,7 @@
             await writeRegisterAndWaitAck(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0);  // 关闭闭环
             // 关键修正：测速控制/负载角校准的起步动作，必须先给 startMotion() 一个有限且合理的 pulseCount。
             // 如果不先写 0x11D，就会让 firmware 在 startMotion() 里拿到旧值/脏值，出现超大脉冲数和起步卡死。
-            const timeoutMs = Math.max(15000, Math.min(120000, (targetRpm / accelRpmS * 2 + 5) * 1000));
-            const pulseCount = targetRpm / 60 * 360 / Number(document.getElementById('stepAngle').value || 1.8) * Number(document.getElementById('microsteps').value || 32) * timeoutMs / 1000 * 3;
+            const pulseCount = targetRpm / 60 * 360 / Number(document.getElementById('stepAngle').value || 1.8) * Number(document.getElementById('microsteps').value || 32) * Number(document.getElementById('loadAngleIntervalSec').value);;
             await writeRegisterAndWaitAck(0x11A, Math.min(10, targetRpm));
             await writeRegisterAndWaitAck(0x11B, targetRpm);
             await writeRegisterAndWaitAck(0x11C, accelRpmS);
@@ -2310,6 +2312,7 @@
             await writePidParameters();
             await writeRegisterAndWaitAck(0x11F, 1);
 
+            const timeoutMs = Math.max(15000, Math.min(120000, (targetRpm / accelRpmS * 2 + 5) * 1000));
             const deadline = performance.now() + timeoutMs;
             const tolerance = Math.max(6, Math.min(24, targetRpm * 0.12));
             const avgWindowMs = Math.max(1500, Math.min(5000, targetRpm * 30));
