@@ -186,6 +186,10 @@ int main(void)
     g_protocol.configure(
         {32U, 256U, 0.8f, 0.2f, true, true, 0.110f, true, TMC2209_UART_GPIO, TMC2209_UART_PIN, 115200U});
     g_encoder.init();
+    crm_clocks_freq_type clocks;
+    auto apb1_freq = clocks.apb1_freq;
+    auto apb2_freq = clocks.apb2_freq;
+    printf("CPU Clock: %uHZ, APB1 Clock: %luHZ, APB2 Clock: %luHZ\r\n", system_core_clock, apb1_freq, apb2_freq);
     printf("KTH7823 init: tx=0x%04X raw=0x%04X MISO=%u MGH=%u MGL=%u\r\n",
            g_encoder.lastTxFrame(), g_encoder.lastRawFrame(), g_encoder.misoLevel(),
            g_encoder.magneticFieldHigh() ? 1U : 0U,
