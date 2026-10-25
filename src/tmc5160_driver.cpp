@@ -2,7 +2,7 @@
 #include "at32f403a_407_board.h"
 
 Tmc5160Driver::Tmc5160Driver()
-  : enabled_(false), direction_(false), config_{32U, 256U, 0.8f, 0.2f, true, true, 0.110f, 0.0f, 115200U, false, false, TMC2209_UART_GPIO, TMC2209_UART_PIN}
+  : enabled_(false), direction_(false), config_{32U, 256U, 1.8f, 0.8f, 0.2f, true, true, 0.110f, 0.0f, 115200U, false, false, TMC2209_UART_GPIO, TMC2209_UART_PIN}
 {
 }
 

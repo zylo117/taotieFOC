@@ -1083,19 +1083,22 @@
                         <div class="motor-base-grid">
                             <div class="field">
                                 <label>微步数</label>
-                                <input id="microsteps" max="256" min="2" type="number" value="64"/>
+                                <input id="microsteps" max="256" min="2" type="number" value="32"/>
                             </div>
                             <div class="field">
                                 <label>插值微步</label>
-                                <input id="interpMicrosteps" max="256" min="32" type="number" value="256"/>
+                                <select id="interpMicrosteps">
+                                    <option value="0">关闭</option>
+                                    <option selected value="256">插值至 256</option>
+                                </select>
                             </div>
                             <div class="field">
                                 <label>运行电流（A）</label>
-                                <input id="runCurrent" max="3" min="0" step="0.01" type="number" value="0.8"/>
+                                <input id="runCurrent" max="1.2" min="0" step="0.01" type="number" value="0.8"/>
                             </div>
                             <div class="field">
                                 <label>保持电流（A）</label>
-                                <input id="holdCurrent" max="3" min="0" step="0.01" type="number" value="0.2"/>
+                                <input id="holdCurrent" max="1.2" min="0" step="0.01" type="number" value="0.2"/>
                             </div>
                             <div class="field full-span">
                                 <label>步距角</label>
@@ -1113,7 +1116,14 @@
                             </div>
                             <div class="inline full-span">
                                 <button class="primary" id="writeAllBtn">应用电机参数</button>
+                                <button id="saveMotorSettingsBtn" type="button">写入电机参数到 MCU Flash</button>
+                                <button id="eraseMotorSettingsBtn" type="button">清除已保存参数</button>
                             </div>
+                            <div class="tiny full-span">
+                                电流安全上限 1.2 A（Rsense 110mΩ，芯片满档真能输出 1.77 A，超出会同时烧绕组和模块）。
+                                “清除已保存参数”会把 MCU Flash 里的电机记录抹掉，下次上电回到内置默认值（32 细分 / 0.8 A / 0.2 A / 静音）。
+                            </div>
+                            <div aria-live="polite" class="tiny full-span" id="motorSettingsStatus">等待读取 TMC2209 UART 状态</div>
                         </div>
                     </div>
                 </div>
@@ -1472,6 +1482,8 @@
             , LOAD_ANGLE_FIT_SLOPE: 0x145
             , LOAD_ANGLE_FIT_INTERCEPT: 0x146
             , LOAD_ANGLE_FIT_EXPONENT: 0x147
+            , MOTOR_STEP_ANGLE_MDEG: 0x148
+            , SAVE_MOTOR_CONFIG: 0x149
             , CPU_USAGE_CENTIPERCENT: 0x137
             , CONTROL_TASK_USAGE_CENTIPERCENT: 0x138
             , MAX_RPM: 0x11B
@@ -1537,6 +1549,8 @@
             , [CUSTOM_REGS.LOAD_ANGLE_FIT_SLOPE, ['0x0145', 'LOAD_ANGLE_POWER_COEFFICIENT', '幂律系数 c，单位 °/RPM^a × 1000000']]
             , [CUSTOM_REGS.LOAD_ANGLE_FIT_INTERCEPT, ['0x0146', 'LOAD_ANGLE_FIT_INTERCEPT', '固件拟合截距，单位 0.001°']]
             , [CUSTOM_REGS.LOAD_ANGLE_FIT_EXPONENT, ['0x0147', 'LOAD_ANGLE_FIT_EXPONENT', '幂律指数 a，单位 0.000001']]
+            , [CUSTOM_REGS.MOTOR_STEP_ANGLE_MDEG, ['0x0148', 'MOTOR_STEP_ANGLE', '电机固有步距角，单位 0.001°']]
+            , [CUSTOM_REGS.SAVE_MOTOR_CONFIG, ['0x0149', 'SAVE_MOTOR_CONFIG', '写入/读取 MCU Flash 中的电机参数状态']]
             , [0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
             , [0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
             , [0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
@@ -1568,6 +1582,12 @@
             connBadge.textContent = status;
             connBadge.className = 'badge ' + (isOk ? 'ok' : 'warn');
             connBadge.style.setProperty('border-color', isOk ? 'rgba(34,197,94,0.3)' : 'rgba(245,158,11,0.3)');
+        }
+
+        function setMotorSettingsStatus(message, status = 'info') {
+            const element = document.getElementById('motorSettingsStatus');
+            element.textContent = message;
+            element.style.color = status === 'ok' ? '#86efac' : status === 'error' ? '#fca5a5' : 'var(--muted)';
         }
 
         function updateFaultStatus() {
@@ -1607,6 +1627,12 @@
 
         function clamp(value, min, max) {
             return Math.min(max, Math.max(min, value));
+        }
+
+        function normalizeTmcMicrosteps(value) {
+            const supported = [2, 4, 8, 16, 32, 64, 128, 256];
+            return supported.reduce((nearest, candidate) =>
+                Math.abs(candidate - value) < Math.abs(nearest - value) ? candidate : nearest, supported[0]);
         }
 
         function normalizeAngle(value) {
@@ -1756,7 +1782,9 @@
             if (frame.cmd === 0x82 && writeAckWaiter) {
                 window.clearTimeout(writeAckWaiter.timeout);
                 state.registerWriteAckWaiters.delete(frame.reg);
-                if (frame.value !== writeAckWaiter.expectedValue) {
+                if (frame.value === 0xFFFFFFFF) {
+                    writeAckWaiter.reject(new Error(`固件报告 WRITE 0x${frame.reg.toString(16).padStart(4, '0')} 失败；TMC UART 未确认寄存器写入`));
+                } else if (frame.value !== writeAckWaiter.expectedValue) {
                     writeAckWaiter.reject(new Error(
                         `WRITE ACK 值不匹配：期望 0x${writeAckWaiter.expectedValue.toString(16).padStart(8, '0').toUpperCase()}，收到 0x${frame.value.toString(16).padStart(8, '0').toUpperCase()}`
                     ));
@@ -1771,6 +1799,22 @@
                 window.clearTimeout(waiter.timeout);
                 waiter.resolve(frame.value);
                 if (registerWaiters.length === 0) state.registerReadWaiters.delete(frame.reg);
+            }
+
+            // 写 ACK（0x82）只用于确认写入结果，绝不能拿来回填界面：
+            // 写入失败时固件把 0xFFFFFFFF 当否定应答发回来，一旦回填，
+            // 微步数输入框会变成 4294967295，接着 getMotorStepsPerRevolution() 算出的
+            // “每圈步数”就是天文数字，下一次运动命令会直接把脉冲数发到上限。
+            if (frame.cmd === 0x82) {
+                updateFaultStatus();
+                return;
+            }
+
+            // 统一哨兵防护：0xFFFFFFFF 是协议约定的“无效值/读失败”，不许回填界面。
+            // 只拦 0x81 读回包：遥测里的有符号寄存器（如跟随误差 -1）合法值就是 0xFFFFFFFF，不能误杀。
+            if (frame.cmd === 0x81 && (frame.value >>> 0) === 0xFFFFFFFF) {
+                log(`[WARN] 忽略无效值回包 reg=0x${frame.reg.toString(16).padStart(4, '0')}（读失败或参数不可用）`);
+                return;
             }
             const description = REGISTER_DESCRIPTIONS.get(frame.reg);
             const name = description ? description[1] : 'UNKNOWN';
@@ -1799,8 +1843,11 @@
                 state.controlTaskUsagePercent = frame.value / 100;
             }
             if (frame.reg === CUSTOM_REGS.MICROSTEPS) {
-                state.microsteps = frame.value;
-                document.getElementById('microsteps').value = frame.value;
+                /* 再叠一道夹紧：微步只能是 2~256，界面里出现 4294967295 这类值
+                 * 比不显示更危险（后续所有步数换算都会跟着爆） */
+                const microsteps = normalizeTmcMicrosteps(clamp(Math.round(Number(frame.value) || 32), 2, 256));
+                state.microsteps = microsteps;
+                document.getElementById('microsteps').value = String(microsteps);
             }
             if (frame.reg === CUSTOM_REGS.CLOSED_LOOP_ENABLE) {
                 document.getElementById('closedLoopEnableInput').checked = frame.value !== 0;
@@ -2568,10 +2615,10 @@
                 setConnBadge('已连接', true);
                 protoBadge.textContent = 'TMC 兼容';
                 log('[INFO] 串口已连接，开始监听返回数据');
+                void readLoop();
+                await loadMotorSettingsFromFirmware();
                 await armPositionFollowMode();
                 if (state.pendingTargetAngle !== null) void flushTargetAngleWrites();
-
-                readLoop();
             } catch (err) {
                 log('[ERROR] 串口连接失败：' + (err && err.message ? err.message : String(err)));
                 setConnBadge('未连接', false);
@@ -2733,21 +2780,161 @@
 
         async function applyAllConfig() {
             const config = {
-                microsteps: Number(document.getElementById('microsteps').value || 32),
-                interpMicrosteps: Number(document.getElementById('interpMicrosteps').value || 256),
-                runCurrent: Number(document.getElementById('runCurrent').value || 0.8),
-                holdCurrent: Number(document.getElementById('holdCurrent').value || 0.2),
+                microsteps: normalizeTmcMicrosteps(clamp(Math.round(Number(document.getElementById('microsteps').value || 32)), 2, 256)),
+                interpMicrosteps: Number(document.getElementById('interpMicrosteps').value || 0) >= 256 ? 256 : 0,
+                stepAngleDeg: Number(document.getElementById('stepAngle').value || 1.8),
+                runCurrent: clamp(Number(document.getElementById('runCurrent').value || 0.8), 0, 1.2),
+                holdCurrent: clamp(Number(document.getElementById('holdCurrent').value || 0.2), 0, 1.2),
                 silent: Number(document.getElementById('silentMode').value || 1)
             };
 
-            if (state.connected) {
-                await writeRegister(CUSTOM_REGS.MICROSTEPS, config.microsteps);
-                await writeRegister(CUSTOM_REGS.INTERPOLATION, config.interpMicrosteps);
-                await writeRegister(CUSTOM_REGS.RUN_CURRENT_A, Math.round(config.runCurrent * 1000));
-                await writeRegister(CUSTOM_REGS.HOLD_CURRENT_A, Math.round(config.holdCurrent * 1000));
-                await writeRegister(CUSTOM_REGS.SILENT_MODE, config.silent);
+            if (![config.microsteps, config.stepAngleDeg, config.runCurrent, config.holdCurrent].every(Number.isFinite)) {
+                throw new Error('电机参数包含无效数值');
             }
+            document.getElementById('microsteps').value = String(config.microsteps);
+            document.getElementById('interpMicrosteps').value = String(config.interpMicrosteps);
+            document.getElementById('runCurrent').value = config.runCurrent.toFixed(2);
+            document.getElementById('holdCurrent').value = config.holdCurrent.toFixed(2);
+            if (!state.connected) throw new Error('请先连接下位机');
+            setMotorSettingsStatus('正在通过 TMC UART 写入并等待寄存器读回确认…');
+            const writes = [
+                ['微步数', CUSTOM_REGS.MICROSTEPS, config.microsteps],
+                ['插值', CUSTOM_REGS.INTERPOLATION, config.interpMicrosteps],
+                ['步距角', CUSTOM_REGS.MOTOR_STEP_ANGLE_MDEG, Math.round(config.stepAngleDeg * 1000)],
+                ['运行电流', CUSTOM_REGS.RUN_CURRENT_A, Math.round(config.runCurrent * 1000)],
+                ['保持电流', CUSTOM_REGS.HOLD_CURRENT_A, Math.round(config.holdCurrent * 1000)],
+                ['静音/性能模式', CUSTOM_REGS.SILENT_MODE, config.silent]
+            ];
+            const failures = [];
+            let consecutiveFailures = 0;
+            for (const [name, register, value] of writes) {
+                setMotorSettingsStatus(`正在写入 ${name}，等待 PA4 TMC UART 确认…`);
+                try {
+                    await writeRegisterAndWaitAck(register, value);
+                    consecutiveFailures = 0;
+                    log(`[TMC UART] ${name} 写入及寄存器读回确认成功`);
+                } catch (error) {
+                    failures.push(`${name}: ${error.message}`);
+                    consecutiveFailures++;
+                    log(`[TMC UART] ${name} 写入/读回失败：${error.message}`);
+                    /* 连续三个都失败就不必再把剩下的一个个等到超时：
+                     * 这是 UART 整条不通（模块损坏 / PA4 没接好）的特征，
+                     * 继续等只会让按钮“卡死”十几秒并刷屏。 */
+                    if (consecutiveFailures >= 3) {
+                        log('[ERROR] 连续 3 个参数写入失败，停止本次剩余写入；请先确认 2209 模块与 PA4 连接');
+                        break;
+                    }
+                }
+            }
+            if (failures.length > 0) {
+                throw new Error(`UART 参数未全部确认（已停止后续写入）：${failures.join('；')}`);
+            }
+            setMotorSettingsStatus('应用成功：全部参数均收到 TMC UART 写入及寄存器读回确认', 'ok');
             log('[INFO] 已应用电机基础参数：' + JSON.stringify(config));
+        }
+
+        async function loadMotorSettingsFromFirmware() {
+            if (!state.connected) throw new Error('串口未连接');
+            setMotorSettingsStatus('正在通过 TMC UART 读取驱动器当前参数…');
+            const parameters = [
+                ['微步数', CUSTOM_REGS.MICROSTEPS],
+                ['插值', CUSTOM_REGS.INTERPOLATION],
+                ['步距角', CUSTOM_REGS.MOTOR_STEP_ANGLE_MDEG],
+                ['运行电流', CUSTOM_REGS.RUN_CURRENT_A],
+                ['保持电流', CUSTOM_REGS.HOLD_CURRENT_A],
+                ['静音/性能模式', CUSTOM_REGS.SILENT_MODE]
+            ];
+            const values = new Map();
+            const failures = [];
+            for (const [name, register] of parameters) {
+                try {
+                    const value = await readRegisterValue(register);
+                    if (value === 0xFFFFFFFF) throw new Error('TMC UART 无有效寄存器回包');
+                    values.set(register, value);
+                } catch (error) {
+                    failures.push(`${name}: ${error.message}`);
+                    log(`[TMC UART] 读取${name}失败：${error.message}；驱动可能不支持 TMC UART`);
+                }
+            }
+            /* 回填前夹紧：微步只能是 2~256。即使固件某天回了怪值，也不许它变成
+             * 4294967295 这种会让后续步数换算爆炸的数字。 */
+            if (values.has(CUSTOM_REGS.MICROSTEPS)) {
+                const loadedMicrosteps = normalizeTmcMicrosteps(clamp(Math.round(values.get(CUSTOM_REGS.MICROSTEPS)), 2, 256));
+                state.microsteps = loadedMicrosteps;
+                document.getElementById('microsteps').value = String(loadedMicrosteps);
+            }
+            if (values.has(CUSTOM_REGS.INTERPOLATION)) document.getElementById('interpMicrosteps').value = values.get(CUSTOM_REGS.INTERPOLATION) >= 256 ? '256' : '0';
+            if (values.has(CUSTOM_REGS.MOTOR_STEP_ANGLE_MDEG)) document.getElementById('stepAngle').value = values.get(CUSTOM_REGS.MOTOR_STEP_ANGLE_MDEG) === 900 ? '0.9' : '1.8';
+            /* 电流同样夹在 0~1.2A：超过安全上限的值即便存在 Flash 里，也不许出现在界面上再被写回去 */
+            if (values.has(CUSTOM_REGS.RUN_CURRENT_A)) document.getElementById('runCurrent').value = clamp(values.get(CUSTOM_REGS.RUN_CURRENT_A) / 1000, 0, 1.2).toFixed(2);
+            if (values.has(CUSTOM_REGS.HOLD_CURRENT_A)) document.getElementById('holdCurrent').value = clamp(values.get(CUSTOM_REGS.HOLD_CURRENT_A) / 1000, 0, 1.2).toFixed(2);
+            if (values.has(CUSTOM_REGS.SILENT_MODE)) document.getElementById('silentMode').value = values.get(CUSTOM_REGS.SILENT_MODE) ? '1' : '0';
+            updateMotionDurationEstimate();
+            if (failures.length > 0) {
+                setMotorSettingsStatus(`TMC UART 读取未完全成功：${failures.join('；')}`, 'error');
+                log(`[TMC UART] 上电参数读取部分/全部失败 (${failures.length}/${parameters.length})`);
+            } else {
+                setMotorSettingsStatus('TMC 参数读取成功：PA4 UART 寄存器读回；步距角来自 MCU 配置', 'ok');
+                log('[TMC UART] 已通过 PA4 读取驱动器参数；步距角为 MCU 配置项');
+            }
+            return failures.length;
+        }
+
+        async function saveMotorSettingsToFlash() {
+            if (!state.connected) throw new Error('请先连接串口');
+            let uartApplyError = null;
+            try {
+                await applyAllConfig();
+            } catch (error) {
+                uartApplyError = error;
+            }
+            setMotorSettingsStatus(uartApplyError
+                ? 'TMC UART 未全部确认，仍在保存 MCU Flash 参数…'
+                : 'UART 参数已确认，正在写入 MCU Flash…', uartApplyError ? 'error' : 'info');
+            await writeRegisterAndWaitAck(CUSTOM_REGS.SAVE_MOTOR_CONFIG, 1, 3000);
+            const saved = await readRegisterValue(CUSTOM_REGS.SAVE_MOTOR_CONFIG, 1500, 0);
+            if ((saved >>> 0) !== 1) throw new Error('MCU Flash 写入失败');
+            if (uartApplyError) {
+                setMotorSettingsStatus(`MCU Flash 保存成功，但 TMC UART 参数未全部确认：${uartApplyError.message}`, 'error');
+                log(`[WARN] Flash 已保存；TMC UART 应用未完全确认：${uartApplyError.message}`);
+            } else {
+                setMotorSettingsStatus('写入成功：TMC UART 参数已确认，MCU Flash 保存已回读确认', 'ok');
+            }
+            log('[INFO] 电机参数已写入 MCU Flash');
+        }
+
+        async function eraseMotorSettingsFromFlash() {
+            if (!state.connected) throw new Error('请先连接串口');
+            if (!window.confirm('清除 MCU Flash 里保存的电机参数，并恢复内置安全默认值（32 细分 / 插值 256 / 1.8° / 0.8 A / 0.2 A / 静音）？')) {
+                return;
+            }
+            setMotorSettingsStatus('正在清除 MCU Flash 电机参数…');
+            /* 0x5AA5 是固件约定的擦除魔数：写入全 0 记录 → magic 不匹配 → 下次上电直接走内置默认值。
+             * 固件在擦除成功后还会把运行中的 config_ 一并恢复成内置默认，
+             * 所以这里【不需要】再走一遍 applyAllConfig 去“写回”参数——
+             * 2209 损坏 / PA4 不通时那六次写入必然全部超时，既拖时间又把已完成的擦除报成失败。 */
+            await writeRegisterAndWaitAck(CUSTOM_REGS.SAVE_MOTOR_CONFIG, 0x5AA5, 5000);
+            const status = await readRegisterValue(CUSTOM_REGS.SAVE_MOTOR_CONFIG, 1500, 0);
+            if ((status >>> 0) !== 1) throw new Error('MCU Flash 清除未确认');
+            log('[INFO] MCU Flash 电机参数已擦除；固件已将运行配置恢复为内置默认值');
+            try {
+                /* 回读核对：固件读寄存器失败时会回报本地 config_（刚被重置成默认值），
+                 * 不会吐 0xFFFFFFFF，所以 UART 坏掉也能正常回显。 */
+                const failedReads = await loadMotorSettingsFromFirmware();
+                setMotorSettingsStatus(failedReads > 0
+                    ? `已清除 Flash 电机参数（固件已恢复内置默认值），但 ${failedReads} 项回读超时；请恢复串口后点“读取驱动器参数”确认`
+                    : '已清除 Flash 电机参数：当前配置为安全默认值（32 细分 / 插值 256 / 1.8° / 0.8 A / 0.2 A / 静音）',
+                    failedReads > 0 ? 'error' : 'ok');
+            } catch (error) {
+                document.getElementById('microsteps').value = '32';
+                document.getElementById('interpMicrosteps').value = '256';
+                document.getElementById('stepAngle').value = '1.8';
+                document.getElementById('runCurrent').value = '0.8';
+                document.getElementById('holdCurrent').value = '0.2';
+                document.getElementById('silentMode').value = '1';
+                updateMotionDurationEstimate();
+                setMotorSettingsStatus(`MCU Flash 已清除，但回读失败：${error.message}`, 'error');
+            }
         }
 
         function getPidParameters() {
@@ -3130,7 +3317,7 @@
                 const gains = await readTuneGainsFromHardware();
                 await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 1);
                 document.getElementById('closedLoopEnableInput').checked = true;
-                const trialResult = await runPulseTuneTrialWithRetries(profile, 200 * microsteps, index);
+                const trialResult = await runPulseTuneTrialWithRetries(profile, getMotorStepsPerRevolution(microsteps), index);
                 if (!trialResult) return null;
                 const details = `评分=${trialResult.score.toFixed(3)}°，样本=${trialResult.sampleCount}，${formatTuneGains(gains)}`;
                 setTuneActionState(index, '已完成', details, true);
@@ -3252,7 +3439,7 @@
                         if (state.autoTuneCancelled) return Number.POSITIVE_INFINITY;
                         const actionIndex = actionIndexForProfile(profile);
                         try {
-                            const trial = await runPulseTuneTrialWithRetries(profile, 200 * microsteps, actionIndex);
+                            const trial = await runPulseTuneTrialWithRetries(profile, getMotorStepsPerRevolution(microsteps), actionIndex);
                             if (!trial || state.autoTuneCancelled) return Number.POSITIVE_INFINITY;
                             totalScore += trial.score;
                             if (actionIndex >= 0) {
@@ -3424,6 +3611,11 @@
             accelSelect.value = '600';
         }
 
+        function getMotorStepsPerRevolution(microsteps = Number(document.getElementById('microsteps').value || 32),
+                                            stepAngleDeg = Number(document.getElementById('stepAngle').value || 1.8)) {
+            return Math.round(360 / stepAngleDeg) * microsteps;
+        }
+
         function getEffectivePulseCount() {
             return Number(document.getElementById('pulseCountInput').value || 51200);
         }
@@ -3433,7 +3625,7 @@
             const startRpm = Number(document.getElementById('startRpmSelect').value || 0);
             const maxRpm = Number(document.getElementById('maxRpmSelect').value || 0);
             const accelRpm = Number(document.getElementById('accelRpmSelect').value || 0);
-            const stepsPerRevolution = 51200;
+            const stepsPerRevolution = getMotorStepsPerRevolution();
             const accelSeconds = accelRpm > 0 && maxRpm > startRpm ? (maxRpm - startRpm) / accelRpm : 0;
             const accelPulses = ((startRpm + maxRpm) * 0.5) * accelSeconds / 60 * stepsPerRevolution;
             const physicalSeconds = accelPulses < pulseCount && maxRpm > 0
@@ -3855,7 +4047,42 @@
                 updateCalibrationLookupDisplays();
             });
             document.getElementById('exportCalibrationTableBtn').addEventListener('click', exportCalibrationTable);
-            document.getElementById('writeAllBtn').addEventListener('click', applyAllConfig);
+            document.getElementById('writeAllBtn').addEventListener('click', async () => {
+                const button = document.getElementById('writeAllBtn');
+                button.disabled = true;
+                try {
+                    await applyAllConfig();
+                } catch (error) {
+                    setMotorSettingsStatus(`应用失败：${error.message}`, 'error');
+                    log(`[ERROR] 应用电机参数失败：${error.message}`);
+                } finally {
+                    button.disabled = false;
+                }
+            });
+            document.getElementById('saveMotorSettingsBtn').addEventListener('click', async () => {
+                const button = document.getElementById('saveMotorSettingsBtn');
+                button.disabled = true;
+                try {
+                    await saveMotorSettingsToFlash();
+                } catch (error) {
+                    setMotorSettingsStatus(`写入失败：${error.message}`, 'error');
+                    log(`[ERROR] 电机参数保存失败：${error.message}`);
+                } finally {
+                    button.disabled = false;
+                }
+            });
+            document.getElementById('eraseMotorSettingsBtn').addEventListener('click', async () => {
+                const button = document.getElementById('eraseMotorSettingsBtn');
+                button.disabled = true;
+                try {
+                    await eraseMotorSettingsFromFlash();
+                } catch (error) {
+                    setMotorSettingsStatus(`清除失败：${error.message}`, 'error');
+                    log(`[ERROR] 清除电机参数失败：${error.message}`);
+                } finally {
+                    button.disabled = false;
+                }
+            });
             document.getElementById('sendTargetBtn').addEventListener('click', sendTargetPosition);
             document.getElementById('zeroBtn').addEventListener('click', zeroEncoder);
             document.getElementById('stopBtn').addEventListener('click', stopMotor);

@@ -172,6 +172,7 @@ public:
     bool isMotionRunning() const;
     float getMotionSpeedRpm() const;
     float getMotionPositionDeg() const;
+    float getMotorStepAngleDeg() const;
     uint32_t getWaveformWindowMs() const;
     void setWaveformWindowMs(uint32_t window_ms);
 

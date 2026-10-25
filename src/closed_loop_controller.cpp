@@ -2,7 +2,6 @@
 #include "at32f403a_407_board.h"
 
 #define STEP_PERIOD_US_DEFAULT  5000U
-#define FULL_STEPS_PER_ROUND    200U  // 1.8度步进
 #define DEFAULT_MICROSTEPS      64U
 #define MIN_STEP_PULSE_NS       100ULL
 #define DEFAULT_STEP_PULSE_NS   2000ULL
@@ -53,15 +52,19 @@ namespace
     uint32_t getMicroStepsPerRound(const StepperDriver* driver)
     {
         uint16_t microsteps = DEFAULT_MICROSTEPS;
+        float step_angle_deg = 1.8f;
         if (driver != nullptr)
         {
             microsteps = driver->config().microsteps;
+            step_angle_deg = driver->config().step_angle_deg;
         }
         if (microsteps == 0U)
         {
             microsteps = DEFAULT_MICROSTEPS;
         }
-        return FULL_STEPS_PER_ROUND * static_cast<uint32_t>(microsteps);
+        if (step_angle_deg < 0.5f || step_angle_deg > 3.0f) step_angle_deg = 1.8f;
+        const uint32_t full_steps_per_round = static_cast<uint32_t>(360.0f / step_angle_deg + 0.5f);
+        return full_steps_per_round * static_cast<uint32_t>(microsteps);
     }
 
     uint64_t pulseWidthNsToUs(uint64_t pulse_width_ns)
@@ -435,6 +438,15 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
         angle_accel_rpm_s_ = fast_clamp(static_cast<float>(value), 1.0f, 12000.0f);
         return protocol_ != nullptr && protocol_->setCustomParameter(reg, static_cast<uint32_t>(angle_accel_rpm_s_));
     }
+    if (reg == TMC2209_EXT_PARAM_MOTOR_STEP_ANGLE_MDEG)
+    {
+        const float step_angle_deg = static_cast<float>(value) / 1000.0f;
+        if (step_angle_deg < 0.5f || step_angle_deg > 3.0f || protocol_ == nullptr || driver_ == nullptr)
+        {
+            return false;
+        }
+        return protocol_->setCustomParameter(reg, value);
+    }
     if (reg == TMC2209_EXT_PARAM_PID_TUNE_CONTROL)
     {
         if (value != 0U)
@@ -565,6 +577,16 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     if (value == nullptr)
     {
         return false;
+    }
+    if (reg == TMC2209_EXT_PARAM_MICROSTEPS ||
+        reg == TMC2209_EXT_PARAM_INTERPOLATION ||
+        reg == TMC2209_EXT_PARAM_RUN_CURRENT_A ||
+        reg == TMC2209_EXT_PARAM_HOLD_CURRENT_A ||
+        reg == TMC2209_EXT_PARAM_SILENT_MODE ||
+        reg == TMC2209_EXT_PARAM_MOTOR_STEP_ANGLE_MDEG ||
+        reg == TMC2209_EXT_PARAM_SAVE_MOTOR_CONFIG)
+    {
+        return protocol_ != nullptr && protocol_->getCustomParameter(reg, value);
     }
     if (reg == TMC2209_EXT_PARAM_CLOSED_LOOP_ENABLE)
     {
@@ -1643,6 +1665,15 @@ bool ClosedLoopController::isMotionRunning() const
 float ClosedLoopController::getMotionSpeedRpm() const
 {
     return motion_speed_rpm_;
+}
+
+float ClosedLoopController::getMotorStepAngleDeg() const
+{
+    if (protocol_ != nullptr)
+    {
+        return protocol_->config().step_angle_deg;
+    }
+    return driver_ != nullptr ? driver_->config().step_angle_deg : 1.8f;
 }
 
 void ClosedLoopController::setPid(float kp, float ki, float kd)

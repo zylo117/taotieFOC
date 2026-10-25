@@ -20,6 +20,7 @@
 
 #define TMC2209_UART_GPIO        GPIOA
 #define TMC2209_UART_PIN         GPIO_PINS_4
+#define TMC2209_UART_BAUDRATE    40000U
 
 namespace stepper_common
 {
@@ -102,6 +103,7 @@ struct StepperDriverConfig
 {
     uint16_t microsteps; // 当前微步数，例如 32, 64, 128
     uint16_t interpolation_microsteps; // 插值/目标微步，通常由 256 或更高分辨率表示
+    float step_angle_deg; // 电机固有步距角，例如 1.8 或 0.9 度
     float run_current_a; // 运行电流，单位 A
     float hold_current_a; // 保持电流，单位 A
     bool enable_hold_current; // 是否启用保持电流

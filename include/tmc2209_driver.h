@@ -23,14 +23,26 @@ public:
     bool setInterpolation(uint16_t input_microsteps, uint16_t target_microsteps) override;
     bool setSenseResistor(float ohm) override;
     bool setSingleWireUart(gpio_type* port, uint16_t pin, bool enable) override;
+    void sendWriteFrame(uint8_t reg, uint32_t value);
 
 private:
+    bool applyConfiguration();
+    bool applyModeConfig();
+    bool applyChopperConfig();
+    bool applyCurrentConfig();
+    void setUartTransmitMode();
+    bool writeByte(uint8_t value);
+    bool readByte(uint8_t* value);
+    void releaseUartLine();
+    void delayBit(uint32_t cycles) const;
+
     bool enabled_;
     bool direction_;
     bool single_wire_uart_;
     StepperDriverConfig config_;
     gpio_type* uart_port_;
     uint16_t uart_pin_;
+    uint32_t chopconf_shadow_;
 };
 
 #endif

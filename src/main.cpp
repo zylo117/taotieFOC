@@ -184,7 +184,7 @@ int main(void)
 
     g_protocol.attachDriver(&g_driver);
     g_protocol.configure(
-        {32U, 256U, 0.8f, 0.2f, true, true, 0.110f, true, TMC2209_UART_GPIO, TMC2209_UART_PIN, 115200U});
+        {32U, 256U, 1.8f, 0.8f, 0.2f, true, true, 0.110f, true, TMC2209_UART_GPIO, TMC2209_UART_PIN, TMC2209_UART_BAUDRATE});
     g_encoder.init();
     crm_clocks_freq_type clocks;
     auto apb1_freq = clocks.apb1_freq;

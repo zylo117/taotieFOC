@@ -13,6 +13,7 @@ struct ClosedLoopDriverProtocolConfig
 {
     uint16_t microsteps;
     uint16_t interpolation_microsteps;
+    float step_angle_deg;
     float run_current_a;
     float hold_current_a;
     bool enable_hold_current;
@@ -117,7 +118,9 @@ enum Tmc2209CustomExtensionRegister
     TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_COUNT = 0x144U,
     TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_SLOPE = 0x145U,
     TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_INTERCEPT = 0x146U,
-    TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_EXPONENT = 0x147U
+    TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_EXPONENT = 0x147U,
+    TMC2209_EXT_PARAM_MOTOR_STEP_ANGLE_MDEG = 0x148U,
+    TMC2209_EXT_PARAM_SAVE_MOTOR_CONFIG = 0x149U
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -149,6 +152,9 @@ public:
     // 获取闭环扩展参数。
     virtual bool getCustomParameter(uint16_t id, uint32_t* value) const = 0;
 
+    // Persist the currently active motor configuration in MCU flash.
+    virtual bool saveMotorSettings() = 0;
+
     // 把实际驱动器对象挂接到协议适配器中。
     virtual void attachDriver(StepperDriver* driver) = 0;
 };
@@ -167,6 +173,7 @@ public:
     bool readRegister(uint16_t reg, uint32_t* value) override;
     bool setCustomParameter(uint16_t id, uint32_t value) override;
     bool getCustomParameter(uint16_t id, uint32_t* value) const override;
+    bool saveMotorSettings() override;
     void attachDriver(StepperDriver* driver) override;
 
     // 将当前协议配置同步到底层驱动器。
@@ -181,8 +188,10 @@ private:
     bool readOfficialRegister(uint8_t reg, uint32_t* value) const;
 
     ClosedLoopDriverProtocolConfig config_;
-    uint32_t custom_parameters_[72];
+    uint32_t custom_parameters_[74];
     StepperDriver* driver_;
+    uint32_t motor_config_save_status_;
+    bool loadMotorSettings();
 };
 
 #endif

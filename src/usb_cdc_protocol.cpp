@@ -31,6 +31,17 @@ namespace
         buf[2] = static_cast<uint8_t>((value >> 8U) & 0xFFU);
         buf[3] = static_cast<uint8_t>(value & 0xFFU);
     }
+
+    bool isMotorSettingRegister(uint16_t reg)
+    {
+        return reg == TMC2209_EXT_PARAM_MICROSTEPS ||
+               reg == TMC2209_EXT_PARAM_INTERPOLATION ||
+               reg == TMC2209_EXT_PARAM_RUN_CURRENT_A ||
+               reg == TMC2209_EXT_PARAM_HOLD_CURRENT_A ||
+               reg == TMC2209_EXT_PARAM_SILENT_MODE ||
+               reg == TMC2209_EXT_PARAM_MOTOR_STEP_ANGLE_MDEG ||
+               reg == TMC2209_EXT_PARAM_SAVE_MOTOR_CONFIG;
+    }
 }
 
 UsbCdcProtocolBridge::UsbCdcProtocolBridge()
@@ -192,7 +203,11 @@ void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)
     uint32_t reply_value = 0U;
     if (cmd == kCmdRead)
     {
-        controller_->readParameter(reg, &reply_value);
+        if (!controller_->readParameter(reg, &reply_value))
+        {
+            reply_value = 0xFFFFFFFFU;
+            printf("[USB_READ] reg=0x%04X failed; returning 0xFFFFFFFF\r\n", reg);
+        }
         sendFrame(0x81U, reg, reply_value);
     }
     else if (cmd == kCmdWrite)
@@ -205,8 +220,9 @@ void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)
         {
             controller_->setTargetAngleDeg(static_cast<float>(value) / 1000.0f);
         }
-        controller_->writeParameter(reg, value);
-        sendFrame(0x82U, reg, value);
+        const bool write_ok = controller_->writeParameter(reg, value);
+        const uint32_t ack_value = isMotorSettingRegister(reg) && !write_ok ? 0xFFFFFFFFU : value;
+        sendFrame(0x82U, reg, ack_value);
     }
 }
 
