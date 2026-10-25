@@ -112,7 +112,7 @@ namespace encoder_common
 
 struct EncoderFilterConfig
 {
-    static constexpr uint16_t kDefaultWindow = 2;
+    static constexpr uint16_t kDefaultWindow = 25;
     uint16_t window_size = kDefaultWindow;
 };
 

@@ -42,14 +42,15 @@ void current_adc_task_function(void* pvParameters);
 
 static void encoder_timer_init(void)
 {
-    constexpr uint32_t k_encoder_sample_us = 25U;
-    constexpr uint32_t k_tick_per_us = 250U;  // 每us的tick数，clock那里设置了分频为2，导致apb的定时器频率等于主频（at32特殊，看文档17页）
+    constexpr uint32_t k_encoder_sample_us = 2U;
+    // 250mhz下每ns 4 ticks，1us就是4000 ticks
+    constexpr uint32_t k_tick_per_us = 4000U;  // 每us的tick数，clock那里设置了分频为2，导致apb的定时器频率等于主频（at32特殊，看文档17页）
     constexpr uint32_t k_arr_value = (k_encoder_sample_us * k_tick_per_us) - 1U;
 
     crm_periph_clock_enable(CRM_TMR3_PERIPH_CLOCK, TRUE);
     tmr_base_init(TMR3, static_cast<uint16_t>(k_arr_value), 0U);
     tmr_cnt_dir_set(TMR3, TMR_COUNT_UP);
-    tmr_clock_source_div_set(TMR3, TMR_CLOCK_DIV1);
+    tmr_clock_source_div_set(TMR3, TMR_CLOCK_DIV2);
     tmr_period_buffer_enable(TMR3, TRUE);
     tmr_interrupt_enable(TMR3, TMR_OVF_INT, TRUE);
     nvic_irq_enable(TMR3_GLOBAL_IRQn, 2U, 0U);
