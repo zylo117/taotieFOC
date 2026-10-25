@@ -72,7 +72,7 @@ namespace stepper_common
     // 而在PWM模式下，是会重置的，不会继承！！！
 
     // 原始参数
-    constexpr uint32_t F_APB = HEXT_VALUE * 10; // cpu主频的一半，125Mhz
+    constexpr uint32_t F_APB = HEXT_VALUE * 10; // cpu主频的一半，125Mhz, 但是APB1预分频系数=1，所以实际频率为250Mhz
     constexpr uint32_t target_tick_time = 4; // ns
     constexpr uint32_t target_pulse_width = 200; // ns, 需要保证足够宽的高电平，避免丢步
     constexpr uint32_t dir_to_step_setup_time = 20; // ns, DIR to STEP 最小提前时间

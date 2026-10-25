@@ -47,7 +47,7 @@ namespace stepper_common
 
         tmr_base_init(TMR2, 1, k_psc);  // 1是垃圾值，只为了初始，后期会被dma的arr取代
         tmr_cnt_dir_set(TMR2, TMR_COUNT_UP);
-        tmr_clock_source_div_set(TMR2, TMR_CLOCK_DIV1);
+        tmr_clock_source_div_set(TMR2, TMR_CLOCK_DIV2);
         tmr_period_buffer_enable(TMR2, TRUE);  //ARR预装载，保证周期不会中途撕裂波形，高频必须打开
 
         output_config.oc_mode = TMR_OUTPUT_CONTROL_PWM_MODE_A;
