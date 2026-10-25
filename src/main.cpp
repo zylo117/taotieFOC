@@ -63,7 +63,7 @@ static void control_timer_init(void)
     crm_periph_clock_enable(CRM_TMR4_PERIPH_CLOCK, TRUE);
     tmr_base_init(TMR4, 1000U - 1U, system_core_clock / 20000000U - 1U);
     tmr_cnt_dir_set(TMR4, TMR_COUNT_UP);
-    tmr_clock_source_div_set(TMR4, TMR_CLOCK_DIV1);
+    tmr_clock_source_div_set(TMR4, TMR_CLOCK_DIV2);
 
     tmr_output_config_type output_config;
     tmr_output_default_para_init(&output_config);
@@ -73,7 +73,7 @@ static void control_timer_init(void)
     output_config.oc_polarity = TMR_OUTPUT_ACTIVE_HIGH;
     output_config.occ_polarity = TMR_OUTPUT_ACTIVE_HIGH;
     tmr_output_channel_config(TMR4, TMR_SELECT_CHANNEL_4, &output_config);
-    tmr_channel_value_set(TMR4, TMR_SELECT_CHANNEL_4, 500U);
+    tmr_channel_value_set(TMR4, TMR_SELECT_CHANNEL_4, 0);
     tmr_channel_enable(TMR4, TMR_SELECT_CHANNEL_4, TRUE);
 
     tmr_interrupt_enable(TMR4, TMR_OVF_INT, TRUE);
