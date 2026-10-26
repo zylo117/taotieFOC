@@ -1,5 +1,6 @@
 #include "closed_loop_controller.h"
 #include "at32f403a_407_board.h"
+#include "pulse_capture.h"
 
 #define STEP_PERIOD_US_DEFAULT  5000U
 #define FULL_STEPS_PER_ROUND    200U  // 1.8度步进
@@ -198,10 +199,8 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
     gpio_default_para_init(&input_gpio);
     input_gpio.gpio_mode = GPIO_MODE_INPUT;
     input_gpio.gpio_pull = GPIO_PULL_NONE;
-    input_gpio.gpio_pins = GPIO_PINS_15;
-    gpio_init(GPIOA, &input_gpio);
-    input_gpio.gpio_pins = GPIO_PINS_3;
-    gpio_init(GPIOB, &input_gpio);
+    // PB4(DIR)/PB5(PUL) 不做软件轮询，由 pulse_capture_init() 配置成 TMR3 复用输入，
+    // 硬件捕获 + DMA 逐脉冲快照，避免 DIR 在 rampUpdate 里采样时已经翻转。
     input_gpio.gpio_pins = EN_OUT_PIN;
     gpio_init(EN_OUTPUT_PORT, &input_gpio);
 
@@ -1126,6 +1125,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     // 更新FOC频率信息
     updateLoopFrequencyStats(now_ns);
 
+    // 外部 PUL/DIR 指令采集：DMA 只搬原始快照，这里一次性批量解析本轮的脉冲。
+    // 采集用 TMR3（PB4/PB5），内部 STEP 输出用 TMR2（PB10/PB11），互不干扰。
+    external_pulse_delta_ = pulse_capture_read_delta();
+
     if (driver_ == nullptr)
     {
         return;
@@ -1732,6 +1735,11 @@ void ClosedLoopController::resetLoopFrequencyStats()
 int32_t ClosedLoopController::getPositionSteps() const
 {
     return actual_step_;
+}
+
+int32_t ClosedLoopController::getExternalPulseDelta() const
+{
+    return external_pulse_delta_;
 }
 
 int32_t ClosedLoopController::getTargetSteps() const

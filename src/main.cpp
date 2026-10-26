@@ -19,6 +19,7 @@
 #include "tmc2209_driver.h"
 #include "kth7823_encoder.h"
 #include "phase_current.h"
+#include "pulse_capture.h"
 
 TaskHandle_t led5_handler;
 TaskHandle_t control_handler;
@@ -40,6 +41,9 @@ void telemetry_task_function(void* pvParameters);
 void usb_task_function(void* pvParameters);
 void current_adc_task_function(void* pvParameters);
 
+// 磁编码器采样时基：TMR5 溢出。
+// 注意：TMR3 已被 pulse_capture_init() 占用成自由运行捕获（ARR=0xFFFF、不能有周期中断），
+// 所以这个周期性时基不能再放 TMR3。
 static void encoder_timer_init(void)
 {
     constexpr uint32_t k_encoder_sample_us = 2U;
@@ -47,15 +51,15 @@ static void encoder_timer_init(void)
     constexpr uint32_t k_tick_per_us = 4000U;  // 每us的tick数，clock那里设置了分频为2，导致apb的定时器频率等于主频（at32特殊，看文档17页）
     constexpr uint32_t k_arr_value = (k_encoder_sample_us * k_tick_per_us) - 1U;
 
-    crm_periph_clock_enable(CRM_TMR3_PERIPH_CLOCK, TRUE);
-    tmr_base_init(TMR3, static_cast<uint16_t>(k_arr_value), 0U);
-    tmr_cnt_dir_set(TMR3, TMR_COUNT_UP);
-    tmr_clock_source_div_set(TMR3, TMR_CLOCK_DIV2);
-    tmr_period_buffer_enable(TMR3, TRUE);
-    tmr_interrupt_enable(TMR3, TMR_OVF_INT, TRUE);
-    nvic_irq_enable(TMR3_GLOBAL_IRQn, 2U, 0U);
-    tmr_counter_value_set(TMR3, 0U);
-    tmr_counter_enable(TMR3, TRUE);
+    crm_periph_clock_enable(CRM_TMR5_PERIPH_CLOCK, TRUE);
+    tmr_base_init(TMR5, static_cast<uint16_t>(k_arr_value), 0U);
+    tmr_cnt_dir_set(TMR5, TMR_COUNT_UP);
+    tmr_clock_source_div_set(TMR5, TMR_CLOCK_DIV2);
+    tmr_period_buffer_enable(TMR5, TRUE);
+    tmr_interrupt_enable(TMR5, TMR_OVF_INT, TRUE);
+    nvic_irq_enable(TMR5_GLOBAL_IRQn, 2U, 0U);
+    tmr_counter_value_set(TMR5, 0U);
+    tmr_counter_enable(TMR5, TRUE);
 }
 
 static void control_timer_init(void)
@@ -119,11 +123,11 @@ extern "C" void TMR4_GLOBAL_IRQHandler(void)
     }
 }
 
-extern "C" void TMR3_GLOBAL_IRQHandler(void)
+extern "C" void TMR5_GLOBAL_IRQHandler(void)
 {
-    if (tmr_interrupt_flag_get(TMR3, TMR_OVF_FLAG) != RESET)
+    if (tmr_interrupt_flag_get(TMR5, TMR_OVF_FLAG) != RESET)
     {
-        tmr_flag_clear(TMR3, TMR_OVF_FLAG);
+        tmr_flag_clear(TMR5, TMR_OVF_FLAG);
         g_encoder.updateFilteredSample();
     }
 }
@@ -199,6 +203,9 @@ int main(void)
     g_controller.setFaultPolicy(true, true);
     g_controller.enableLoopStats(true);
     g_controller.init(&g_driver, &g_encoder);
+    // 外部 PUL/DIR 指令采集（TMR3 CH1/CH2 = PB4/PB5 捕获 + DMA 环形缓冲）。
+    // 必须在控制器 init 之后：init 里会把这两个脚初始化成普通 GPIO。
+    pulse_capture_init();
     g_usb_bridge.init(&g_controller, &g_usb_core);
     control_timer_init();
     encoder_timer_init();

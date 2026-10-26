@@ -199,6 +199,10 @@ public:
     // 读取当前闭环位置步数。
     int32_t getPositionSteps() const;
 
+    // 最近一次 rampUpdate 周期内采集到的外部 PUL/DIR 有符号脉冲增量
+    // （由 pulse_capture_read_delta() 在 rampUpdate 开头消费，供后续闭环跟随使用）
+    int32_t getExternalPulseDelta() const;
+
     // 读取目标位置步数。
     int32_t getTargetSteps() const;
     float getEncoderZero() const;
@@ -304,6 +308,7 @@ private:
     volatile uint8_t last_step_state_;
     volatile uint8_t last_dir_state_;
     volatile uint8_t last_en_state_;
+    volatile int32_t external_pulse_delta_ = 0;  // 外部 PUL/DIR 指令脉冲增量（每 rampUpdate 刷新）
     bool stop_on_encoder_fault_;
     bool stop_on_magnetic_fault_;
     bool encoder_fault_active_;
