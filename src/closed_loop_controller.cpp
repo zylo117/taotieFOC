@@ -9,6 +9,32 @@
 #define DEFAULT_STEP_PULSE_NS   2000ULL
 #define MAX_STEP_PULSE_NS       20000ULL
 
+// ===========================================================================
+// STEP 时序模式：恒速突发 / 平滑 + 谐波注入
+// ---------------------------------------------------------------------------
+// 0 = 原方案：每个 rampUpdate 窗口开头就用“最小步距（2x脉宽）”把本窗口的步数一口气打完。
+//     好处是简单、永不丢步；代价是步进位置是 20kHz 的硬台阶，频谱很宽，容易激起中频共振。
+// 1 = 把本窗口的 N 步均匀铺满整个窗口（平滑），并在此基础上把每步间隔乘上
+//     (1 + depth*sin(2*pi*f_h*t))，即对步频做正弦频率调制（谐波注入），
+//     把能量从共振峰摊到边带上，降低共振噪声。depth=0 时就是纯平滑。
+// ===========================================================================
+#ifndef STEP_SEQ_HARMONIC_ENABLE
+#define STEP_SEQ_HARMONIC_ENABLE 0
+#endif
+
+// 注入频率 Hz：不是步频的谐波，而是要打向机械共振峰的那个频率（与激励源无关，
+// 由电机+负载的机械共振决定），常见 50~400Hz 中频共振，小步进典型 100~200Hz。
+// 用本文件的调频扫描法实测：固定转速，f_h 从 40Hz 扫到 400Hz，噪声最小的那个就是应设值。
+#ifndef STEP_SEQ_HARMONIC_FREQ_HZ
+#define STEP_SEQ_HARMONIC_FREQ_HZ 40.0f
+#endif
+
+// 调制深度：0.10 = 步距 ±10%。建议 0.05~0.20，太大电机会听到低沉的“嗡嗡”滚动声、
+// 跟随误差也会变大；先给 0.0 听纯平滑的效果，再逐步加。
+#ifndef STEP_SEQ_HARMONIC_DEPTH
+#define STEP_SEQ_HARMONIC_DEPTH 0.2f
+#endif
+
 namespace
 {
     uint16_t clampMicrosteps(uint16_t value)
@@ -1050,12 +1076,60 @@ void ClosedLoopController::startMotion()
     }
 }
 
-void generate_constant_speed_step_sequence(uint32_t *seq, const uint32_t seq_count, const uint32_t arr) {
-    for (uint32_t i = 1; i < seq_count - 1; i++){  //头尾一个是用来换向的，不是脉冲用的
-        // 这里就贪方便匀速，实际测试要改成各种匀加速，S加速
-        seq[i] = arr;
+namespace
+{
+#if STEP_SEQ_HARMONIC_ENABLE
+    // 谐波注入的相位（rad），跨 ramp 窗口连续累加：
+    // 如果每个窗口都从 0 相位重启，就等于 20kHz 的锯齿调频，会产生一大堆无用边带。
+    float g_step_seq_phase_rad = 0.0f;
+    constexpr float k_two_pi = 6.28318530718f;
+#endif
+
+    // 填充一个 ramp 窗口内的 ARR（每步间隔）序列。
+    // base_ticks ：本窗口的平均步距（tick，1 tick = 4ns）
+    // min_ticks  ：允许的最小步距，必须 > 脉宽 tick，否则高电平被截断直接丢步
+    void generate_step_sequence(uint32_t *seq, const uint32_t seq_count, const uint32_t base_ticks,
+                                const uint32_t min_ticks)
+    {
+        uint32_t base = (base_ticks < min_ticks) ? min_ticks : base_ticks;
+
+#if STEP_SEQ_HARMONIC_ENABLE
+        // 每步相位增量：f_h * 一个步距时长。用 base 而不是实际发出的 ARR，
+        // 这样注入频率只跟 f_h 有关，不会因为步距被调制而自激。
+        const float phase_step_rad = k_two_pi * STEP_SEQ_HARMONIC_FREQ_HZ *
+                                     (static_cast<float>(base) *
+                                      static_cast<float>(stepper_common::target_tick_time) * 1.0e-9f);
+#endif
+
+        for (uint32_t i = 1; i < seq_count - 1; i++)  // 头尾是换向 guard，不是脉冲
+        {
+#if STEP_SEQ_HARMONIC_ENABLE
+            const float scale = 1.0f + STEP_SEQ_HARMONIC_DEPTH * sinf(g_step_seq_phase_rad);
+            uint32_t ticks = static_cast<uint32_t>(static_cast<float>(base) * scale + 0.5f);
+            if (ticks < min_ticks)
+            {
+                ticks = min_ticks;
+            }
+            seq[i] = ticks;
+
+            g_step_seq_phase_rad += phase_step_rad;
+            if (g_step_seq_phase_rad >= k_two_pi)
+            {
+                g_step_seq_phase_rad -= k_two_pi;
+            }
+#else
+            seq[i] = base;
+#endif
+        }
     }
-}
+
+    void reset_step_sequence_harmonic(void)
+    {
+#if STEP_SEQ_HARMONIC_ENABLE
+        g_step_seq_phase_rad = 0.0f;
+#endif
+    }
+} // namespace
 
 void add_dir_to_step_sequence(uint32_t *seq, uint32_t seq_count, uint32_t guard_tick, bool switch_direction)
 {
@@ -1537,7 +1611,25 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const uint64_t remaining_ticks = remaining_time / stepper_common::target_tick_time;
 
         // 要尽快执行，不可以用下面那种平均的平滑模式，会丢步
-        uint32_t step_ticks = k_step_pulse_ticks * 2;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
+        const uint32_t min_step_ticks = k_step_pulse_ticks * 2U;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
+        uint32_t step_ticks = min_step_ticks;
+
+#if STEP_SEQ_HARMONIC_ENABLE
+        // 平滑 + 谐波：把本窗口的 num_steps 步均匀铺满剩余时间。
+        // 谐波需要 ±depth 的余量，所以按 (1+depth) 除一下，保证最长的那一步也塞得进窗口，
+        // 否则下一个 rampUpdate 会 stop_timer_dma_for_reload() 把没打完的脉冲直接砍掉（丢步）。
+        const float spread_denom = static_cast<float>(num_steps) * (1.0f + STEP_SEQ_HARMONIC_DEPTH);
+        float spread_ticks = static_cast<float>(remaining_ticks) / spread_denom;
+        if (spread_ticks > 1.0e9f)  // 任务被阻塞很久时的兜底，防止转 uint32 溢出
+        {
+            spread_ticks = 1.0e9f;
+        }
+        step_ticks = static_cast<uint32_t>(spread_ticks);
+        if (step_ticks < min_step_ticks)
+        {
+            step_ticks = min_step_ticks;
+        }
+#endif
 
         // 丢步直接丢了，不打印b报错，因为打印反而会加剧丢步
         // uint64_t max_iter_time_ns = (2 * stepper_common::guard_tick + step_ticks * num_steps) * stepper_common::target_tick_time;
@@ -1575,7 +1667,7 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 #else
         // todo 注意这里仅恒速脉冲，也就是每个rampupdate中仅开头一段时间就尽可能快地把脉冲恒速跑完，虽然间隔很短，但总会带来一些卡顿的问题，后期应该改成平滑插入脉冲
         // todo 注意这里目前仅支持每次rampupdate仅支持最多一次换向。后续需要根据换向次数和位置提前规划好换向点并安排好guard ticks
-        generate_constant_speed_step_sequence(arr_seq_cycle, seq_count, step_ticks);
+        generate_step_sequence(arr_seq_cycle, seq_count, step_ticks, min_step_ticks);
         add_dir_to_step_sequence(arr_seq_cycle, seq_count, stepper_common::guard_tick,
                      motion_direction_change_pending_);
         start_step_sequence(arr_seq_cycle, seq_count, stepper_common::k_psc, stepper_common::k_step_pulse_ticks, current_direction);
@@ -1631,6 +1723,7 @@ void ClosedLoopController::stopMotion()
     motion_last_ramp_time_ns_ = 0ULL;
     // printf("fuck3 motion_last_ramp_time_ns_: %f\n", motion_last_ramp_time_ns_/1e9);
     motion_step_high_ = false;
+    reset_step_sequence_harmonic();  // 下一局运动重新从 0 相位开始注入
     if (driver_ != nullptr)
     {
         stepper_common::stepper_stop_motion_timer();
