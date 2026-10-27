@@ -340,7 +340,6 @@ void UsbCdcProtocolBridge::sendTelemetry()
         TMC2209_EXT_PARAM_ACCEL_RPM_S,
         TMC2209_EXT_PARAM_PULSE_COUNT,
         TMC2209_EXT_PARAM_MOTION_MODE,
-        TMC2209_EXT_PARAM_SPEED_RPM,
         TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, TMC2209_EXT_PARAM_MOTOR_ENABLE,
         TMC2209_EXT_PARAM_MOTOR_DISABLE, TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS,
         TMC2209_EXT_PARAM_CPU_USAGE_CENTIPERCENT,
@@ -368,6 +367,13 @@ void UsbCdcProtocolBridge::sendTelemetry()
         register_to_send = TMC2209_EXT_PARAM_MOTION_COMMAND;
         should_send = controller_->readParameter(register_to_send, &value_to_send);
         break;
+    case 3U:
+        // 转速必须走快帧：它以前只在 default 的轮询里发一份，一轮 28 个寄存器下来
+        // 要 ~560ms 才更新一次，上位机波形图上的转速线会是一级一级的台阶，
+        // 看不出加减速的真实形状，停止瞬间的位置也会滞后将近半秒。
+        register_to_send = TMC2209_EXT_PARAM_SPEED_RPM;
+        should_send = controller_->readParameter(register_to_send, &value_to_send);
+        break;
     default:
         register_to_send = telemetry_regs[telemetry_index];
         telemetry_index = static_cast<uint16_t>((telemetry_index + 1U) %
@@ -375,7 +381,7 @@ void UsbCdcProtocolBridge::sendTelemetry()
         should_send = controller_->readParameter(register_to_send, &value_to_send);
         break;
     }
-    telemetry_phase = static_cast<uint8_t>((telemetry_phase + 1U) % 4U);  // 数值要等于switch内总项的数量，包括default
+    telemetry_phase = static_cast<uint8_t>((telemetry_phase + 1U) % 5U);  // 数值要等于switch内总项的数量，包括default
     if (should_send)
     {
         sendFrame(0x10U, register_to_send, value_to_send);

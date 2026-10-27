@@ -962,7 +962,9 @@
                             width="620"></canvas>
                     <div class="wave-readouts">
                         <span>即时转速 <strong id="waveSpeedReadout">0.00 RPM</strong></span>
-                        <span>跟随误差 <strong id="waveErrorReadout">0.000°</strong></span>
+                        <span>即时跟随误差 <strong id="waveErrorReadout">0.000°</strong></span>
+                        <span>峰值 |误差| <strong id="waveErrorPeakReadout">0.000°</strong></span>
+                        <span>末值（停止瞬间） <strong id="waveErrorLastReadout">0.000°</strong></span>
                     </div>
                 </div>
             </div>
@@ -980,7 +982,9 @@
                 <canvas height="320" id="motionWavePopupCanvas" width="820"></canvas>
                 <div class="wave-readouts">
                     <span>即时转速 <strong id="wavePopupSpeedReadout">0.00 RPM</strong></span>
-                    <span>跟随误差 <strong id="wavePopupErrorReadout">0.000°</strong></span>
+                    <span>即时跟随误差 <strong id="wavePopupErrorReadout">0.000°</strong></span>
+                    <span>峰值 |误差| <strong id="wavePopupErrorPeakReadout">0.000°</strong></span>
+                    <span>末值（停止瞬间） <strong id="wavePopupErrorLastReadout">0.000°</strong></span>
                 </div>
             </div>
         </div>
@@ -1367,6 +1371,8 @@
             , waveCaptureStartedAt: 0
             , waveMotionObserved: false
             , waveFrozenAt: 0
+            , waveStoppedAt: 0
+            , waveStopFreezeTimer: null
             , lastWaveStamp: 0
             , cpuUsagePercent: 0
             , controlTaskUsagePercent: 0
@@ -3445,6 +3451,10 @@
 
         updateMotionDurationEstimate();
 
+        // 固件报“运动结束”后再留一段采样尾巴，等机械轴把最后的负载角走完，
+        // 波形图才能把“误差收敛到稳态”这一段画出来（而不是停在还没停转的那一帧）。
+        const WAVE_POST_ROLL_MS = 600;
+
         function pushWaveSample() {
             if (!state.waveCaptureActive || state.wavePaused) return;
             const now = performance.now();
@@ -3474,6 +3484,11 @@
             state.waveCaptureStartedAt = performance.now();
             state.waveMotionObserved = false;
             state.waveFrozenAt = 0;
+            state.waveStoppedAt = 0;
+            if (state.waveStopFreezeTimer !== null) {
+                window.clearTimeout(state.waveStopFreezeTimer);
+                state.waveStopFreezeTimer = null;
+            }
             state.waveCaptureActive = true;
             document.getElementById('pauseWaveBtn').textContent = '暂停查看';
             state.motionWaveTimer = window.setInterval(() => {
@@ -3487,6 +3502,10 @@
         }
 
         function stopWaveCapture() {
+            if (state.waveStopFreezeTimer !== null) {
+                window.clearTimeout(state.waveStopFreezeTimer);
+                state.waveStopFreezeTimer = null;
+            }
             if (!state.waveCaptureActive) return;
             state.waveFrozenAt = state.wavePaused ? state.wavePausedAt : performance.now();
             state.waveCaptureActive = false;
@@ -3520,6 +3539,31 @@
             ctx.fillStyle = 'rgba(2,6,23,0.82)';
             ctx.fillRect(0, 0, width, height);
 
+            const points = state.waveHistory.length ? state.waveHistory : [{t: now - windowMs, rpm: 0, followError: 0}];
+            const filtered = points.filter((entry) => now - entry.t <= windowMs);
+
+            // 跟随误差的量级只有零点几度（1200 RPM 稳态负载角约 0.3°），
+            // 固定 ±30° 的轴会把曲线压成一条直线，看不出“结束运动到底少走了多少”。
+            // 这里按窗口内实际幅值自动挑一档对称刻度，最小 ±0.2°，最大 ±30°。
+            const errorAxisSteps = [0.2, 0.5, 1, 2, 3, 5, 10, 15, 20, 30];
+            let errorAbsPeak = 0;
+            filtered.forEach((entry) => {
+                const magnitude = Math.abs(Number(entry.followError) || 0);
+                if (magnitude > errorAbsPeak) errorAbsPeak = magnitude;
+            });
+            let followErrorRange = errorAxisSteps[errorAxisSteps.length - 1];
+            for (const candidate of errorAxisSteps) {
+                if (errorAbsPeak <= candidate * 0.85) {
+                    followErrorRange = candidate;
+                    break;
+                }
+            }
+            const errorAxisDecimals = followErrorRange <= 0.5 ? 2 : followErrorRange <= 3 ? 1 : 0;
+            const formatErrorTick = (value) => {
+                if (Math.abs(value) < 1e-9) return `0.${'0'.repeat(errorAxisDecimals)}°`;
+                return `${value > 0 ? '+' : '-'}${Math.abs(value).toFixed(errorAxisDecimals)}°`;
+            };
+
             ctx.strokeStyle = 'rgba(148,163,184,0.24)';
             ctx.lineWidth = 1;
             const gridCount = Math.floor(windowMs / 100);
@@ -3539,7 +3583,7 @@
                 const y = plotTop + ((plotBottom - plotTop) / 12) * i;
                 const isMajorGrid = i % 3 === 0;
                 const rpmTick = 3000 - (i * 500);
-                const errorTick = 30 - (i * 5);
+                const errorTick = followErrorRange * (1 - (2 * i) / 12);
                 ctx.strokeStyle = isMajorGrid ? 'rgba(148,163,184,0.36)' : 'rgba(148,163,184,0.2)';
                 ctx.lineWidth = isMajorGrid ? 1 : 0.7;
                 ctx.beginPath();
@@ -3549,23 +3593,29 @@
                 ctx.fillStyle = 'rgba(226,232,240,0.78)';
                 ctx.textAlign = 'right';
                 ctx.fillText(String(rpmTick), plotLeft - 6, y);
-                ctx.textAlign = 'left';
-                ctx.fillText(`${errorTick > 0 ? '+' : ''}${errorTick}°`, plotRight + 6, y);
+                // 误差轴只标主刻度（±满量程 / ±半量程 / 0），自动换挡后右侧也不会糊成一片
+                if (isMajorGrid) {
+                    ctx.fillStyle = 'rgba(134,239,172,0.9)';
+                    ctx.textAlign = 'left';
+                    ctx.fillText(formatErrorTick(errorTick), plotRight + 6, y);
+                }
             }
 
             const speedLine = (rpm) => {
                 return plotBottom - ((rpm + 3000) / 6000) * (plotBottom - plotTop);
             };
-            const points = state.waveHistory.length ? state.waveHistory : [{t: now - windowMs, rpm: 0, followError: 0}];
-            const filtered = points.filter((entry) => now - entry.t <= windowMs);
-            const followErrorRange = 30;
             const followErrorLine = (error) => {
                 return plotBottom - ((error + followErrorRange) / (2 * followErrorRange)) * (plotBottom - plotTop);
             };
             const speedReadoutId = canvasId === 'motionWavePopupCanvas' ? 'wavePopupSpeedReadout' : 'waveSpeedReadout';
             const errorReadoutId = canvasId === 'motionWavePopupCanvas' ? 'wavePopupErrorReadout' : 'waveErrorReadout';
+            const peakReadoutId = canvasId === 'motionWavePopupCanvas' ? 'wavePopupErrorPeakReadout' : 'waveErrorPeakReadout';
+            const lastReadoutId = canvasId === 'motionWavePopupCanvas' ? 'wavePopupErrorLastReadout' : 'waveErrorLastReadout';
+            const lastSample = filtered.length ? filtered[filtered.length - 1] : {followError: 0};
             document.getElementById(speedReadoutId).textContent = `${Number(state.motionSpeedRpm || 0).toFixed(2)} RPM`;
             document.getElementById(errorReadoutId).textContent = `${Number(state.motionFollowErrorDeg || 0).toFixed(3)}°`;
+            document.getElementById(peakReadoutId).textContent = `${errorAbsPeak.toFixed(3)}°`;
+            document.getElementById(lastReadoutId).textContent = `${Number(lastSample.followError || 0).toFixed(3)}°`;
 
             ctx.strokeStyle = 'rgba(56,189,248,0.7)';
             ctx.fillStyle = '#e2e8f0';
@@ -3574,7 +3624,7 @@
             ctx.textAlign = 'left';
             ctx.fillText('RPM', 10, 14);
             ctx.textAlign = 'right';
-            ctx.fillText('瞬时位置误差°', width - 4, 14);
+            ctx.fillText(`跟随误差 °（满量程 ±${followErrorRange}°）`, width - 4, 14);
             ctx.textAlign = 'left';
 
             ctx.strokeStyle = '#38bdf8';
@@ -3615,6 +3665,9 @@
                 ctx.beginPath();
                 ctx.rect(plotLeft, plotTop, plotRight - plotLeft, plotBottom - plotTop);
                 ctx.clip();
+                // clip() 不会清空当前路径，必须重新 beginPath，
+                // 否则最后那次 stroke() 会把上面这个裁剪矩形也描出来（多一圈绿框）。
+                ctx.beginPath();
                 filtered.forEach((entry, i) => {
                     const x = plotLeft + ((now - entry.t) / windowMs) * (plotRight - plotLeft);
                     const y = followErrorLine(entry.followError);
@@ -3623,6 +3676,21 @@
                 });
                 ctx.strokeStyle = '#22c55e';
                 ctx.lineWidth = 2;
+                ctx.stroke();
+                ctx.restore();
+            }
+
+            // 标出固件报告“运动结束”的时刻：这条线左侧是运动段，右侧是沉降/静止段。
+            // 有了它就能一眼看出末值是收敛到 0 附近，还是停在了某个负载角上。
+            if (state.waveStoppedAt && now >= state.waveStoppedAt && now - state.waveStoppedAt <= windowMs) {
+                const stopX = plotLeft + ((now - state.waveStoppedAt) / windowMs) * (plotRight - plotLeft);
+                ctx.save();
+                ctx.setLineDash([4, 4]);
+                ctx.strokeStyle = 'rgba(251,191,36,0.85)';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(stopX, plotTop);
+                ctx.lineTo(stopX, plotBottom);
                 ctx.stroke();
                 ctx.restore();
             }
@@ -3965,7 +4033,23 @@
             if (frame.reg === 0x11F && (frame.cmd === 0x10 || frame.cmd === 0x81 || frame.cmd === 0x82) && state.waveCaptureActive) {
                 if ((frame.value | 0) !== 0) {
                     state.waveMotionObserved = true;
-                } else if (state.waveMotionObserved || performance.now() - state.waveCaptureStartedAt >= 800) {
+                } else if (state.waveMotionObserved) {
+                    // 固件报 0 只代表“脉冲发完 / 定时器已停”，机械轴可能还差一个负载角。
+                    // 所以这里先补一个末点，再留一小段尾迹，等误差收敛完再冻结，
+                    // 否则波形会被砍在“还没真正停转”的那一帧上，看着像少走了角度。
+                    if (state.waveStopFreezeTimer === null) {
+                        state.waveStoppedAt = performance.now();
+                        pushWaveSample();
+                        drawWaveform();
+                        if (document.getElementById('wavePopup').classList.contains('visible')) {
+                            drawWaveform('motionWavePopupCanvas');
+                        }
+                        state.waveStopFreezeTimer = window.setTimeout(() => {
+                            state.waveStopFreezeTimer = null;
+                            stopWaveCapture();
+                        }, WAVE_POST_ROLL_MS);
+                    }
+                } else if (performance.now() - state.waveCaptureStartedAt >= 800) {
                     stopWaveCapture();
                 }
             }

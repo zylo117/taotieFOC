@@ -288,6 +288,12 @@ private:
     volatile uint64_t motion_last_ramp_time_ns_;
     volatile uint64_t motion_steps_emitted_;
     volatile int32_t motion_steps_emitted_signed;  // 指的是距离总运动位移脉冲数，有方向。等于是出发至今的带方向的累计脉冲数
+    // 已经“真的发完”的带方向累计步数，跟随误差必须用它算命令位置。
+    // 原因：motion_steps_emitted_signed 在窗口开头就把整窗步数加满了，但脉冲要 50us
+    // 才发完（平滑模式），直接相减会让命令位置凭空领先一个窗口 ≈ 几十步 ≈ 0.3°。
+    volatile int32_t motion_steps_delivered_signed = 0;
+    // 刚交给 TMR2/DMA、还没到下一拍确认的步数（下一个 rampUpdate 才并入 delivered）
+    volatile int32_t motion_dma_pending_signed = 0;
     volatile uint32_t motion_dma_pending_steps_;
     volatile uint32_t motion_leg_pulse_count_;
     volatile double motion_step_accumulator_;
@@ -355,8 +361,15 @@ private:
         RAMP_STAGE_ACCEL,
         RAMP_STAGE_CRUISE,
         RAMP_STAGE_DECEL,
+        // 脉冲已经全部交给 TMR2/DMA，但电机轴还没追上（负载角）。
+        // 这个阶段只做两件事：等最后一批脉冲真的发完、等编码器静止，然后才收尾。
+        // 否则 stopMotion() 会立刻关掉 TMR2，把尾巴上那几十个脉冲连同对应角度一起丢掉。
+        RAMP_STAGE_SETTLE,
         RAMP_STAGE_DONE
-    } motion_ramp_stage_; // 当前阶段：加速/匀速/减速/结束
+    } motion_ramp_stage_; // 当前阶段：加速/匀速/减速/沉降确认/结束
+    volatile uint64_t motion_settle_start_ns_ = 0ULL;   // 进入沉降阶段的时刻
+    volatile uint32_t motion_settle_stable_ramps_ = 0U;  // 编码器连续的“不动”拍数
+    volatile uint16_t motion_settle_last_raw_ = 0U;      // 上一拍的编码器原始角，用来判静止
     float current_step_speed_; // 当前瞬时速度，微步/s
     uint32_t steps_to_decel_; // 剩余多少步必须开始减速
     bool motion_zero_speed_recovery_logged_;

@@ -71,6 +71,42 @@
 #pragma message("[STEP_SEQ] mode 2: smooth spread + harmonic injection")
 #endif
 
+// ===========================================================================
+// 运动收尾的沉降确认（RAMP_STAGE_SETTLE）
+// ---------------------------------------------------------------------------
+// 问题：“本窗最后一批脉冲已经交给 TMR2/DMA” ≠ “电机轴已经走到位”。
+//   1) 硬件侧：脉冲还在 DMA 序列里排队，最后一个窗口要 50us 才能发完；
+//   2) 机械侧：电机轴经过负载/皮带总比命令脉冲滞后一个负载角。
+// 原来在“计步数达到总数”的那一拍就直接 stopMotion()，它内部会立刻
+// stepper_stop_motion_timer() 关掉 TMR2 + DMA，把尾巴上还没发完的几十个脉冲
+// 直接砍掉 —— 高转速1200rpm下一个窗口就 50 多步 ≈ 0.36°，于是“总是少一点点”。
+// 现在改成：步数发完后先进入沉降阶段，等最后一批脉冲真的发完 + 编码器连续
+// 若干拍不动，再判定运动结束。这段时间的编码器行程照样计入统计。
+// ===========================================================================
+// 最短沉降时间：必须大于一个控制窗口(50us) 加上若干机械时间常数。
+// 给 15ms 是因为负载角回位/皮带回弹通常在 10ms 量级，太短会在轴还在动时就收尾。
+#ifndef STEP_SETTLE_MIN_US
+#define STEP_SETTLE_MIN_US 15000U
+#endif
+
+// 编码器连续多少拍“不动”才算真正静止（一拍 = 20kHz = 50us）
+#ifndef STEP_SETTLE_STABLE_RAMPS
+#define STEP_SETTLE_STABLE_RAMPS 8U
+#endif
+
+// 多少 LSB 之内算“不动”。滤波后的原始角在跳变沿上会来回抹 1~2 LSB，
+// 卡到 1 LSB 的话可能永远凑不满连续 8 拍，反而每次都要等满超时。
+// 2 LSB = 0.011°，比机械负载角小两个数量级，不会把“还在爬行”误判成“已静止”。
+#ifndef STEP_SETTLE_QUIET_LSB
+#define STEP_SETTLE_QUIET_LSB 2
+#endif
+
+// 沉降超时：轴一直因惯性/共振轻微抖动时也不能永久挂着，到点强制收尾。
+// 这个值就是“最坏情况下每次运动多花的时间”，所以别给太大。
+#ifndef STEP_SETTLE_TIMEOUT_US
+#define STEP_SETTLE_TIMEOUT_US 200000U
+#endif
+
 namespace
 {
     uint16_t clampMicrosteps(uint16_t value)
@@ -1286,6 +1322,16 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     }
 
     float encoder_delta_deg = 0.0f;
+
+    // 上一窗口交给 TMR2/DMA 的脉冲，到这一拍已经全部发完了（窗口 50us，下一拍在它之后）。
+    // 只有把它并入“已发完步数”，下面的命令位置才能和真实脉冲对齐，
+    // 否则跟随误差会凭空多出一个窗口的滞后（高速下约 0.3~0.4°）。
+    if (motion_dma_pending_signed != 0)
+    {
+        motion_steps_delivered_signed += motion_dma_pending_signed;
+        motion_dma_pending_signed = 0;
+    }
+
     // 更新编码器信息
     if (encoder_ != nullptr)
     {
@@ -1305,7 +1351,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             motion_encoder_travel_raw_ += encoder_delta_raw;
             // 下一步才计算上一步的理论步数（因为用了定时器后，脉冲是异步发出的， 直接算就等于理论步数领先实际了，所以放到下一ramp才计算理论跑了多少
             const float step_angle_deg = 360.0f / static_cast<float>(getMicroStepsPerRound(driver_));
-            motion_commanded_travel_deg_ = static_cast<float>(motion_steps_emitted_signed) * step_angle_deg;
+            // 用“已确认发完”的步数，而不是“已交给 DMA”的步数，命令位置才和真实脉冲同步
+            motion_commanded_travel_deg_ = static_cast<float>(motion_steps_delivered_signed) * step_angle_deg;
 
             auto motion_encoder_travel_angle_ = static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F;
             motion_follow_error_deg_ = normalize_signed_angle_error_deg(
@@ -1327,7 +1374,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
     updateEncoderCalibration(encoder_filtered_raw_);
 
-    if (motion_running_ && !closed_loop_angle_mode_enabled_ && closed_loop_compensation_enabled_)
+    // 沉降阶段不参与 PID 评分：这段误差是在收敛中的尾巴，计进去会把评分刷得很漂亮
+    // （结尾误差在变小），反而掩盖真实的中段跟随性能。
+    if (motion_running_ && !closed_loop_angle_mode_enabled_ && closed_loop_compensation_enabled_ &&
+        motion_ramp_stage_ != RAMP_STAGE_SETTLE)
     {
         const bool latter_half = motion_steps_emitted_ >= motion_pulse_count_ / 2U;
         pid_auto_tuner_.addSample(-motion_follow_error_deg_, latter_half);
@@ -1336,6 +1386,66 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     // 如果当前没有运动在运行，直接退出
     if (!motion_running_ && !closed_loop_angle_mode_enabled_)
     {
+        syncProtocolTelemetry();
+        return;
+    }
+
+    // ===================== 【运动收尾：沉降确认】=====================
+    // 脉冲全部交给 TMR2/DMA 不等于电机已到位：DMA 序列里还排着最后一个窗口的脉冲，
+    // 机械轴也还差一个负载角。这里挂着等两者都结束，再让后面的代码收尾。
+    // 注意：这段时间 motion_running_ 仍为 true，所以 0x011F 仍上报“运行中”，
+    // 上位机会继续采样，波形图上能看到跟随误差从负值收敛回稳态负载角。
+    if (motion_ramp_stage_ == RAMP_STAGE_SETTLE)
+    {
+        // 沉降阶段也刷新一次实测转速，否则上位机的"即时转速"会停在进入沉降前的旧值上
+        const uint64_t settle_dt_ns = now_ns - motion_last_ramp_time_ns_;
+        if (settle_dt_ns > 0U && encoder_ != nullptr)
+        {
+            const float dt = static_cast<float>(settle_dt_ns) / 1.0e9f;
+            const float measured_rpm = (encoder_delta_deg / 360.0f) * (60.0f / dt);
+            encoder_speed_rpm_ = encoder_speed_rpm_ * 0.9f + measured_rpm * 0.1f;
+        }
+
+        const uint64_t settle_elapsed_ns = now_ns - motion_settle_start_ns_;
+        const uint64_t settle_min_ns = static_cast<uint64_t>(STEP_SETTLE_MIN_US) * 1000ULL;
+        const uint64_t settle_timeout_ns = static_cast<uint64_t>(STEP_SETTLE_TIMEOUT_US) * 1000ULL;
+
+        if (settle_elapsed_ns >= settle_min_ns && encoder_ != nullptr)
+        {
+            // 编码器原始角差 1 LSB = 0.0055°，滤波后的正常抖动不超过 1~2 LSB
+            const int32_t raw_step = normalize_signed_delta_deg(
+                static_cast<int32_t>(encoder_filtered_raw_) - static_cast<int32_t>(motion_settle_last_raw_));
+            if (raw_step >= -STEP_SETTLE_QUIET_LSB && raw_step <= STEP_SETTLE_QUIET_LSB)
+            {
+                motion_settle_stable_ramps_++;
+            }
+            else
+            {
+                motion_settle_stable_ramps_ = 0U;
+            }
+            motion_settle_last_raw_ = encoder_filtered_raw_;
+        }
+
+        const bool settled = motion_settle_stable_ramps_ >= STEP_SETTLE_STABLE_RAMPS;
+        const bool timed_out = settle_elapsed_ns >= settle_timeout_ns;
+        if (settled || timed_out)
+        {
+            // 已经等够了：脉冲发完了，轴也不再动了。现在才允许真停定时器、清零状态。
+            printf("[SETTLE] done in %.3f ms (%s), commanded=%.4f deg, encoder=%.4f deg, follow_error=%.4f deg\r\n",
+                   static_cast<double>(settle_elapsed_ns) / 1.0e6,
+                   settled ? "encoder quiet" : "timeout",
+                   static_cast<double>(motion_commanded_travel_deg_),
+                   static_cast<double>(motion_encoder_travel_raw_) * 360.0 / 65536.0,
+                   static_cast<double>(motion_follow_error_deg_));
+            motion_running_ = false;
+            motion_ramp_stage_ = RAMP_STAGE_DONE;
+            current_step_speed_ = 0.0f;
+            stopMotion();
+            syncProtocolTelemetry();
+            return;
+        }
+
+        motion_last_ramp_time_ns_ = now_ns;
         syncProtocolTelemetry();
         return;
     }
@@ -1478,10 +1588,20 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
                 return;
             }
             printf("motion_steps_emitted_: %lu, motion_pulse_count_: %lu\n", motion_steps_emitted_, motion_pulse_count_);
-            motion_running_ = false; // 标记运动停止
-            motion_ramp_stage_ = RAMP_STAGE_DONE; // 设置状态为运动完成
+            // 关键：这里不能直接 stopMotion()。最后一个窗口的脉冲才刚进 TMR2/DMA 序列，
+            // 立即关定时器会把尾巴上几十个脉冲连同对应角度一起砍掉（高速下 ≈0.36°），
+            // 这就是上位机总是统计成“少了一点点角度”的原因。
+            // 先挂起 DDA 并进入沉降阶段，等脉冲真正发完 + 轴静止，再由沉降块收尾。
+            motion_ramp_stage_ = RAMP_STAGE_SETTLE;
             current_step_speed_ = 0.0f; // 运动结束强制把当前速度清零，防止下次运动残留速度
-            stopMotion();
+            motion_speed_rpm_ = 0.0f;
+            motion_step_accumulator_ = 0.0f;
+            compensated_motion_step_accumulator_ = 0.0f;
+            compensated_rps_ = 0.0f;
+            motion_settle_start_ns_ = now_ns;
+            motion_settle_stable_ramps_ = 0U;
+            motion_settle_last_raw_ = encoder_filtered_raw_;
+            motion_last_ramp_time_ns_ = now_ns;
             syncProtocolTelemetry();
             return;
         }
@@ -1762,6 +1882,9 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         {
             motion_steps_emitted_ += num_original_command_steps;
             motion_steps_emitted_signed += motion_direction_ * num_original_command_steps;  // 正向就加步数，反向就减
+            // 本窗这批脉冲刚交给 DMA，要等下一拍（+50us）确认真的发完，
+            // 那时才并进 motion_steps_delivered_signed，用作跟随误差的命令位置。
+            motion_dma_pending_signed = motion_direction_ * static_cast<int32_t>(num_original_command_steps);
         }
         motion_step_accumulator_ -= num_original_command_steps;
         compensated_motion_step_accumulator_ -= num_steps;
@@ -1797,6 +1920,10 @@ void ClosedLoopController::stopMotion()
     target_velocity_rps_ = 0.0f;
     motion_steps_emitted_ = 0U;
     motion_steps_emitted_signed = 0U;
+    motion_steps_delivered_signed = 0;
+    motion_dma_pending_signed = 0;
+    motion_settle_start_ns_ = 0ULL;
+    motion_settle_stable_ramps_ = 0U;
     motion_commanded_travel_deg_ = 0;
     motion_encoder_travel_raw_ = 0U;
     motion_leg_pulse_count_ = 0U;
