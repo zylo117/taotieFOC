@@ -10,29 +10,65 @@
 #define MAX_STEP_PULSE_NS       20000ULL
 
 // ===========================================================================
-// STEP 时序模式：恒速突发 / 平滑 + 谐波注入
+// STEP 时序模式（三档，用 STEP_SEQ_MODE 选）
 // ---------------------------------------------------------------------------
-// 0 = 原方案：每个 rampUpdate 窗口开头就用“最小步距（2x脉宽）”把本窗口的步数一口气打完。
-//     好处是简单、永不丢步；代价是步进位置是 20kHz 的硬台阶，频谱很宽，容易激起中频共振。
-// 1 = 把本窗口的 N 步均匀铺满整个窗口（平滑），并在此基础上把每步间隔乘上
-//     (1 + depth*sin(2*pi*f_h*t))，即对步频做正弦频率调制（谐波注入），
-//     把能量从共振峰摊到边带上，降低共振噪声。depth=0 时就是纯平滑。
+// 背景：DDA 每 20kHz 窗口只决定“本窗发几步”，脉冲怎么落在窗口内由这里决定。
+//
+// 0 = 恒速突发（原方案）：窗口开头用 min_step_ticks(400ns) 把本窗 N 步一口气打完。
+//     优点：简单、永不丢步；缺点：位置是 20kHz 的硬台阶，谐波能量一直排到几十 kHz，
+//     落进机械共振带就会“嗡嗡”响。
+// 1 = 平滑铺满：把本窗 N 步均匀铺到整个 50us 窗口，台阶被摊平，位置/速度连续得多。
+//     这是降噪的主力，先只开这一档听效果。
+// 2 = 平滑 + 谐波注入：在 1 的基础上，把每步间隔乘 (1 + depth*sin(2*pi*f_h*t))，
+//     即对速度做正弦调频(FM)，把窄带能量摊到 f_h 两侧的边带上。
+//
+// 注意 1 和 2 的算法都保证“整窗总时长严格等于窗口预算”（剩余预算法，见
+// generate_step_sequence），所以窗口边界不会产生位置漂移 —— 这一点是上一版
+// 用 remaining/(n*(1+depth)) 缩放的死穴，那版每窗只用掉约 83% 的时间，边界必跳变。
 // ===========================================================================
-#ifndef STEP_SEQ_HARMONIC_ENABLE
-#define STEP_SEQ_HARMONIC_ENABLE 0
+#ifndef STEP_SEQ_MODE
+#if defined(STEP_SEQ_HARMONIC_ENABLE) && (STEP_SEQ_HARMONIC_ENABLE)
+#define STEP_SEQ_MODE 2  // 兼容旧的开关写法
+#else
+#define STEP_SEQ_MODE 1  // 默认平滑：无任何副作用，可直接听/测效果
+#endif
 #endif
 
-// 注入频率 Hz：不是步频的谐波，而是要打向机械共振峰的那个频率（与激励源无关，
-// 由电机+负载的机械共振决定），常见 50~400Hz 中频共振，小步进典型 100~200Hz。
-// 用本文件的调频扫描法实测：固定转速，f_h 从 40Hz 扫到 400Hz，噪声最小的那个就是应设值。
+// ---------------------------------------------------------------------------
+// 谐波注入参数（仅 STEP_SEQ_MODE == 2 生效）
+//
+// 1) f_h 不是“步频的谐波”，而是要对准的那条机械共振峰。它是电机+负载的机械属性，
+//    和步频/微步数无关。小步进的中频共振典型 100~300Hz，机架结构共振 200~800Hz。
+//    扫描方法：固定转速巡航，f_h 从 80Hz 间隔 20Hz 扫到 400Hz，选噪声最小的那个。
+// 2) depth 是速度调制深度，1.0 = ±100%。实测代价公式（单边位置纹波）：
+//        theta ≈ depth * v / (2*pi*f_h)   [rad]，v 单位 rad/s
+//    例：1200rpm = 20 rev/s，f_h=180Hz，depth=0.05 → 单边 0.0018 rev ≈ 0.64°。
+//    上一版用的 40Hz/depth=0.2 算出来是 5.7°，这就是“跟随误差跑到 3 度”的来源。
+// 3) 参数取法：先 STEP_SEQ_MODE=1 确认平滑有效，再切 2、把 depth 设 0（等价 1），
+//    然后只加 depth 到 0.05，最后扫 f_h。
+// ---------------------------------------------------------------------------
 #ifndef STEP_SEQ_HARMONIC_FREQ_HZ
-#define STEP_SEQ_HARMONIC_FREQ_HZ 40.0f
+#define STEP_SEQ_HARMONIC_FREQ_HZ 180.0f
 #endif
 
-// 调制深度：0.10 = 步距 ±10%。建议 0.05~0.20，太大电机会听到低沉的“嗡嗡”滚动声、
-// 跟随误差也会变大；先给 0.0 听纯平滑的效果，再逐步加。
 #ifndef STEP_SEQ_HARMONIC_DEPTH
-#define STEP_SEQ_HARMONIC_DEPTH 0.2f
+#define STEP_SEQ_HARMONIC_DEPTH 0.05f
+#endif
+
+// 平滑铺满的预算比例（千分比）。不能给 1000：每个窗口都擦着边界结束的话，
+// 控制任务偶尔晚几微秒，下一窗 stop_timer_dma_for_reload() 就会把没发完的尾巴砍掉，
+// 那是真丢步，跟随误差会反而变大。850~950 比较稳，800 留给任务抖动很大的场合。
+#ifndef STEP_SEQ_SPREAD_PERMILLE
+#define STEP_SEQ_SPREAD_PERMILLE 900
+#endif
+
+// 编译期自证：pio run 的日志里会打印这一段，可以直接确认烧进去的是哪一档。
+#if STEP_SEQ_MODE == 0
+#pragma message("[STEP_SEQ] mode 0: constant-speed burst (original)")
+#elif STEP_SEQ_MODE == 1
+#pragma message("[STEP_SEQ] mode 1: smooth spread")
+#else
+#pragma message("[STEP_SEQ] mode 2: smooth spread + harmonic injection")
 #endif
 
 namespace
@@ -1078,54 +1114,95 @@ void ClosedLoopController::startMotion()
 
 namespace
 {
-#if STEP_SEQ_HARMONIC_ENABLE
+    constexpr float k_two_pi = 6.28318530718f;
+
+#if STEP_SEQ_MODE == 2
     // 谐波注入的相位（rad），跨 ramp 窗口连续累加：
     // 如果每个窗口都从 0 相位重启，就等于 20kHz 的锯齿调频，会产生一大堆无用边带。
     float g_step_seq_phase_rad = 0.0f;
-    constexpr float k_two_pi = 6.28318530718f;
 #endif
 
     // 填充一个 ramp 窗口内的 ARR（每步间隔）序列。
-    // base_ticks ：本窗口的平均步距（tick，1 tick = 4ns）
-    // min_ticks  ：允许的最小步距，必须 > 脉宽 tick，否则高电平被截断直接丢步
+    // base_ticks  ：恒速模式下每步的固定间隔（tick，1 tick = 4ns）
+    // min_ticks   ：允许的最小步距，必须 > 脉宽 tick，否则高电平被截断直接丢步
+    // budget_ticks：本窗口可用的总 tick 预算（= remaining_ticks），平滑模式下用它守恒
     void generate_step_sequence(uint32_t *seq, const uint32_t seq_count, const uint32_t base_ticks,
-                                const uint32_t min_ticks)
+                                const uint32_t min_ticks, const uint32_t budget_ticks)
     {
-        uint32_t base = (base_ticks < min_ticks) ? min_ticks : base_ticks;
-
-#if STEP_SEQ_HARMONIC_ENABLE
-        // 每步相位增量：f_h * 一个步距时长。用 base 而不是实际发出的 ARR，
-        // 这样注入频率只跟 f_h 有关，不会因为步距被调制而自激。
-        const float phase_step_rad = k_two_pi * STEP_SEQ_HARMONIC_FREQ_HZ *
-                                     (static_cast<float>(base) *
-                                      static_cast<float>(stepper_common::target_tick_time) * 1.0e-9f);
-#endif
-
+#if STEP_SEQ_MODE == 0
+        // ---- 档位 0：恒速突发，整窗用最小步距一口气打完，剩余时间全留给 guard ----
+        const uint32_t base = (base_ticks < min_ticks) ? min_ticks : base_ticks;
         for (uint32_t i = 1; i < seq_count - 1; i++)  // 头尾是换向 guard，不是脉冲
         {
-#if STEP_SEQ_HARMONIC_ENABLE
-            const float scale = 1.0f + STEP_SEQ_HARMONIC_DEPTH * sinf(g_step_seq_phase_rad);
-            uint32_t ticks = static_cast<uint32_t>(static_cast<float>(base) * scale + 0.5f);
-            if (ticks < min_ticks)
-            {
-                ticks = min_ticks;
-            }
-            seq[i] = ticks;
-
-            g_step_seq_phase_rad += phase_step_rad;
-            if (g_step_seq_phase_rad >= k_two_pi)
-            {
-                g_step_seq_phase_rad -= k_two_pi;
-            }
-#else
             seq[i] = base;
-#endif
         }
+#else
+        // ---- 档位 1/2：把本窗 N 步铺满整个预算窗口 ----
+        // 逐步用“剩余预算 / 剩余步数”求均值，而不是一次性算 budget/N：
+        //   1) 整数除法余数被后面的步自动吃掉，整窗总时长误差 < 1 tick(4ns)，永不累积；
+        //   2) 谐波调制的摆动会被后面的步“吸回均值”，总时长严格等于预算，
+        //      所以窗口边界不会产生位置漂移（上一版 /(1+depth) 缩放就是死在这里）。
+        uint32_t budget = budget_ticks;
+        uint32_t steps_left = seq_count - 2U;  // 头尾是换向 guard
+
+#if STEP_SEQ_MODE == 2
+        float phase = g_step_seq_phase_rad;
+#endif
+
+        for (uint32_t i = 1; i < seq_count - 1; i++)
+        {
+            uint32_t ticks;
+            if (steps_left <= 1U)
+            {
+                // 最后一步把预算里剩下的（含除法余数）全部吃掉，保证与窗口严格对齐
+                ticks = budget;
+            }
+            else
+            {
+                const uint32_t avg = budget / steps_left;
+                ticks = avg;
+
+#if STEP_SEQ_MODE == 2
+                ticks = static_cast<uint32_t>(
+                    static_cast<float>(avg) * (1.0f + STEP_SEQ_HARMONIC_DEPTH * sinf(phase)) + 0.5f);
+                // 相位按“真实流逝时间”推进（用调制后的 ticks），物理上才是正确的调频；
+                // 注入频率只由 f_h 决定，与步频无关，不存在自激问题。
+                phase += k_two_pi * STEP_SEQ_HARMONIC_FREQ_HZ *
+                         (static_cast<float>(ticks) *
+                          static_cast<float>(stepper_common::target_tick_time) * 1.0e-9f);
+                if (phase >= k_two_pi)
+                {
+                    phase -= k_two_pi;
+                }
+#endif
+
+                // 给后面每一步至少留 min_ticks，否则总线必然超窗（下一个窗口会砍掉没发完的脉冲）
+                const uint32_t reserve = (steps_left - 1U) * min_ticks;
+                const uint32_t max_this = (budget > reserve) ? (budget - reserve) : min_ticks;
+                if (ticks > max_this)
+                {
+                    ticks = max_this;
+                }
+                if (ticks < min_ticks)
+                {
+                    ticks = min_ticks;
+                }
+            }
+
+            seq[i] = ticks;
+            budget -= ticks;
+            steps_left--;
+        }
+
+#if STEP_SEQ_MODE == 2
+        g_step_seq_phase_rad = phase;
+#endif
+#endif
     }
 
     void reset_step_sequence_harmonic(void)
     {
-#if STEP_SEQ_HARMONIC_ENABLE
+#if STEP_SEQ_MODE == 2
         g_step_seq_phase_rad = 0.0f;
 #endif
     }
@@ -1610,24 +1687,23 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const uint64_t remaining_time = delta_ramp_ns - overhead_ns;
         const uint64_t remaining_ticks = remaining_time / stepper_common::target_tick_time;
 
-        // 要尽快执行，不可以用下面那种平均的平滑模式，会丢步
         const uint32_t min_step_ticks = k_step_pulse_ticks * 2U;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
         uint32_t step_ticks = min_step_ticks;
+        bool spread_enabled = false;  // true = 本窗用预算铺满（档位 1/2），false = 恒速突发
 
-#if STEP_SEQ_HARMONIC_ENABLE
-        // 平滑 + 谐波：把本窗口的 num_steps 步均匀铺满剩余时间。
-        // 谐波需要 ±depth 的余量，所以按 (1+depth) 除一下，保证最长的那一步也塞得进窗口，
-        // 否则下一个 rampUpdate 会 stop_timer_dma_for_reload() 把没打完的脉冲直接砍掉（丢步）。
-        const float spread_denom = static_cast<float>(num_steps) * (1.0f + STEP_SEQ_HARMONIC_DEPTH);
-        float spread_ticks = static_cast<float>(remaining_ticks) / spread_denom;
-        if (spread_ticks > 1.0e9f)  // 任务被阻塞很久时的兜底，防止转 uint32 溢出
+#if STEP_SEQ_MODE != 0
+        // 高速兑底：步频超过 1/(2*脉宽) = 2.5 Mstep/s 时，连 min_step_ticks 都塞不下，
+        // 平滑没有意义且必定超窗（下一窗会砍掉没发完的脉冲 → 真丢步），退回恒速突发。
+        // 另：只铺满窗口预算的 STEP_SEQ_SPREAD_PERMILLE，剩下的余量留给控制任务
+        // 调度抖动和 start_step_sequence 的软件开销，不让每个窗口都擦着边界结束。
+        const uint64_t spread_budget_ticks =
+            (remaining_ticks * static_cast<uint64_t>(STEP_SEQ_SPREAD_PERMILLE)) / 1000ULL;
+        const uint64_t spread_need_ticks = static_cast<uint64_t>(num_steps) * min_step_ticks;
+        if ((num_steps != 0U) && (spread_budget_ticks >= spread_need_ticks))
         {
-            spread_ticks = 1.0e9f;
-        }
-        step_ticks = static_cast<uint32_t>(spread_ticks);
-        if (step_ticks < min_step_ticks)
-        {
-            step_ticks = min_step_ticks;
+            spread_enabled = true;
+            // 仅用于日志/调试，实际铺开由 generate_step_sequence 在预算内逐步决定
+            step_ticks = static_cast<uint32_t>(spread_budget_ticks / num_steps);
         }
 #endif
 
@@ -1665,9 +1741,17 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             driver_->sendStepPulse(step_pulse_width_ns_);
         }
 #else
-        // todo 注意这里仅恒速脉冲，也就是每个rampupdate中仅开头一段时间就尽可能快地把脉冲恒速跑完，虽然间隔很短，但总会带来一些卡顿的问题，后期应该改成平滑插入脉冲
-        // todo 注意这里目前仅支持每次rampupdate仅支持最多一次换向。后续需要根据换向次数和位置提前规划好换向点并安排好guard ticks
-        generate_step_sequence(arr_seq_cycle, seq_count, step_ticks, min_step_ticks);
+        // 注意这里仅支持每次rampupdate最多一次换向。后续需要根据换向次数和位置提前规划好换向点并安排好guard ticks
+        //
+        // 预算窗口转 uint32（任务阻塞极端情况下 remaining_ticks 可能很大，封顶防溢出）。
+        // spread_enabled = false 时（档位 0 或高速兑底）budget 参数不被使用。
+        const uint64_t budget_ticks_wide = spread_enabled
+                                               ? (remaining_ticks * static_cast<uint64_t>(STEP_SEQ_SPREAD_PERMILLE)) / 1000ULL
+                                               : static_cast<uint64_t>(num_steps) * min_step_ticks;
+        const uint32_t budget_ticks = (budget_ticks_wide > 0x3FFFFFFFULL)
+                                          ? 0x3FFFFFFFU
+                                          : static_cast<uint32_t>(budget_ticks_wide);
+        generate_step_sequence(arr_seq_cycle, seq_count, step_ticks, min_step_ticks, budget_ticks);
         add_dir_to_step_sequence(arr_seq_cycle, seq_count, stepper_common::guard_tick,
                      motion_direction_change_pending_);
         start_step_sequence(arr_seq_cycle, seq_count, stepper_common::k_psc, stepper_common::k_step_pulse_ticks, current_direction);
