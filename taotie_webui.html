@@ -1044,6 +1044,10 @@
                         <div class="value" id="encoderAngleValue">0.00°</div>
                     </div>
                     <div class="status-item">
+                        <div class="label">空闲抖动范围</div>
+                        <div class="value" id="encoderJitterValue">--</div>
+                    </div>
+                    <div class="status-item">
                         <div class="label">磁场状态 MGH / MGL</div>
                         <div class="value" id="magneticLevelValue">正常 / 正常</div>
                     </div>
@@ -1395,6 +1399,10 @@
             , loadAngleCalibrationRunning: false
             , loadAngleCalibrationCancelled: false
             , loadAngleMaxSpeedRpm: 3000
+            , motionRunning: false
+            , encoderJitterSamples: []
+            , encoderJitterRangeDeg: 0
+            , encoderJitterSampleCount: 0
         };
 
         const OFFICIAL_REGS = {
@@ -1589,6 +1597,47 @@
             }
         }
 
+        // ===== 磁编码器空闲抖动统计 =====
+        // 只在电机不动时统计，用来区分“随机噪声”和“系统偏差”：
+        //   抖动范围 ≈ 1 LSB 且很久不再变大 → 随机噪声已被压到量化极限，
+        //       剩下的角度差就都是可重复的系统误差（磁铁偏心 / 传感器 INL / 校准残差 / 微步定位）。
+        //   抖动范围有好几个 LSB → 随机噪声占主导，单次读数本身就不准，不能拿它当真值。
+        const ENCODER_JITTER_WINDOW_MS = 4000;
+        const ENCODER_JITTER_RESET_DEG = 0.2;   // 位移超过这个值就认为轴被挪动过，重新开窗
+        const ENCODER_LSB_DEG = 360 / 65536;    // 16 位磁编码器 1 LSB ≈ 0.0055°
+
+        function resetEncoderJitterWindow() {
+            state.encoderJitterSamples = [];
+            state.encoderJitterRangeDeg = 0;
+            state.encoderJitterSampleCount = 0;
+        }
+
+        function pushEncoderJitterSample(angleDeg) {
+            const now = performance.now();
+            const samples = state.encoderJitterSamples;
+            const previous = samples.length ? samples[samples.length - 1] : null;
+            if (previous && Math.abs(normalizeAngle(angleDeg - previous.deg)) > ENCODER_JITTER_RESET_DEG) {
+                resetEncoderJitterWindow();
+            }
+            state.encoderJitterSamples.push({t: now, deg: angleDeg});
+            while (state.encoderJitterSamples.length &&
+                   now - state.encoderJitterSamples[0].t > ENCODER_JITTER_WINDOW_MS) {
+                state.encoderJitterSamples.shift();
+            }
+            // 以最新样本为基准做环绕归一化，轴停在 0°/360° 附近也不会把范围算成 359°
+            const list = state.encoderJitterSamples;
+            const reference = list[list.length - 1].deg;
+            let low = 0;
+            let high = 0;
+            list.forEach((entry) => {
+                const delta = normalizeAngle(entry.deg - reference);
+                if (delta < low) low = delta;
+                if (delta > high) high = delta;
+            });
+            state.encoderJitterRangeDeg = high - low;
+            state.encoderJitterSampleCount = list.length;
+        }
+
         function updateTelemetryDisplay() {
             document.getElementById('phaseACurrentValue').textContent = `${state.phaseACurrentA.toFixed(2)} A`;
             document.getElementById('phaseBCurrentValue').textContent = `${state.phaseBCurrentA.toFixed(2)} A`;
@@ -1599,6 +1648,15 @@
             document.getElementById('controlUsageBadge').textContent = `控制 ${state.controlTaskUsagePercent.toFixed(1)}%`;
             document.getElementById('faultSummaryValue').textContent = state.faultSummary;
             document.getElementById('encoderAngleValue').textContent = `${state.encoderAngleDeg.toFixed(2)}°`;
+            const jitterElement = document.getElementById('encoderJitterValue');
+            if (state.motionRunning) {
+                jitterElement.textContent = '运行中';
+            } else if (state.encoderJitterSampleCount < 5) {
+                jitterElement.textContent = '采集中…';
+            } else {
+                const jitterLsb = state.encoderJitterRangeDeg / ENCODER_LSB_DEG;
+                jitterElement.textContent = `${state.encoderJitterRangeDeg.toFixed(4)}° (${jitterLsb.toFixed(1)} LSB)`;
+            }
             document.getElementById('magneticLevelValue').textContent = `${state.magneticHigh ? '报警' : '正常'} / ${state.magneticLow ? '报警' : '正常'}`;
             document.getElementById('speedValue').textContent = Number(state.motionSpeedRpm || 0).toFixed(2);
             document.getElementById('accelValue').textContent = (state.accel || 0).toFixed(2);
@@ -1819,6 +1877,8 @@
                 state.encoderAngleDeg = (frame.value | 0) / 1000;
                 state.lastEncoderTelemetryAt = performance.now();
                 setCurrentAngle(state.encoderAngleDeg);
+                // 只有静止时才统计抖动；运行中的角度变化是真实位移，不是误差
+                if (!state.motionRunning) pushEncoderJitterSample(state.encoderAngleDeg);
             }
             const pidInputByRegister = new Map([
                 [CUSTOM_REGS.POSITION_KP, 'posKp'],
@@ -4019,6 +4079,15 @@
         }
 
         function handleCustomTelemetry(frame) {
+            if (frame.reg === 0x11F) {
+                const running = (frame.value | 0) !== 0;
+                if (running !== state.motionRunning) {
+                    state.motionRunning = running;
+                    // 运行/停止切换时重新开窗：既不能把运动过程算进空闲抖动，
+                    // 也不能让运动前的旧样本污染刚停下时的统计。
+                    resetEncoderJitterWindow();
+                }
+            }
             if (frame.reg === 0x120) {
                 state.motionSpeedRpm = frame.value | 0;
             }
