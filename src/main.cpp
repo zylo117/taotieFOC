@@ -296,6 +296,11 @@ void telemetry_task_function(void* pvParameters)
     (void)pvParameters;
     TickType_t last_log_tick = xTaskGetTickCount();
     TickType_t last_usage_tick = last_log_tick;
+#if PULSE_CAPTURE_SELFCHECK_LOG
+    TickType_t last_pulse_log_tick = last_log_tick;
+    uint32_t pulse_sample_count = 0U; // 一秒内的采样点数（约 200）
+    uint32_t pulse_high_count = 0U;   // 其中 PUL 被判为高的点数
+#endif
     uint32_t previous_cycle_count = DWT->CYCCNT;
     uint32_t previous_idle_runtime = 0U;
     uint32_t previous_control_runtime = 0U;
@@ -339,6 +344,47 @@ void telemetry_task_function(void* pvParameters)
         }
 
         g_usb_bridge.sendTelemetry();
+
+#if PULSE_CAPTURE_SELFCHECK_LOG
+        // 每次遥测循环（约 5ms，一秒约 200 点）对 PUL 引脚采样一次，统计“高电平占比”。
+        // 这一路只读 IDT，不经过捕获/DMA，所以能把“线上没跳变”和“捕获没工作”分开：
+        //   hi≈100% 且 cap 不涨 -> 高电平降不下来（源极跟随没有下拉 / 负载容太大 / 根本没在发数据）
+        //   hi≈0%   且 cap 不涨 -> 高电平从没被 MCU 认成高（VIH 裕量不足，2.5V 就很危险）
+        //   hi 在中间且有波动   -> 引脚确实在跳变，此时 cap 不涨才是捕获侧的问题
+        ++pulse_sample_count;
+        if (pulse_capture_get_pul_level() != 0U)
+        {
+            ++pulse_high_count;
+        }
+
+        // 每秒一行 PUL/DIR 自检，用来和 scripts/uart_pulse_gen.py 打印的“脉冲数”对拍。
+        // 判读：
+        //   hi≈100%、cap 不涨    -> 线上没跳变（UART 空闲恒高）或高电平降不下来
+        //   hi≈0%、cap 不涨      -> 高电平没被 MCU 认成高（VIH 裕量不足/没共地/源极无下拉）
+        //   hi 在中间、cap 不涨    -> 引脚在跳变但捕获没记到（不该出现，出现就是定时器/DMA 问题）
+        //   cap 在涨但 deg 在 0 附近来回 -> DIR 悬空，逐脉冲快照随机，正负抵消
+        //   pd 一直不为 0             -> 积压，rampUpdate 消费不过来（>256 就会丢脉冲）
+        if ((xTaskGetTickCount() - last_pulse_log_tick) >= pdMS_TO_TICKS(1000))
+        {
+            uint8_t pul_level = 0U;
+            uint8_t dir_level = 0U;
+            uint16_t dma_pending = 0U;
+            pulse_capture_get_probe(&pul_level, &dir_level, &dma_pending);
+            const int64_t total = pulse_capture_get_total();
+            const uint32_t pul_high_pct = pulse_sample_count != 0U
+                ? (pulse_high_count * 100U) / pulse_sample_count
+                : 0U;
+            printf("[PUL] cap=%lu deg=%.3f PUL=%u hi=%lu%% DIR=%u pd=%u ovf=%u\r\n",
+                   static_cast<unsigned long>(pulse_capture_get_captured_count()),
+                   static_cast<double>(total) * 360.0 / static_cast<double>(PULSE_CAPTURE_PULSES_PER_REV),
+                   pul_level, static_cast<unsigned long>(pul_high_pct), dir_level, dma_pending,
+                   pulse_buf_overflow_flag ? 1U : 0U);
+            pulse_sample_count = 0U;
+            pulse_high_count = 0U;
+            last_pulse_log_tick = xTaskGetTickCount();
+        }
+#endif
+
         // if ((xTaskGetTickCount() - last_log_tick) >= pdMS_TO_TICKS(2000))
         // {
         //     const float angle_mdeg = g_encoder.lastFrameAngle();

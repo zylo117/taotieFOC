@@ -58,6 +58,15 @@
 #define PULSE_CAPTURE_DIR_PIN      PULSE_CAPTURE_CH1_PIN
 #endif
 
+// PUL/DIR 输入脚内部下拉（编译期开关）。
+// 主要作用：驱动拔掉/高阻时引脚不悬空，避免噪声造成假脉冲（“cap 自己涨”）。
+// 直接接推挽驱动时几乎无影响（只多 ~80uA）；若驱动很弱（开漏/光耦/源极跟随），
+// 40k 分压会把高电平拖低，此时置 0（浮空）并在外部补上合适的上下拉。
+// 注意：上下拉只在引脚配成 GPIO_MODE_INPUT 时才生效（见下面第 3 步的说明）。
+#ifndef PULSE_CAPTURE_INPUT_PULL_DOWN
+#define PULSE_CAPTURE_INPUT_PULL_DOWN 1
+#endif
+
 // DIR 快照掩码：DMA 搬的是整个 GPIO 输入寄存器，消费时按位取出 DIR 那一根脚
 #define PULSE_CAPTURE_DIR_MASK     ((uint16_t)PULSE_CAPTURE_DIR_PIN)
 
@@ -79,9 +88,9 @@ namespace
     uint16_t s_rd_index = 0U;              // 软件读指针，只有 rampUpdate 上下文推进
     int64_t s_cmd_pulse_total = 0;         // 累计有符号指令脉冲
     bool s_tick_ring_valid = true;         // 时间戳环是否和 DIR 环同步推进
+    uint32_t s_captured_count = 0U;        // 已消费捕获事件总数（不分方向，给上位机对拍用）
 
 #if PULSE_CAPTURE_DEBUG
-    uint32_t s_captured_count = 0U;        // 已消费脉冲总数
     uint16_t s_max_pending = 0U;           // 历史最大积压深度
 #endif
 
@@ -113,15 +122,27 @@ void pulse_capture_init(void)
     //    CH3/CH4 同时被映射到 PB0/PB1，但不使能就不影响 PB1(编码器 MGH) 的 GPIO 读取
     gpio_pin_remap_config(PULSE_CAPTURE_REMAP, TRUE);
 
-    // 3. 两路输入脚切到定时器复用输入。PUL/DIR 由上位机推挽驱动，
-    //    若实际是开漏/光耦且空闲时悬空，需要外部上拉或把 PUL 改成 GPIO_PULL_DOWN。
-    gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
-    gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
+    // 3. 两路输入脚切到定时器输入。
+    //    ★ 必须是 GPIO_MODE_INPUT，不能写 GPIO_MODE_MUX ★
+    //    AT32F403A 是 F1 型 GPIO：定时器【输入捕获】的引脚要配成输入模式（官方例程
+    //    examples/tmr/input_capture/src/main.c 里就是 GPIO_MODE_INPUT），复用输入通路本来
+    //    就连着。写成 GPIO_MODE_MUX 会被 gpio_init() 编成 CFG=0xF（复用推挽【输出】50MHz）：
+    //      1) 引脚被当成输出脚，MCU 会自己把这条线拉在某个电平上，外部驱动得跟 MCU 抢线
+    //         （弱一点的驱动比如 USB-TTL 的 TXD 直接被拉死，只有 3.3V 电源硬怼才抢得动）；
+    //      2) gpio_init() 只在 GPIO_MODE_INPUT 分支里处理 gpio_pull（见库 at32f403a_407_gpio.c），
+    //         MUX 模式下 gpio_pull 被整句丢掉，内部上拉/下拉从来没生效过，量出来永远是 0V。
+    //    DIR 恒用内部下拉：悬空时读 0，不会出现“快照随机、正负抵消”的假象。
+    //    PUL 同样用内部下拉（可用宏 PULSE_CAPTURE_INPUT_PULL_DOWN 改成浮空）。
+    //    下拉很重要：驱动拔掉/高阻时脚不会悬空乱跳，“cap 自己涨”的假脉冲就是悬空造成的。
+    gpio_init_struct.gpio_mode = GPIO_MODE_INPUT;
     gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_init_struct.gpio_pins = PULSE_CAPTURE_PUL_PIN;
-    gpio_init(PULSE_CAPTURE_PUL_PORT, &gpio_init_struct);
     gpio_init_struct.gpio_pins = PULSE_CAPTURE_DIR_PIN;
+    gpio_init_struct.gpio_pull = GPIO_PULL_DOWN;
     gpio_init(PULSE_CAPTURE_DIR_PORT, &gpio_init_struct);
+
+    gpio_init_struct.gpio_pins = PULSE_CAPTURE_PUL_PIN;
+    gpio_init_struct.gpio_pull = PULSE_CAPTURE_INPUT_PULL_DOWN ? GPIO_PULL_DOWN : GPIO_PULL_NONE;
+    gpio_init(PULSE_CAPTURE_PUL_PORT, &gpio_init_struct);
 
     // 4. 捕获定时器：PSC=0、ARR=0xFFFF、向上自由运行。
     //    计数时钟 = system_core_clock（APB1 预分频=2，AT32 定时器硬件自动倍频回主频），
@@ -200,9 +221,9 @@ void pulse_capture_init(void)
     s_rd_index = 0U;
     s_cmd_pulse_total = 0;
     s_tick_ring_valid = true;
+    s_captured_count = 0U;
     pulse_buf_overflow_flag = false;
 #if PULSE_CAPTURE_DEBUG
-    s_captured_count = 0U;
     s_max_pending = 0U;
 #endif
 
@@ -292,10 +313,7 @@ int32_t pulse_capture_read_delta(void)
     }
 
     s_cmd_pulse_total += delta;
-
-#if PULSE_CAPTURE_DEBUG
     s_captured_count += pending;
-#endif
 
     return delta;
 }
@@ -305,17 +323,48 @@ int64_t pulse_capture_get_total(void)
     return s_cmd_pulse_total;
 }
 
+uint32_t pulse_capture_get_captured_count(void)
+{
+    return s_captured_count;
+}
+
+uint8_t pulse_capture_get_pul_level(void)
+{
+    // 工作在定时器输入捕获时，IDT（输入数据寄存器）依然反映真实 pad 电平，
+    // 所以这里读到的是“MCU 眼里这个脚到底是高还是低”，而不是驱动端声称的电平。
+    return gpio_input_data_bit_read(PULSE_CAPTURE_PUL_PORT, PULSE_CAPTURE_PUL_PIN) != 0U ? 1U : 0U;
+}
+
+void pulse_capture_get_probe(uint8_t* pul_level, uint8_t* dir_level, uint16_t* dma_pending)
+{
+    if (pul_level != nullptr)
+    {
+        *pul_level = pulse_capture_get_pul_level();
+    }
+    if (dir_level != nullptr)
+    {
+        *dir_level = gpio_input_data_bit_read(PULSE_CAPTURE_DIR_PORT, PULSE_CAPTURE_DIR_PIN) != 0U ? 1U : 0U;
+    }
+    if (dma_pending != nullptr)
+    {
+        if (!s_initialized)
+        {
+            *dma_pending = 0U;
+        }
+        else
+        {
+            __DMB();
+            *dma_pending = static_cast<uint16_t>((ringWriteIndex(DMA1_CHANNEL4) - s_rd_index) & kRingMask);
+        }
+    }
+}
+
 void pulse_capture_clear_overflow_flag(void)
 {
     pulse_buf_overflow_flag = false;
 }
 
 #if PULSE_CAPTURE_DEBUG
-uint32_t pulse_capture_get_captured_count(void)
-{
-    return s_captured_count;
-}
-
 uint16_t pulse_capture_get_max_pending(void)
 {
     return s_max_pending;

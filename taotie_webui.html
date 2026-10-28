@@ -966,6 +966,10 @@
                         但引入的滞后也越大（1 个样本 = 2µs，已做群延迟补偿，所以匀速时的滞后基本能抵消，
                         极端窗口下波形会略平、末端误差会“显得”更小）。改完下发约 1 秒后才生效。
                     </div>
+                    <div class="tiny mt">STEP 输入脚固定用内部下拉（约 40k），悬空时不会乱跳，推挽驱动可直连。
+                        若改接开漏 / 源极跟随这类弱驱动，需要在 pulse_capture.cpp 里把
+                        PULSE_CAPTURE_INPUT_PULL_DOWN 置 0（编译期开关）后重新烧写。
+                    </div>
                     <div class="tiny mt" id="motionDurationEstimate">预计时间：等待参数</div>
                     <canvas height="260" id="motionWaveCanvas" style="width:100%;height:260px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"
                             width="620"></canvas>

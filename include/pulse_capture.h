@@ -45,9 +45,16 @@
  *       那时 DDA 输出改写 ARR/清零 CNT 会破坏自由运行的时间戳基准，两者不能同时工作。
  */
 
-// 调试开关：置 1 后额外统计总捕获脉冲数/最大积压深度，方便和信号发生器对拍是否丢脉冲
+// 调试开关：置 1 后额外统计最大积压深度，方便和信号发生器对拍是否丢脉冲
 #ifndef PULSE_CAPTURE_DEBUG
 #define PULSE_CAPTURE_DEBUG 0
+#endif
+
+// 自检打印开关：置 1 后 telemetry 任务每秒打印一行 [PUL] 摘要（采集数 / 累计角度 /
+// PUL·DIR 实时电平 / DMA 积压 / 溢出），用来在接线上官司时判断“到底收到了没有”。
+// 关掉它可以完全不影响时序。
+#ifndef PULSE_CAPTURE_SELFCHECK_LOG
+#define PULSE_CAPTURE_SELFCHECK_LOG 1
 #endif
 
 // 定时器选择：1 = 用 TMR3 捕获（PB4/PB5，推荐，与 TMR2 的 STEP/DIR 输出彻底解耦）
@@ -100,9 +107,27 @@ int64_t pulse_capture_get_total(void);
 // 清溢出故障标记（重新对齐读写指针后由上层确认用）
 void pulse_capture_clear_overflow_flag(void);
 
-#if PULSE_CAPTURE_DEBUG
-// 调试：累计已被消费的脉冲总数，用于和信号发生器的输出个数对拍
+// 上电至今已被消费的捕获事件总数（不分方向），用来和信号发生器的发送脉冲数对拍。
+// 这个计数始终有效，不需要打开 PULSE_CAPTURE_DEBUG。
 uint32_t pulse_capture_get_captured_count(void);
+
+// 只读 PUL 引脚当前电平（GPIO IDT），极轻量，可以在高频循环里连续采样做占空统计。
+// 返回 1 = MCU 认为高，0 = MCU 认为低。
+uint8_t pulse_capture_get_pul_level(void);
+
+// 注：PUL/DIR 的内部上下拉是编译期开关 PULSE_CAPTURE_INPUT_PULL_DOWN（见 pulse_capture.cpp），
+// 默认下拉。它只有在引脚配成 GPIO_MODE_INPUT 时才真正生效——AT32 库的 gpio_init()
+// 只在输入模式分支写上下拉，写 MUX 时 gpio_pull 会被整句丢弃（踩过这个坑）。
+
+// 运行期电气 / 采集自检（最好在“确定没有脉冲”的时候读才有判读意义）：
+//   pul_level  : PUL 引脚当前电平。UART 空闲时 TXD 恒为高，接好了就应该读到 1；
+//                读到 0 说明驱动端的高电平没被 MCU 认成高电平（VIH 裕量不足 / 没共地）。
+//   dir_level  : DIR 引脚当前电平，接 GND 应为 0，接 3V3 应为 1（悬空会乱跳）。
+//   dma_pending: DMA 写指针与软件读指针之间的积压深度，持续为 0 才正常。
+// 说明：引脚工作在定时器输入捕获时，输入数据寄存器 IDT 依然反映真实 pad 电平。
+void pulse_capture_get_probe(uint8_t* pul_level, uint8_t* dir_level, uint16_t* dma_pending);
+
+#if PULSE_CAPTURE_DEBUG
 // 调试：历史最大积压深度（离溢出还有多远），越接近环深说明 rampUpdate 越吃力
 uint16_t pulse_capture_get_max_pending(void);
 #endif
