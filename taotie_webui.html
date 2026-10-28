@@ -938,6 +938,11 @@
                                    value="200"/>
                         </div>
                         <div class="field">
+                            <label for="encoderFilterWindowInput">编码器滤波窗口（样本）</label>
+                            <input id="encoderFilterWindowInput" max="256" min="0" step="1" type="number"
+                                   value="25"/>
+                        </div>
+                        <div class="field">
                             <label for="closedLoopEnableInput">闭环使能</label>
                             <label class="checkbox-row">
                                 <input id="closedLoopEnableInput" type="checkbox"/>
@@ -956,6 +961,10 @@
                     </div>
                     <div class="tiny mt">说明：脉冲数固定按 256 细分角度基准计算，1.8° 电机每转 51200 个
                         STEP，与驱动器微步和插值设置无关。
+                    </div>
+                    <div class="tiny mt">编码器滤波窗口：0 = 关闭滤波（噪声最大、零滞后）；数值越大越平滑，
+                        但引入的滞后也越大（1 个样本 = 2µs，已做群延迟补偿，所以匀速时的滞后基本能抵消，
+                        极端窗口下波形会略平、末端误差会“显得”更小）。改完下发约 1 秒后才生效。
                     </div>
                     <div class="tiny mt" id="motionDurationEstimate">预计时间：等待参数</div>
                     <canvas height="260" id="motionWaveCanvas" style="width:100%;height:260px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"
@@ -1486,6 +1495,7 @@
             , LOAD_ANGLE_FIT_SLOPE: 0x145
             , LOAD_ANGLE_FIT_INTERCEPT: 0x146
             , LOAD_ANGLE_FIT_EXPONENT: 0x147
+            , ENCODER_FILTER_WINDOW: 0x148
             , CPU_USAGE_CENTIPERCENT: 0x137
             , CONTROL_TASK_USAGE_CENTIPERCENT: 0x138
             , MAX_RPM: 0x11B
@@ -1565,6 +1575,7 @@
             , [0x125, ['0x0125', 'MOTOR_DISABLE', '电机失能，EN 输出高电平']]
             , [0x126, ['0x0126', 'SINGLE_FORWARD_STEP', 'DIR 高电平并输出单个 STEP']]
             , [0x136, ['0x0136', 'CALIBRATE_ENCODER', '磁编码器校准：写 1 触发一次校准']]
+            , [CUSTOM_REGS.ENCODER_FILTER_WINDOW, ['0x0148', 'ENCODER_FILTER_WINDOW', '磁编码器滑动平均窗口，单位样本（0=关闭滤波），1 样本 = 2µs，上限 256']]
         ]);
 
         function log(message) {
@@ -2881,6 +2892,7 @@
                 CUSTOM_REGS.MAGNETIC_HIGH,
                 CUSTOM_REGS.MAGNETIC_LOW,
                 CUSTOM_REGS.ENCODER_ZERO,
+                CUSTOM_REGS.ENCODER_FILTER_WINDOW,
                 CUSTOM_REGS.POSITION_KP,
                 CUSTOM_REGS.POSITION_KI,
                 CUSTOM_REGS.POSITION_KD,
@@ -3814,6 +3826,14 @@
             });
         }
 
+        // 编码器滤波窗口的输入框读写：0 = 关闭滤波，上限 256（固件 EncoderFilterConfig::kMaxWindow）
+        function readEncoderFilterWindowInput() {
+            const input = document.getElementById('encoderFilterWindowInput');
+            const value = clamp(Math.round(Number(input.value) || 0), 0, 256);
+            input.value = String(value);
+            return value;
+        }
+
         async function startMotionTest() {
             if (state.autoTuneActive) {
                 appendTuneLog('整定期间不能启动开环运动');
@@ -3830,8 +3850,10 @@
             const pulseCount = Math.max(2, Math.round(getEffectivePulseCount()));
             const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 10000), 10000, 10000);
             const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 200), 200, 20000);
+            const encoderFilterWindow = readEncoderFilterWindowInput();
             document.getElementById('waveWindowMsInput').value = String(windowMs);
             document.getElementById('stepPulseWidthNsInput').value = String(stepPulseWidthNs);
+            document.getElementById('encoderFilterWindowInput').value = String(encoderFilterWindow);
 
             await writeRegister(0x11A, startRpm);
             await writeRegister(0x11B, maxRpm);
@@ -3839,11 +3861,12 @@
             await writeRegister(0x11D, pulseCount);
             await writeRegister(0x11E, motionMode);
             await writeRegister(0x123, stepPulseWidthNs);
+            await writeRegister(CUSTOM_REGS.ENCODER_FILTER_WINDOW, encoderFilterWindow);
             await writeRegister(0x122, windowMs);
             await writePidParameters();
             await writeRegister(0x11F, 1);
             startWaveCapture();
-            log(`[INFO] 脉冲运动：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms step=${stepPulseWidthNs}ns`);
+            log(`[INFO] 脉冲运动：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms step=${stepPulseWidthNs}ns encFilter=${encoderFilterWindow}`);
         }
 
         async function stopMotionTest() {
@@ -4039,6 +4062,13 @@
                 }
             });
 
+            document.getElementById('encoderFilterWindowInput').addEventListener('change', async function () {
+                const value = readEncoderFilterWindowInput();
+                if (!state.connected) return;
+                await writeRegister(CUSTOM_REGS.ENCODER_FILTER_WINDOW, value);
+                log(`[INFO] 编码器滤波窗口=${value} 个样本（${value * 2}µs 滑动平均，约 1 秒后生效）`);
+            });
+
             document.getElementById('targetPosInput').addEventListener('change', function () {
                 state.targetAngle = normalize360Angle(Number(this.value || 0));
                 updateDialVisual();
@@ -4098,6 +4128,14 @@
             if (frame.reg === 0x122) {
                 const windowValue = clamp(Number(frame.value || 10000), 10000, 10000);
                 document.getElementById('waveWindowMsInput').value = String(windowValue);
+            }
+            if (frame.reg === CUSTOM_REGS.ENCODER_FILTER_WINDOW) {
+                // 固件回报的是“已经生效”的窗口（低速槽位每秒刷一次），
+                // 用户正在输入时不要去抢输入框
+                const input = document.getElementById('encoderFilterWindowInput');
+                if (document.activeElement !== input) {
+                    input.value = String(clamp(Number(frame.value) || 0, 0, 256));
+                }
             }
             if (frame.reg === 0x11F && (frame.cmd === 0x10 || frame.cmd === 0x81 || frame.cmd === 0x82) && state.waveCaptureActive) {
                 if ((frame.value | 0) !== 0) {

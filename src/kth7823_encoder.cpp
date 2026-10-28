@@ -5,8 +5,19 @@
 
 #include "at32f403a_407_board.h"
 
+// 群延迟前馈补偿：滑动平均窗口的等相位点在窗口中心，天然滞后 (N-1)/2 个样本。
+// 不补的话，转速越高、窗口越大，编码器读数越是“旧”的，跟随误差里就凭空多一项
+// ω·(N-1)/2·Ts，1200rpm / N=25 时大约 0.17°，这正是“平滑窗口越大误差越大”的主因。
+// 代价是用首尾样本差当斜率，会把噪声抬回去一点（静止时不抬，因为首尾样本一样）。
+#ifndef ENCODER_FILTER_LAG_COMPENSATION
+#define ENCODER_FILTER_LAG_COMPENSATION 1
+#endif
+
 namespace
 {
+    // pending_filter_window_ 的“空”标记：窗口允许取 0（关闭滤波），所以不能用 0 当空值。
+    constexpr uint16_t kNoPendingFilterWindow = 0xFFFFU;
+
     uint16_t normalize_angle(uint16_t raw, uint16_t zero)
     {
         if (raw >= zero)
@@ -27,8 +38,9 @@ Kth7823Encoder::Kth7823Encoder()
 #endif
       filter_window_size_(EncoderFilterConfig::kDefaultWindow),
       filter_index_(0U), filter_count_(0U),
+      pending_filter_window_(kNoPendingFilterWindow),
       filter_config_{EncoderFilterConfig::kDefaultWindow},
-      last_frame_raw_(0U), last_tx_frame_(0U),
+      last_frame_raw_(0U), filtered_raw_(0U), filtered_angle_deg_(0.0F), last_tx_frame_(0U),
       read_count_(0U), all_ones_count_(0U), all_zeros_count_(0U)
 {
 #ifdef USE_POLAR_COORDINATES_WRAP
@@ -86,7 +98,7 @@ bool Kth7823Encoder::init()
 
     configureFilter({EncoderFilterConfig::kDefaultWindow,});
 
-    for (uint8_t sample = 0U; sample < filter_window_size_; ++sample)
+    for (uint16_t sample = 0U; sample < filter_window_size_; ++sample)
     {
         updateFilteredSample();
     }
@@ -126,7 +138,9 @@ uint16_t Kth7823Encoder::readFilteredRaw()
 
 float Kth7823Encoder::readFilteredAngle()
 {
-    return static_cast<float>(filtered_raw_) * 360.0F / 65536.0F;
+    // 用亚 LSB 的浮点输出：65536 刻度的 1 LSB ≈ 0.0055°，直接返回整数会让角度
+    // 一跳就是 0.0055°，控制环和上位机读数都被这个台阶卡死。
+    return filtered_angle_deg_;
 }
 
 /**
@@ -146,6 +160,10 @@ float Kth7823Encoder::readFilteredAngle()
 */
 bool Kth7823Encoder::updateFilteredSample()
 {
+    // 窗口切换请求由控制任务登记，重配必须在这里（采样中断）做：
+    // 500kHz 中断随时在改 delta_win_/sum_delta_，在任务里直接重配会把数据撕掉。
+    applyPendingFilterWindow();
+
     const uint16_t raw = readRaw();
     if (raw == 0xFFFFU)
     {
@@ -157,6 +175,7 @@ bool Kth7823Encoder::updateFilteredSample()
     if (filter_window_size_ == 0U)
     {
         filtered_raw_ = last_frame_raw_;
+        filtered_angle_deg_ = static_cast<float>(last_frame_raw_) * 360.0F / 65536.0F;
         return true;
     }
 
@@ -202,7 +221,12 @@ bool Kth7823Encoder::updateFilteredSample()
     float result;
     arm_atan2_f32(avg_s, avg_c, &result);
     auto filtered_theta_ = result;
+    if (filtered_theta_ < 0.0F)
+    {
+        filtered_theta_ += 2.0F * static_cast<float>(M_PI);
+    }
     filtered_raw_ = filtered_theta_ * 65536.0F / 2.0F / static_cast<float>(M_PI);
+    filtered_angle_deg_ = filtered_theta_ * 360.0F / 2.0F / static_cast<float>(M_PI);
 #else
 
     // ------------------- 归一化环绕差值：相对于基准angle_base_ -------------------
@@ -210,7 +234,20 @@ bool Kth7823Encoder::updateFilteredSample()
     while(delta > 32768)  delta -= 65536;
     while(delta < -32768) delta += 65536;
 
+    // 窗口为空（刚初始化或刚改完窗口）：基准直接对齐当前样本，避免第一个块带着
+    // 上一轮的旧基准算出一堆大差值。
+    if (filter_count_ == 0U)
+    {
+        angle_base_ = raw;
+        sum_delta_ = 0;
+        delta = 0;
+    }
+
+    const int32_t window_size = static_cast<int32_t>(filter_window_size_);
+
     // ------------------- O(1)环形滑动平均窗口 -------------------
+    bool has_evicted = false;
+    int32_t evicted_delta = 0;
     if(filter_count_ < filter_window_size_)
     {
         //窗口填充阶段
@@ -222,49 +259,110 @@ bool Kth7823Encoder::updateFilteredSample()
     else
     {
         //窗口已满，移除旧样本，加入新样本
-        sum_delta_ -= delta_win_[filter_index_];
+        evicted_delta = delta_win_[filter_index_];
+        has_evicted = true;
+        sum_delta_ -= evicted_delta;
         delta_win_[filter_index_] = delta;
         sum_delta_ += delta;
-        filter_index_ = (filter_index_ + 1U) % filter_window_size_;
+        filter_index_ = static_cast<uint16_t>((filter_index_ + 1U) % filter_window_size_);
     }
 
     //计算delta平均值
-    const int32_t active_cnt = (filter_count_ < filter_window_size_) ? filter_count_ : filter_window_size_;
+    const int32_t active_cnt = (filter_count_ < filter_window_size_) ? static_cast<int32_t>(filter_count_) : window_size;
     const float avg_delta = static_cast<float>(sum_delta_) / static_cast<float>(active_cnt);
 
-    //输出滤波后的uint16角度（环绕处理）
-    const int32_t out_raw_i32 = static_cast<int32_t>(angle_base_) + static_cast<int32_t>(lroundf(avg_delta));
-    auto out_raw = static_cast<uint16_t>(out_raw_i32 & 0xFFFFU);
-
-    //==== 关键：定期刷新基准base，防止delta长期累积过大；每若干帧刷新一次 ====
-    static uint16_t refresh_cnt = 0;
-    refresh_cnt ++;
-    if(refresh_cnt >= filter_window_size_)
+    // 群延迟前馈：滑动平均的等相位点在窗口中心，输出天然滞后 (N-1)/2 个样本。
+    // 用首尾样本差估斜率（匀速时是精确的），把这段延迟提前补回去，
+    // 这样跟随误差不再随“窗口大小 × 转速”凭空变大。
+    float compensated_delta = avg_delta;
+#if ENCODER_FILTER_LAG_COMPENSATION
+    // 首尾样本跨度：静止或微动时这个值几乎全是量化噪声（0/±1 LSB），
+    // 此时滞后本身就不到 1 LSB，补上去等于白送抖动，直接不补。
+    const int32_t window_span = delta - evicted_delta;
+    if (has_evicted && window_size > 1 && (window_span > 1 || window_span < -1))
     {
-        refresh_cnt = 0;
-        angle_base_ = out_raw;
-        sum_delta_ = 0;
-        filter_index_ = 0;
-        filter_count_ = 0;
-        memset(delta_win_,0,sizeof(delta_win_));
+        // 首尾两个样本相差 window_size-1 个采样间隔，斜率用这个间隔算才是真斜率；
+        // 乘 (window_size-1)/2 正好把“重心滞后”补回到最新样本的时刻（匀速时零滞后）。
+        const float slope_per_sample = static_cast<float>(window_span) / static_cast<float>(window_size - 1);
+        compensated_delta += 0.5F * static_cast<float>(window_size - 1) * slope_per_sample;
+    }
+#endif
+
+    //输出滤波后的uint16角度（环绕处理）
+    const float out_raw_f = static_cast<float>(angle_base_) + compensated_delta;
+    auto out_raw = static_cast<uint16_t>(static_cast<int32_t>(lroundf(out_raw_f)) & 0xFFFF);
+
+    //==== 基准平移：只在差值漂得离基准太远时才整体平移一次 ====
+    // 以前是每 N 帧就把基准重置成输出值，等于把窗口清空，群延迟因此每 N 帧
+    // 从 0 锯到 (N-1)/2 再锯回 0——窗口越大锯幅越大，这就是“平滑窗口越大
+    // 误差越大”的真正原因。现在窗口永远是满的，延迟恒定（且已被上面补掉）。
+    if (filter_count_ == filter_window_size_ &&
+        (sum_delta_ > window_size * 16384 || sum_delta_ < -(window_size * 16384)))
+    {
+        const int32_t shift = sum_delta_ / window_size;
+        for (uint16_t i = 0U; i < filter_window_size_; ++i)
+        {
+            delta_win_[i] -= shift;
+        }
+        sum_delta_ -= shift * window_size;
+        angle_base_ = static_cast<uint16_t>((static_cast<int32_t>(angle_base_) + shift) & 0xFFFF);
     }
 
     //兼容旧上层接口：把uint16角度转为弧度存入filtered_theta_
     filtered_raw_ = out_raw;
+    // 亚 LSB 输出：把环绕后的浮点原始值换算成角度，保留小数部分
+    float out_raw_wrapped = out_raw_f;
+    while (out_raw_wrapped < 0.0F) out_raw_wrapped += 65536.0F;
+    while (out_raw_wrapped >= 65536.0F) out_raw_wrapped -= 65536.0F;
+    filtered_angle_deg_ = out_raw_wrapped * 360.0F / 65536.0F;
 #endif
 
     return true;
 }
 
-void Kth7823Encoder::setFilterWindowSize(uint8_t window_size)
+void Kth7823Encoder::setFilterWindowSize(uint16_t window_size)
 {
-    configureFilter({window_size,});
+    // 也走“登记请求”的路径，保持单一入口，避免任务侧直接改中断正在用的滤波状态
+    requestFilterWindow(window_size);
+}
+
+void Kth7823Encoder::requestFilterWindow(uint16_t window_size)
+{
+    if (window_size > EncoderFilterConfig::kMaxWindow)
+    {
+        window_size = EncoderFilterConfig::kMaxWindow;
+    }
+    pending_filter_window_ = window_size;
+}
+
+void Kth7823Encoder::applyPendingFilterWindow()
+{
+    const uint16_t requested = pending_filter_window_;
+    if (requested == kNoPendingFilterWindow)
+    {
+        return;
+    }
+    pending_filter_window_ = kNoPendingFilterWindow;
+    if (requested == filter_window_size_)
+    {
+        return;
+    }
+
+    EncoderFilterConfig config = filter_config_;
+    config.window_size = requested;
+    configureFilter(config);
 }
 
 void Kth7823Encoder::configureFilter(const EncoderFilterConfig& config)
 {
-    const uint8_t window_size = config.window_size;
+    uint16_t window_size = config.window_size;
+    if (window_size > EncoderFilterConfig::kMaxWindow)
+    {
+        window_size = EncoderFilterConfig::kMaxWindow;
+    }
+
     filter_config_ = config;
+    filter_config_.window_size = window_size;
     filter_window_size_ = window_size;
 
 #ifdef USE_POLAR_COORDINATES_WRAP
@@ -272,6 +370,9 @@ void Kth7823Encoder::configureFilter(const EncoderFilterConfig& config)
     memset(win_c_, 0, sizeof(win_c_));
     sum_s_ = 0.0F;
     sum_c_ = 0.0F;
+#else
+    // 窗口一换，旧窗口里的差值全部作废，不清零会把上一轮的 sum 混进新窗口
+    sum_delta_ = 0;
 #endif
 
     filter_index_ = 0U;

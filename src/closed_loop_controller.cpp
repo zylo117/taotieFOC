@@ -410,6 +410,15 @@ void ClosedLoopController::syncProtocolTelemetry()
 
     if (ramp_loop_idx % 20000 == 0)
     {
+        // 低速槽位（20kHz 下约 1s 一次）：这里是唯一真正改编码器滤波窗口的地方。
+        // 滤波器的环形缓冲/累加和正在采样中断里被改，只允许通过 requestFilterWindow
+        // 登记请求，由中断自己重配；这里把控住频率，就不会让跟随误差被窗口切换抖出台阶。
+        if (encoder_ != nullptr && encoder_filter_window_ != encoder_filter_window_active_)
+        {
+            encoder_->requestFilterWindow(encoder_filter_window_);
+            encoder_filter_window_active_ = encoder_filter_window_;
+        }
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_FILTER_WINDOW, encoder_filter_window_active_);
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_FAULT_STATUS, fault_flags);
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_FAULT, encoder_fault_active_ ? 1U : 0U);
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_OUTPUT_STOP, output_stopped_ ? 1U : 0U);
@@ -572,6 +581,14 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
         calibrateEncoder();
         return true;
     }
+    if (reg == TMC2209_EXT_PARAM_ENCODER_FILTER_WINDOW)
+    {
+        // 只登记期望值，真正的重配交给低速槽位（syncProtocolTelemetry）
+        encoder_filter_window_ = value > EncoderFilterConfig::kMaxWindow
+            ? EncoderFilterConfig::kMaxWindow
+            : static_cast<uint16_t>(value);
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS)
     {
         step_pulse_width_ns_ = clampStepPulseWidthNs(value);
@@ -721,6 +738,11 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_POSITION_DEG)  // 实际是跟随误差
     {
         *value = static_cast<uint32_t>(static_cast<int32_t>(motion_follow_error_deg_ * 1000.0f));
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ENCODER_FILTER_WINDOW)
+    {
+        *value = encoder_filter_window_active_;
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS)

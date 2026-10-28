@@ -308,6 +308,11 @@ private:
     volatile float encoder_zero_;
     volatile float encoder_filtered_angle_;
     volatile uint16_t encoder_filtered_raw_;
+    // 磁编码器滑动平均窗口（样本数），0 表示关闭滤波。
+    // 上位机写进来的值先记在 encoder_filter_window_，真正的重配放到低速槽位
+    // （ramp_loop_idx % 20000 == 0，20kHz 下约 1s 一次）做，避免运动中途改滤波把跟随误差抖出台阶。
+    volatile uint16_t encoder_filter_window_ = EncoderFilterConfig::kDefaultWindow;
+    volatile uint16_t encoder_filter_window_active_ = EncoderFilterConfig::kDefaultWindow;
     volatile bool magnetic_field_high_;
     volatile bool magnetic_field_low_;
     volatile uint32_t last_process_time_us_;

@@ -113,6 +113,9 @@ namespace encoder_common
 struct EncoderFilterConfig
 {
     static constexpr uint16_t kDefaultWindow = 25;
+    // 窗口上限：也就是 delta_win_ 数组长度。窗口越大越平滑，但 RAM 占用和中断里的
+    // 平移环操作都会线性增长，256 个样本（512us）已经远超控制周期，没必要再大。
+    static constexpr uint16_t kMaxWindow = 256;
     uint16_t window_size = kDefaultWindow;
 };
 
@@ -141,6 +144,10 @@ public:
     virtual bool magneticFieldHigh() const { return false; }
     virtual bool magneticFieldLow() const { return false; }
     virtual void setZero(float zero_angle) = 0;
+
+    // 请求切换滤波窗口。只登记请求，真正的重配由实现方在采样中断里做，
+    // 否则会和正在跑的滤波状态（环形缓冲/累加和）抢数据。
+    virtual void requestFilterWindow(uint16_t window_size) { (void)window_size; }
 
     //校准对外api
     bool isNonlinearCalValid(void) const;

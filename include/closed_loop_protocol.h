@@ -117,7 +117,10 @@ enum Tmc2209CustomExtensionRegister
     TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_COUNT = 0x144U,
     TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_SLOPE = 0x145U,
     TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_INTERCEPT = 0x146U,
-    TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_EXPONENT = 0x147U
+    TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_EXPONENT = 0x147U,
+
+    // 磁编码器滑动平均窗口（采样数 0~256，0 = 关闭滤波），上位机可调
+    TMC2209_EXT_PARAM_ENCODER_FILTER_WINDOW = 0x148U
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -181,7 +184,9 @@ private:
     bool readOfficialRegister(uint8_t reg, uint32_t* value) const;
 
     ClosedLoopDriverProtocolConfig config_;
-    uint32_t custom_parameters_[72];
+    // 扩展参数表长度：覆盖 0x100 ~ 0x148，新增寄存器时同步这个常量
+    static constexpr uint16_t kCustomParameterCount = 0x148U - 0x100U + 1U;
+    uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };
 

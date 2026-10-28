@@ -137,6 +137,7 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_SLOPE:
     case TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_INTERCEPT:
     case TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_EXPONENT:
+    case TMC2209_EXT_PARAM_ENCODER_FILTER_WINDOW:
         return true;
     default:
         return false;
@@ -344,7 +345,7 @@ bool Tmc2209ProtocolAdapter::setCustomParameter(uint16_t id, uint32_t value)
         return false;
     }
     const uint16_t index = static_cast<uint16_t>(id - 0x100U);
-    if (index >= 72U)
+    if (index >= kCustomParameterCount)
     {
         return false;
     }
@@ -425,7 +426,7 @@ bool Tmc2209ProtocolAdapter::getCustomParameter(uint16_t id, uint32_t* value) co
         return false;
     }
     const uint16_t index = static_cast<uint16_t>(id - 0x100U);
-    if (index >= 72U)
+    if (index >= kCustomParameterCount)
     {
         return false;
     }
