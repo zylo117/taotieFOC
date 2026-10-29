@@ -95,6 +95,15 @@ extern "C" {
 #define configUSE_PREEMPTION    1
 #define configUSE_IDLE_HOOK      0
 #define configUSE_TICK_HOOK      0
+/* 【开启栈溢出检查（方法2）】
+ * 旧配置没开（默认 0），栈溢出不会报错，只会静默踩坏相邻内存，
+ * 表现为“某个无关变量突然变了”“USB 偶发收不到帧”这类无法定位的怪现象。
+ * 当前风险点：
+ *   telemetry_task 1536 字节，里面要跑带 %.3f 的 printf（浮点格式化占 300+ 字节）
+ *   usb_task 1024 字节，poll() 里也有多参数 printf
+ * 开方法2 会在每次任务切换时检查栈尾 16 字节的填充图样，
+ * 溢出时回调 vApplicationStackOverflowHook（实现在 main.cpp）。 */
+#define configCHECK_FOR_STACK_OVERFLOW 2
 #define configUSE_TRACE_FACILITY 1
 #define configGENERATE_RUN_TIME_STATS 1
 #define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS() do { } while (0)

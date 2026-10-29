@@ -194,6 +194,30 @@ extern "C" void usb_usart_config(linecoding_type linecoding)
     (void)linecoding;
 }
 
+// ===================== 【FreeRTOS 栈溢出回调】=====================
+// configCHECK_FOR_STACK_OVERFLOW = 2 时，每次任务切换会检查栈尾 16 字节的填充图样，
+// 被踩就调进这里。
+// 注意：这里不能用 printf —— 栈已经溢出，再调一个吃 300+ 字节栈的浮点格式化函数，
+// 很可能直接跳进 HardFault，反而什么都看不到。
+// 所以只保存现场指针（调试器可以直接看 g_stack_overflow_task_name），
+// 然后用 GPIO 忙等闪灯，现场肉眼可见“死在闪灯循环上”。
+volatile const char* g_stack_overflow_task_name = nullptr;
+
+extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char* pcTaskName)
+{
+    (void)xTask;
+    g_stack_overflow_task_name = pcTaskName;
+    taskDISABLE_INTERRUPTS();
+    for (;;)
+    {
+        at32_led_toggle(LED5);
+        // 不能用 vTaskDelay（调度器已经不能用了），纯忙等做视觉上的“快闪”
+        for (volatile uint32_t spin = 0U; spin < 400000U; ++spin)
+        {
+        }
+    }
+}
+
 int main(void)
 {
     // 开启Cortex‑M4 FPU
