@@ -147,77 +147,6 @@ CHUNK_BYTES = 1024          # 每次往驱动里塞的块大小，要比驱动�
 # 必须和固件一致：1 个脉冲 = 1 个微步，不要再按 256 细分的 51200 算。
 DEFAULT_STEPS_PER_REV = 12800  # 200 步/圈 x 64 微步
 
-# 固件寄存器（与 include/closed_loop_protocol.h 保持一致）
-REG_MICROSTEPS = 0x100
-REG_MOTOR_ENABLE = 0x124
-PROTOCOL_BAUD = 115200  # 固件 printf 与协议帧共用这个波特率
-
-
-def _crc8(data):
-    """与固件 usb_cdc_protocol.cpp 完全一致：crc ^= byte 后 MSB-first 移 8 次，多项式 0x07。"""
-    crc = 0
-    for byte in data:
-        crc ^= byte
-        for _ in range(8):
-            if crc & 0x80:
-                crc = ((crc << 1) ^ 0x07) & 0xFF
-            else:
-                crc = (crc << 1) & 0xFF
-    return crc
-
-
-def _build_frame(cmd, reg, value):
-    body = bytes([0x55, 0xAA, cmd, (reg >> 8) & 0xFF, reg & 0xFF,
-                  (value >> 24) & 0xFF, (value >> 16) & 0xFF,
-                  (value >> 8) & 0xFF, value & 0xFF])
-    return body + bytes([_crc8(body)])
-
-
-def write_register(ser, reg, value, label):
-    """通过 USB CDC 写固件寄存器（不是 CH340）。
-
-    【为什么必须走 CDC】CH340 的 TXD 同时接在 PB5（PUL 输入）上，
-    在那里发 10 字节协议帧会被脉冲捕获当成上升沿（每个寄存器帧约 20 个假脉冲，
-    约 0.5 度），对高精度角度场景就是不可接受的系统误差。
-    USB CDC 完全不经过 PB5，零副作用。
-
-    代价：网页连着 CDC 时打不开，需要先关闭网页的串口连接。
-    参数 ser（CH340）只用于签名兼容，实际自己开 CDC 口。
-    """
-    del ser
-    cdc_port = find_cdc_port()
-    if cdc_port is None:
-        print("  %-14s reg=0x%03X -> 失败：找不到 USB CDC（VID 0x2E3C），"
-              "关闭网页的串口连接再试" % (label, reg))
-        return False
-    try:
-        with serial.Serial(cdc_port, PROTOCOL_BAUD, timeout=1.0, write_timeout=1.0) as cdc:
-            cdc.reset_input_buffer()
-            cdc.write(_build_frame(0x02, reg, value))
-            cdc.flush()
-            time.sleep(0.2)
-            ack = cdc.read(64)
-    except serial.SerialException as exc:
-        print("  %-14s reg=0x%03X -> 失败：%s" % (label, reg, exc))
-        return False
-
-    # 只比较前 5 字节：0x55 0xAA 0x82 regHi regLo
-    # （不要写 ack[:6] 去比 5 字节的期望值，那样永远不相等，会误报“回包异常”）
-    ok = ack[:5] == bytes([0x55, 0xAA, 0x82, (reg >> 8) & 0xFF, reg & 0xFF])
-    print("  %-14s reg=0x%03X value=%d via %s  -> %s" % (
-        label, reg, value, cdc_port,
-        "OK" if ok else ("回包异常: %s" % ack.hex().upper() if ack else "无回包")))
-    return ok
-
-
-def find_cdc_port():
-    """找 AT32 的 USB CDC（VID 0x2E3C）。CH340 是 0x1A86，不要弄混。"""
-    for port in serial.tools.list_ports.comports():
-        if port.vid == 0x2E3C:
-            return port.device
-    return None
-
-
 class Writer(threading.Thread):
     """后台把固定的波形字节流不断写进串口，写入速度由驱动/波特率自动限流。"""
 
@@ -414,23 +343,12 @@ def main():
     parser.add_argument("--monitor-after", type=float, default=2.0,
                         help="--monitor 时，脉冲发完后继续收多少秒日志")
     parser.add_argument("--steps-per-rev", type=int, default=DEFAULT_STEPS_PER_REV,
-                        help="每圈 STEP 数（= 200 x 驱动器微步），仅用于把频率换算成 RPM 显示")
-    parser.add_argument("--microsteps", type=int, default=0,
-                        help="发送前先写 0x100 把驱动器细分设成该值（0 = 不改）。"
-                             "设了之后同时会把 --steps-per-rev 改成 200 x 该值，除非你手动也传了 --steps-per-rev。"
-                             "【需要网页先断开串口】因为配置帧走 USB CDC，网页占着就打不开。"
-                             "如果你用“网页管配置”的工作流，就不要传这个参数")
-    parser.add_argument("--enable-motor", action="store_true",
-                        help="发送前先写 0x124=1 使能电机（EN=0）。走 USB CDC，不经过 PB5，零假脉冲。"
-                             "【需要网页先断开串口】。网页上已经点过使能的话就不用传这个")
+                        help="每圈 STEP 数（= 200 x 驱动器微步），仅用于把频率换算成 RPM 显示。"
+                             "必须是驱动器当前真实细分，否则 RPM 和角度换算全错")
     args = parser.parse_args()
 
     if args.port is None:
         args.port = pick_default_port()
-
-    # --microsteps 会顺手修正每圈步数，否则 RPM 和角度都会按 64 细分算错
-    if args.microsteps > 0 and args.steps_per_rev == DEFAULT_STEPS_PER_REV:
-        args.steps_per_rev = 200 * args.microsteps
 
     plan = build_plan(args)
     print_plan(plan, args)
@@ -467,15 +385,9 @@ def main():
                 pass
         ser.reset_output_buffer()
 
-        # 发送前写配置寄存器（细分 / 电机使能）。
-        # 走 USB CDC（另一个端口），不经过 PB5，零假脉冲；不做任何波特率切换。
-        if args.microsteps or args.enable_motor:
-            print("=== 发送前配置 ===")
-            if args.microsteps:
-                write_register(ser, REG_MICROSTEPS, args.microsteps, "设置细分")
-            if args.enable_motor:
-                write_register(ser, REG_MOTOR_ENABLE, 1, "电机使能")
-
+        # 【本脚本不再写任何寄存器】
+        # 细分、电机使能、切换外部脉冲跟随都在网页上做（网页用 USB CDC）。
+        # 这样 CH340 这根线只承担脉冲波形，不产生任何额外上升沿（零系统误差）。
         ser.reset_input_buffer()
 
         writer = Writer(ser, plan["byte_value"], plan["total_bytes"])
