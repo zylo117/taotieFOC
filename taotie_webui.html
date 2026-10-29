@@ -899,8 +899,8 @@
                 <!-- 模式区外框：把 tab 按钮、共用区、两个模式页包在一起，视觉上是一整块 -->
                 <div style="border:1px solid rgba(148,163,184,0.32);border-radius:14px;padding:14px;margin-bottom:16px;background:rgba(15,23,42,0.35);">
                 <div class="inline" style="margin-bottom:12px;">
-                    <button class="primary" id="tabMotionBtn">测速控制</button>
-                    <button id="tabExtFollowBtn">外部脉冲跟随</button>
+                    <button class="primary" id="tabMotionBtn">内部规划运动</button>
+                    <button id="tabExtFollowBtn">外部脉冲运动</button>
                     <span class="tiny" style="margin-left:8px;">
                         两个模式共用同一套 STEP 输出通道，固件里本来就互斥；切 tab 会同时切固件模式。
                     </span>
@@ -908,10 +908,12 @@
 
                 <!-- 共用区：两个模式都会用到，不随 tab 隐藏 -->
                 <div class="card">
-                    <h3 style="margin:0 0 12px;">共用（两个模式都生效）</h3>
+                    <h3 style="margin:0 0 12px;">控制模式</h3>
                     <div class="inline">
                         <button id="motorEnableBtn">电机使能（EN=0）</button>
                         <button id="motorDisableBtn">电机失能（EN=1）</button>
+                        <button id="pauseWaveBtn">暂停查看</button>
+                        <button id="popWaveBtn">弹出波形</button>
                     </div>
                     <div class="field mt">
                         <label for="closedLoopEnableInput">闭环补偿（两个模式共用）</label>
@@ -939,7 +941,7 @@
                 </div>
 
                 <div class="card" id="cardMotion">
-                    <h3 style="margin:0 0 12px;">测速控制</h3>
+                    <h3 style="margin:0 0 12px;">内部规划运动（梯形加减速 / 位置角度控制）</h3>
                     <div class="grid-2">
                         <div class="field">
                             <label>启动转速（RPM）</label>
@@ -989,8 +991,6 @@
                         <button class="primary" id="startMotionBtn">启动</button>
                         <button class="danger" id="stopMotionBtn">停止</button>
                         <button class="warn" id="singleStepBtn">半圈正向脉冲</button>
-                        <button id="pauseWaveBtn">暂停查看</button>
-                        <button id="popWaveBtn">弹出波形</button>
                     </div>
                     <div class="tiny mt">说明：脉冲数就是实际下发给驱动器的 STEP 个数，1 个 STEP = 1 个微步，
                         与驱动器当前微步设置一致（一圈 = 200 × 微步数，默认 64 细分 = 12800）。波形图的
@@ -1011,7 +1011,7 @@
                 </div>
 
                 <div class="card" id="cardExtFollow" style="display:none;">
-                    <h3 style="margin:0 0 12px;">外部脉冲跟随（PUL/DIR 从站）</h3>
+                    <h3 style="margin:0 0 12px;">外部脉冲运动（PUL/DIR 从站）</h3>
                     <div class="grid-2">
                         <div class="field">
                             <label for="extFollowEnableInput">跟随使能</label>
@@ -2747,6 +2747,11 @@
             log(`[TX] WRITE reg=0x${reg.toString(16).padStart(4, '0')} cmd=0x02 value=${value}`);
         }
 
+        // 连接串口时只把运动参数（速度/加速度）刷一遍，【绝对不碰闭环使能】。
+        // 之前这里有一行 writeRegister(CLOSED_LOOP_ENABLE, 1) + checked = true，
+        // 导致每次一连上硬件就自动勾上闭环补偿。在外部脉冲跟随模式下这会让电机
+        // 在 1:1 转发之外再叠一层 PID 修正，即使 backlog=0 也会超速（实测电流 1.4A）。
+        // 闭环只应该在“真正用到角度模式”时由 ensureMotionDefaultsForAngleControl 打开。
         async function armPositionFollowMode() {
             if (!state.connected) return;
             const startRpm = clamp(Math.round(Number(document.getElementById('startRpmSelect').value || 120)), 1, 12000);
@@ -2754,13 +2759,11 @@
             const accelRpm = clamp(Math.round(Number(document.getElementById('accelRpmSelect').value || 6000)), 1, 12000);
             const angleMaxRpm = clamp(Math.round(Number(document.getElementById('angleMaxRpmInput').value || 1200)), 1, 12000);
             const angleAccelRpm = clamp(Math.round(Number(document.getElementById('angleAccelRpmSInput').value || 6000)), 1, 12000);
-            await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 1);
             await writeRegister(0x11A, startRpm);
             await writeRegister(0x11B, maxRpm);
             await writeRegister(0x11C, accelRpm);
             await writeRegister(CUSTOM_REGS.ANGLE_MAX_RPM, angleMaxRpm);
             await writeRegister(CUSTOM_REGS.ANGLE_ACCEL_RPM_S, angleAccelRpm);
-            document.getElementById('closedLoopEnableInput').checked = true;
         }
 
         async function connectSerial() {
@@ -2806,16 +2809,19 @@
             // 【波形采集开关跟着 tab 走】
             // pushWaveSample 只看 state.waveCaptureActive，而这个标志原来只由「启动」按钮置位。
             // 外部跟随模式根本不会点「启动」，所以波形图一直是空的。
-            // 切到跟随时直接开采集，切回测速时停采集（测速自己点「启动」会重新开）。
+            //
+            // 【先使能、延迟再采集】切到外部脉冲运动时，固件会 setEnable(true)，
+            // 电机从松轴到锁轴，转子会对齐到最近的整步，编码器读数突变、
+            // 跟随误差出现尖峰。如果同时开采集，这个抖动会被画进波形，
+            // 看起来像“跟随误差很大”。所以先停采集，等使能完成 + 500ms 稳定后再开（见下面 then）。
+            if (state.waveStartDelayTimer) {
+                window.clearTimeout(state.waveStartDelayTimer);
+                state.waveStartDelayTimer = null;
+            }
             if (isMotion) {
                 stopWaveCapture();
             } else {
-                startWaveCapture();
-                // 【切到外部跟随就强制关闭环补偿】
-                // 跟随是 1:1 位置转发，开环就是精确转发。开启补偿会在每窗再叠一层 PID 修正，
-                // 即使 backlog=0 也会超速（实测电流 1.4A、转速远超输入频率对应的 270 RPM）。
-                // 另外：ensureMotionDefaultsForAngleControl() 在发目标角度时会自动把 0x107 写 1，
-                // 所以从角度模式切过来时它往往是开着的，UI 也不同步。这里一起刷回去。
+                stopWaveCapture();  // 先清空历史，延迟启动在使能完成后的 then 里
                 const closedLoopInput = document.getElementById('closedLoopEnableInput');
                 if (closedLoopInput) closedLoopInput.checked = false;
                 if (state.connected) {
@@ -2825,14 +2831,23 @@
             }
 
             if (!state.connected) {
-                log('[INFO] 已切到' + (isMotion ? '测速控制' : '外部脉冲跟随') + '（未连接串口，模式未下发）');
+                log('[INFO] 已切到' + (isMotion ? '内部规划运动' : '外部脉冲运动') + '（未连接串口，模式未下发）');
                 return;
             }
             writeRegister(CUSTOM_REGS.EXT_FOLLOW_ENABLE, isMotion ? 0 : 1)
                 .then(() => {
                     const input = document.getElementById('extFollowEnableInput');
                     if (input) input.checked = !isMotion;
-                    log('[INFO] 已切到' + (isMotion ? '测速控制（跟随已关）' : '外部脉冲跟随（跟随已开）'));
+                    log('[INFO] 已切到' + (isMotion ? '内部规划运动（跟随已关）' : '外部脉冲运动（跟随已开）'));
+                    // 使能指令已下达到固件（驱动已锁轴），再等 500ms 让转子对齐稳定，
+                    // 才开始采集波形——否则使能瞬间的机械抖动会被当成跟随误差。
+                    if (!isMotion) {
+                        state.waveStartDelayTimer = window.setTimeout(() => {
+                            state.waveStartDelayTimer = null;
+                            startWaveCapture();
+                            log('[INFO] 已开始采集波形（使能后延迟 500ms）');
+                        }, 500);
+                    }
                 })
                 .catch((error) => log('[ERROR] 切换模式失败：' + error.message));
         }
@@ -2898,8 +2913,26 @@
             document.getElementById('closedLoopEnableInput').checked = true;
         }
 
+        // 当前是否停在“内部规划运动” tab（只有这里绕盘/归零/发目标角度才有意义）
+        function isMotionTabActive() {
+            const card = document.getElementById('cardMotion');
+            return !!card && card.style.display !== 'none';
+        }
+
+        // 【位置角度控制 = 内部规划运动】
+        // 外部脉冲模式下 rampUpdate 会先走 updateExternalPulseChannel 并 return，
+        // 角度模式整段被跳过 —— 此时写 TARGET_ANGLE_DEG / 绕盘都不会有任何反应。
+        // 所以只要用户碰了位置监控区（绕盘、归零、发目标角度），就强制切回内部规划 tab，
+        // 同时把 0x149 写 0（switchWorkTab 里做），让 UI 和固件一起回到正确模式。
+        function ensureMotionTabForPositionControl() {
+            if (isMotionTabActive()) return;
+            switchWorkTab('motion');
+            log('[INFO] 位置控制需要内部规划运动模式，已自动切换');
+        }
+
         function queueTargetAngleWrite() {
             if (state.autoTuneActive) return;
+            ensureMotionTabForPositionControl();
             const target = normalize360Angle(Number(document.getElementById('targetPosInput').value || 0));
             setTargetAngle(target);
             state.targetPosition = target;
@@ -4201,7 +4234,10 @@
             document.getElementById('exportCalibrationTableBtn').addEventListener('click', exportCalibrationTable);
             document.getElementById('writeAllBtn').addEventListener('click', applyAllConfig);
             document.getElementById('sendTargetBtn').addEventListener('click', sendTargetPosition);
-            document.getElementById('zeroBtn').addEventListener('click', zeroEncoder);
+            document.getElementById('zeroBtn').addEventListener('click', () => {
+                ensureMotionTabForPositionControl();
+                zeroEncoder();
+            });
             document.getElementById('stopBtn').addEventListener('click', stopMotor);
             document.getElementById('startMotionBtn').addEventListener('click', startMotionTest);
             document.getElementById('stopMotionBtn').addEventListener('click', stopMotionTest);
