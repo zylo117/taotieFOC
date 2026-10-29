@@ -7,7 +7,9 @@
 
 // 群延迟前馈补偿：滑动平均窗口的等相位点在窗口中心，天然滞后 (N-1)/2 个样本。
 // 不补的话，转速越高、窗口越大，编码器读数越是“旧”的，跟随误差里就凭空多一项
-// ω·(N-1)/2·Ts，1200rpm / N=25 时大约 0.17°，这正是“平滑窗口越大误差越大”的主因。
+// ω·(N-1)/2·Ts。注意 Ts 是采样周期 32us（不是旧注释里误以为的 2us），
+// 所以 N=25 @1200rpm 时滞后是 (25-1)/2 * 32us = 384us ≈ 2.76°，
+// 而不是按 2us 算出来的 0.17° —— 比设计预期大 16 倍，这正是“平滑窗口越大误差越大”的主因。
 // 代价是用首尾样本差当斜率，会把噪声抬回去一点（静止时不抬，因为首尾样本一样）。
 #ifndef ENCODER_FILTER_LAG_COMPENSATION
 #define ENCODER_FILTER_LAG_COMPENSATION 1
@@ -161,7 +163,7 @@ float Kth7823Encoder::readFilteredAngle()
 bool Kth7823Encoder::updateFilteredSample()
 {
     // 窗口切换请求由控制任务登记，重配必须在这里（采样中断）做：
-    // 500kHz 中断随时在改 delta_win_/sum_delta_，在任务里直接重配会把数据撕掉。
+    // 31.25kHz 采样中断随时在改 delta_win_/sum_delta_，在任务里直接重配会把数据撕掉。
     applyPendingFilterWindow();
 
     const uint16_t raw = readRaw();

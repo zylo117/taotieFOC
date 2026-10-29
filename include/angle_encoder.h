@@ -114,7 +114,10 @@ struct EncoderFilterConfig
 {
     static constexpr uint16_t kDefaultWindow = 25;
     // 窗口上限：也就是 delta_win_ 数组长度。窗口越大越平滑，但 RAM 占用和中断里的
-    // 平移环操作都会线性增长，256 个样本（512us）已经远超控制周期，没必要再大。
+    // 平移环操作都会线性增长。按真实采样周期 32us 算，256 个样本 = 8.2ms，
+    // 已经是 20kHz 控制周期的 160 倍，没必要再大。
+    // 提醒：默认值 25 样本 = 800us，也是 40 个控制周期，滤波强度偏大；
+    // 跟随误差随窗口线性变大，调参时建议先试 8~12。
     static constexpr uint16_t kMaxWindow = 256;
     uint16_t window_size = kDefaultWindow;
 };

@@ -46,10 +46,19 @@ void current_adc_task_function(void* pvParameters);
 // 所以这个周期性时基不能再放 TMR3。
 static void encoder_timer_init(void)
 {
-    constexpr uint32_t k_encoder_sample_us = 2U;
-    // 250mhz下每ns 4 ticks，1us就是4000 ticks
-    constexpr uint32_t k_tick_per_us = 4000U;  // 每us的tick数，clock那里设置了分频为2，导致apb的定时器频率等于主频（at32特殊，看文档17页）
-    constexpr uint32_t k_arr_value = (k_encoder_sample_us * k_tick_per_us) - 1U;
+    // 【采样周期是 32us，不是 2us】
+    // 旧代码 k_tick_per_us = 4000 把数量级算反了：250MHz 下 1 tick = 4ns，
+    // 1us 只有 250 tick，不是 4000 tick。按旧值算出的 ARR = 2*4000-1 = 7999
+    // 实际周期是 8000 * 4ns = 32us（31.25kHz），注释里写的 2us 差了 16 倍。
+    // 现在按真实主频推导，标注和数值终于对得上：32us * 250 = 8000 - 1 = 7999，
+    // 寄存器值和旧版完全一样，行为不变，只是把真相写清楚。
+    //
+    // 为什么不真的改成 2us：SPI2 @ 3.9MHz 读一次 16bit 就要 4.1us，比 2us 还长，
+    // 中断会自己把自己压死。31.25kHz 对 20kHz 控制环（每拍 1.5 个新样本）刚好合适。
+    // 依赖“采样周期”这个数字的注释（滤波器窗口时间常数等）都该按 32us 重算。
+    constexpr uint32_t k_encoder_sample_us = 32U;
+    const uint32_t ticks_per_us = system_core_clock / 1000000U;
+    const uint32_t k_arr_value = (k_encoder_sample_us * ticks_per_us) - 1U;
 
     crm_periph_clock_enable(CRM_TMR5_PERIPH_CLOCK, TRUE);
     tmr_base_init(TMR5, static_cast<uint16_t>(k_arr_value), 0U);
