@@ -1006,112 +1006,11 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // 具体实现和注释见 src/motion_planner.cpp。
         motion_planner_.updateAngleMode(delta_ramp_ns);
     }
-    else
+    else if (motion_planner_.updateTrapezoid(delta_ramp_ns, now_ns))
     {
-        // 往返摇摆运动模式
-        const bool alternating_motion = motion_mode_ == MOTION_MODE_ALTERNATING_FORWARD ||
-                                        motion_mode_ == MOTION_MODE_ALTERNATING_REVERSE;
-        if (alternating_motion && !motion_leg_reversed_ && motion_leg_pulse_count_ > 0U &&
-            motion_steps_emitted_ >= motion_leg_pulse_count_ &&
-            motion_steps_emitted_ < motion_pulse_count_)
-        {
-            motion_direction_ = static_cast<int8_t>(-motion_direction_);
-            motion_leg_reversed_ = true;
-            motion_direction_change_pending_ = true;
-            motion_ramp_stage_ = RAMP_STAGE_ACCEL;
-            current_step_speed_ = 0.0f;
-            motion_speed_rpm_ = 0.0f;
-            motion_step_accumulator_ = 0.0f;
-            compensated_motion_step_accumulator_ = 0.0f;
-            compensated_rps_ = 0.0f;
-            printf("[MOTION] turnaround: leg_steps=%lu total=%lu dir=%d\r\n",
-                   static_cast<unsigned long>(motion_leg_pulse_count_),
-                   static_cast<unsigned long>(motion_pulse_count_),
-                   motion_direction_);
-        }
-        // 条件：已经输出全部需要的脉冲，运动正常结束
-        if (motion_steps_emitted_ >= motion_pulse_count_)
-        {
-            if (calibration_stage_ == CALIBRATION_MOVING)
-            {
-                motion_running_ = false;
-                motion_first_run_ = false;
-                current_step_speed_ = 0.0f;
-                motion_speed_rpm_ = 0.0f;
-                motion_step_accumulator_ = 0.0f;
-                compensated_motion_step_accumulator_ = 0.0f;
-                compensated_rps_ = 0.0f;
-                calibration_stage_ = CALIBRATION_SAMPLING;
-                calibration_sample_count_ = 0U;
-                calibration_sample_attempts_ = 0U;
-                calibration_sample_sum_ = 0;
-                calibration_sample_min_ = 0x7FFFFFFF;
-                calibration_sample_max_ = (-0x7FFFFFFF - 1);
-                syncProtocolTelemetry();
-                return;
-            }
-            printf("motion_steps_emitted_: %lu, motion_pulse_count_: %lu\n", motion_steps_emitted_, motion_pulse_count_);
-            // 关键：这里不能直接 stopMotion()。最后一个窗口的脉冲才刚进 TMR2/DMA 序列，
-            // 立即关定时器会把尾巴上几十个脉冲连同对应角度一起砍掉（高速下 ≈0.36°），
-            // 这就是上位机总是统计成“少了一点点角度”的原因。
-            // 先挂起 DDA 并进入沉降阶段，等脉冲真正发完 + 轴静止，再由沉降块收尾。
-            motion_ramp_stage_ = RAMP_STAGE_SETTLE;
-            current_step_speed_ = 0.0f; // 运动结束强制把当前速度清零，防止下次运动残留速度
-            motion_speed_rpm_ = 0.0f;
-            motion_step_accumulator_ = 0.0f;
-            compensated_motion_step_accumulator_ = 0.0f;
-            compensated_rps_ = 0.0f;
-            motion_settle_start_ns_ = now_ns;
-            motion_settle_stable_ramps_ = 0U;
-            motion_settle_last_raw_ = encoder_filtered_raw_;
-            motion_last_ramp_time_ns_ = now_ns;
-            syncProtocolTelemetry();
-            return;
-        }
-    }
-
-    if (!closed_loop_angle_mode_enabled_)
-    {
-        // 计算还剩余多少微步脉冲有待输出
-        const uint32_t remaining_total_steps = motion_pulse_count_ - motion_steps_emitted_;
-        const bool alternating_motion = motion_mode_ == MOTION_MODE_ALTERNATING_FORWARD ||
-                                        motion_mode_ == MOTION_MODE_ALTERNATING_REVERSE;
-        const uint32_t leg_steps_emitted = alternating_motion && motion_leg_reversed_
-            ? motion_steps_emitted_ - motion_leg_pulse_count_
-            : motion_steps_emitted_;
-        const uint32_t remaining_steps = alternating_motion
-            ? (motion_leg_reversed_ ? remaining_total_steps : motion_leg_pulse_count_ - leg_steps_emitted)
-            : remaining_total_steps;
-        const float dt_ramp_s = static_cast<float>(delta_ramp_ns) / 1.0e9f;
-
-        if (motion_ramp_stage_ == RAMP_STAGE_ACCEL)
-        {
-            current_step_speed_ += motion_accel_step_s2_ * dt_ramp_s;
-            if (current_step_speed_ >= motion_max_step_s_)
-            {
-                current_step_speed_ = motion_max_step_s_;
-                motion_ramp_stage_ = RAMP_STAGE_CRUISE;
-            }
-            if (remaining_steps <= steps_to_decel_)
-            {
-                motion_ramp_stage_ = RAMP_STAGE_DECEL;
-            }
-        }
-        else if (motion_ramp_stage_ == RAMP_STAGE_CRUISE)
-        {
-            if ((steps_to_decel_ != 0xFFFFFFFFU) && (remaining_steps <= steps_to_decel_))
-            {
-                motion_ramp_stage_ = RAMP_STAGE_DECEL;
-            }
-        }
-        else if (motion_ramp_stage_ == RAMP_STAGE_DECEL)
-        {
-            current_step_speed_ -= motion_accel_step_s2_ * dt_ramp_s;
-            if (current_step_speed_ < 0.0f)
-            {
-                current_step_speed_ = 0.0f;
-            }
-        }
+        // 返程换向/运动结束/进入沉降：本拍已经处理完，不再跑后面的补偿和 DDA。
+        // 对应原代码里那两个 return。
+        return;
     }
 
     if (closed_loop_compensation_enabled_ && motion_running_ && !closed_loop_angle_mode_enabled_ &&

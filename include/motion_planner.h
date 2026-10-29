@@ -13,11 +13,11 @@ class ClosedLoopController;
 //   compensated_rps_ ...）拆成 getter/setter 反而更慢。所以沿用项目里
 //   ExternalPulseFollower / ParameterRouter 的既有模式：friend + 直接成员访问，零开销。
 //
-// 已迁移：
-//   A. updateAngleMode()  —— 角度模式的位置/速度环 + 加减速限制（原 rampUpdate 1002~1076）
+//   已迁移：
+//   A. updateAngleMode()     —— 角度模式的位置/速度环 + 加减速限制
+//   B. updateTrapezoid()     —— 往返换向、运动结束判定、梯形加减速
 // 待迁移：
-//   B. updateTrapezoid()  —— 梯形规划 + 往返 + 结束判定（原 1077~1183）
-//   C. emitSteps()        —— DDA 累加 + 脉冲出口（原 1281~1350）
+//   C. emitSteps()           —— DDA 累加 + 脉冲出口
 class MotionPlanner
 {
 public:
@@ -25,8 +25,13 @@ public:
 
     // 角度模式：以真实机械角度误差做位置环 -> 速度环 -> 加减速限制，
     // 最后更新 current_step_speed_ / motion_speed_rpm_ / motion_direction_。
-    // 参数是本拍的时间增量（ns）。
     void updateAngleMode(uint64_t delta_ramp_ns);
+
+    // 梯形规划（仅限非角度模式）：
+    //   往返运动的换向处理 -> 全部脉冲发完后的收尾/沉降 -> 加速/匀速/减速阶段推进。
+    // 返回 true 表示本拍已经处理完（结束或进入沉降），调用方应立即 return，
+    // 不要再跑后面的 DDA 和脉冲出口 —— 这是原代码里那两个 return 的等价表达。
+    bool updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns);
 
 private:
     ClosedLoopController& owner_;
