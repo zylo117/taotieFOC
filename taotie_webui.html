@@ -904,6 +904,20 @@
                     </span>
                 </div>
 
+                <!-- 共用区：两个模式都会用到，不随 tab 隐藏 -->
+                <div class="card">
+                    <h3 style="margin:0 0 12px;">共用（两个模式都生效）</h3>
+                    <div class="inline">
+                        <button id="motorEnableBtn">电机使能（EN=0）</button>
+                        <button id="motorDisableBtn">电机失能（EN=1）</button>
+                        <button class="warn" id="singleStepBtn">半圈正向脉冲</button>
+                    </div>
+                    <div class="status-line mt">
+                        <span>即时转速：<strong id="waveSpeedReadout">0.00 RPM</strong></span>
+                        <span>跟随误差：<strong id="waveErrorReadout">0.000°</strong></span>
+                    </div>
+                </div>
+
                 <div class="card" id="cardMotion">
                     <h3 style="margin:0 0 12px;">测速控制</h3>
                     <div class="grid-2">
@@ -961,9 +975,6 @@
                     <div class="inline mt">
                         <button class="primary" id="startMotionBtn">启动</button>
                         <button class="danger" id="stopMotionBtn">停止</button>
-                        <button id="motorEnableBtn">电机使能（EN=0）</button>
-                        <button id="motorDisableBtn">电机失能（EN=1）</button>
-                        <button class="warn" id="singleStepBtn">半圈正向脉冲</button>
                         <button id="pauseWaveBtn">暂停查看</button>
                         <button id="popWaveBtn">弹出波形</button>
                     </div>
@@ -987,8 +998,6 @@
                     <canvas height="260" id="motionWaveCanvas" style="width:100%;height:260px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"
                             width="620"></canvas>
                     <div class="wave-readouts">
-                        <span>即时转速 <strong id="waveSpeedReadout">0.00 RPM</strong></span>
-                        <span>即时跟随误差 <strong id="waveErrorReadout">0.000°</strong></span>
                         <span>峰值 |误差| <strong id="waveErrorPeakReadout">0.000°</strong></span>
                         <span>末值（停止瞬间） <strong id="waveErrorLastReadout">0.000°</strong></span>
                     </div>
