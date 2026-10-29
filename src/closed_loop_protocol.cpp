@@ -145,6 +145,7 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_EXT_FOLLOW_BACKLOG:
     case TMC2209_EXT_PARAM_EXT_FOLLOW_DROPPED:
     case TMC2209_EXT_PARAM_EXT_FOLLOW_RESET:
+    case TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS:
         return true;
     default:
         return false;
@@ -424,6 +425,7 @@ bool Tmc2209ProtocolAdapter::setCustomParameter(uint16_t id, uint32_t value)
     case TMC2209_EXT_PARAM_EXT_FOLLOW_BACKLOG:
     case TMC2209_EXT_PARAM_EXT_FOLLOW_DROPPED:
     case TMC2209_EXT_PARAM_EXT_FOLLOW_RESET:
+    case TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS:
         custom_parameters_[index] = value;
         break;
     default:
@@ -504,6 +506,7 @@ bool Tmc2209ProtocolAdapter::getCustomParameter(uint16_t id, uint32_t* value) co
     case TMC2209_EXT_PARAM_EXT_FOLLOW_BACKLOG:
     case TMC2209_EXT_PARAM_EXT_FOLLOW_DROPPED:
     case TMC2209_EXT_PARAM_EXT_FOLLOW_RESET:
+    case TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS:
         *value = custom_parameters_[index];
         break;
     default:

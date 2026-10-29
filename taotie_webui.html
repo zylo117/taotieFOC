@@ -1018,12 +1018,19 @@
                             <div class="label">累计丢步</div>
                             <div class="value" id="extFollowDroppedValue">0</div>
                         </div>
+                        <div class="status-item">
+                            <div class="label">窗内换向</div>
+                            <div class="value" id="extFollowReversalValue">0</div>
+                        </div>
                     </div>
                     <div class="tiny mt">说明：1 个外部 PUL 脉冲 = 1 个驱动器微步。勾选后 PB5 上的脉冲立刻成为位置命令，
                         并与“启动/停止”按钮互斥（跟随时启动命令会被固件忽略）。<br/>
                         开环（不勾“脉冲运动 PID 补偿”）：只按限速把积压 1:1 发出去。<br/>
                         闭环（勾上 PID 补偿）：再叠一层位置/速度环修正，用编码器把实际角度拉回命令位置。<br/>
-                        积压超过一圈说明输入频率已经超过限速，超出的部分计入“累计丢步”只做告警，不中断跟随。
+                        积压超过一圈说明输入频率已经超过限速，超出的部分计入“累计丢步”只做告警，不中断跟随。<br/>
+                        “窗内换向”是 50µs 窗口内 DIR 翻过方向的次数。一个窗口只能落成一个 DMA 序列、
+                        一个方向，这类窗口里的往返会被净和压平——终点位置仍对，但中间那段轨迹没执行，
+                        有背隙/弹性传动的机构会按次累积偏差。持续增长就说明外部频率高到要上段队列了。
                     </div>
                 </div>
             </div>
@@ -1553,6 +1560,7 @@
             , EXT_FOLLOW_BACKLOG: 0x14D
             , EXT_FOLLOW_DROPPED: 0x14E
             , EXT_FOLLOW_RESET: 0x14F
+            , EXT_FOLLOW_WINDOW_REVERSALS: 0x150
             , CPU_USAGE_CENTIPERCENT: 0x137
             , CONTROL_TASK_USAGE_CENTIPERCENT: 0x138
             , MAX_RPM: 0x11B
@@ -1640,6 +1648,7 @@
             , [CUSTOM_REGS.EXT_FOLLOW_BACKLOG, ['0x014D', 'EXT_FOLLOW_BACKLOG', '当前积压步数（命令 - 已转发）']]
             , [CUSTOM_REGS.EXT_FOLLOW_DROPPED, ['0x014E', 'EXT_FOLLOW_DROPPED', '累计丢步：超过限速而长期积压的部分']]
             , [CUSTOM_REGS.EXT_FOLLOW_RESET, ['0x014F', 'EXT_FOLLOW_RESET', '写 1 清零命令/已转发/积压/丢步计数']]
+            , [CUSTOM_REGS.EXT_FOLLOW_WINDOW_REVERSALS, ['0x0150', 'EXT_FOLLOW_WINDOW_REVERSALS', '窗内发生过换向的窗口数：只统计不改输出，持续增长说明需要段队列']]
         ]);
 
         function log(message) {
@@ -1964,6 +1973,9 @@
             }
             if (frame.reg === CUSTOM_REGS.EXT_FOLLOW_DROPPED) {
                 document.getElementById('extFollowDroppedValue').textContent = String(frame.value >>> 0);
+            }
+            if (frame.reg === CUSTOM_REGS.EXT_FOLLOW_WINDOW_REVERSALS) {
+                document.getElementById('extFollowReversalValue').textContent = String(frame.value >>> 0);
             }
             if (frame.reg === CUSTOM_REGS.ENCODER_FAULT) state.encoderFault = frame.value !== 0;
             if (frame.reg === CUSTOM_REGS.MAGNETIC_FAULT) state.magneticFault = frame.value !== 0;

@@ -235,6 +235,17 @@ void pulse_capture_init(void)
 
 int32_t pulse_capture_read_delta(void)
 {
+    return pulse_capture_read_delta_ex(nullptr);
+}
+
+int32_t pulse_capture_read_delta_ex(int32_t* abs_sum)
+{
+    // 先置 0 再走任何分支：下面的早退（未初始化/无脉冲/溢出）都不会留下脏值
+    if (abs_sum != nullptr)
+    {
+        *abs_sum = 0;
+    }
+
     if (!s_initialized)
     {
         return 0;
@@ -296,6 +307,7 @@ int32_t pulse_capture_read_delta(void)
     }
 
     int32_t delta = 0;
+    int32_t abs_acc = 0;
     for (uint16_t count = 0U; count < pending; ++count)
     {
         PulseSnap_t snap;
@@ -307,13 +319,27 @@ int32_t pulse_capture_read_delta(void)
         snap.dir_snap = (s_dir_ring[s_rd_index] & PULSE_CAPTURE_DIR_MASK) != 0U ? 1U : 0U;
 
         // DIR 低电平 = 正方向 +1，高电平 = 反方向 -1
-        delta += (snap.dir_snap == 0U) ? 1 : -1;
+        if (snap.dir_snap == 0U)
+        {
+            delta += 1;
+        }
+        else
+        {
+            delta -= 1;
+        }
+        // 绝对值和：与净和不等就说明本窗 DIR 翻转过（窗内换向）
+        abs_acc += 1;
 
         s_rd_index = static_cast<uint16_t>((s_rd_index + 1U) & kRingMask);
     }
 
     s_cmd_pulse_total += delta;
     s_captured_count += pending;
+
+    if (abs_sum != nullptr)
+    {
+        *abs_sum = abs_acc;
+    }
 
     return delta;
 }

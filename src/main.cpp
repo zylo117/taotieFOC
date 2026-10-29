@@ -387,12 +387,16 @@ void telemetry_task_function(void* pvParameters)
                    pulse_buf_overflow_flag ? 1U : 0U);
             if (g_controller.isExternalPulseFollowEnabled())
             {
-                printf("[FOL] cmd=%ld out=%ld backlog=%lu peak=%lu drop=%lu\r\n",
+                // rev = 窗内发生过换向的窗口数。一个 50us 窗口只能发一个方向，
+                // 这种窗口里"先正走后反走"的脉冲被净和压平（终点位置仍对，中间往返不执行）。
+                // 持续增长就说明外部信号频率已经高到一窗内会换向，要上段队列才能保轨迹。
+                printf("[FOL] cmd=%ld out=%ld backlog=%lu peak=%lu drop=%lu rev=%lu\r\n",
                        static_cast<long>(g_controller.getExternalCmdSteps()),
                        static_cast<long>(g_controller.getExternalEmittedSteps()),
                        static_cast<unsigned long>(g_controller.getExternalBacklogSteps()),
                        static_cast<unsigned long>(g_controller.getExternalPeakBacklogSteps()),
-                       static_cast<unsigned long>(g_controller.getExternalDroppedSteps()));
+                       static_cast<unsigned long>(g_controller.getExternalDroppedSteps()),
+                       static_cast<unsigned long>(g_controller.getExternalWindowReversals()));
             }
             pulse_sample_count = 0U;
             pulse_high_count = 0U;

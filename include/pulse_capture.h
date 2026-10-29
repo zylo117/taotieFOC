@@ -103,6 +103,13 @@ void pulse_capture_init(void);
 // （dir_snap=0 记 +1，dir_snap=1 记 -1），并累加到内部 int64_t 累计指令脉冲。
 int32_t pulse_capture_read_delta(void);
 
+// 与 pulse_capture_read_delta() 完全等价，但额外输出本窗所有脉冲的绝对值和。
+// abs_sum != |返回值| 说明这一窗里 DIR 至少翻转过一次（窗内换向）：输出层一个
+// DMA 序列只能有一个方向、一次 guard，所以"先正走后反走"的轨迹会被净和压平。
+// 终点位置仍然正确，只是中间那段往返没有执行 —— 有背隙/弹性传动的机构会
+// 按换向次数累积偏差。只读统计用，不影响任何输出行为。
+int32_t pulse_capture_read_delta_ex(int32_t* abs_sum);
+
 // 上电至今的累计有符号指令脉冲数（角度 = total * 360.0f / 每圈步数）
 int64_t pulse_capture_get_total(void);
 

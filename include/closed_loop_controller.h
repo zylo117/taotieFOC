@@ -222,6 +222,10 @@ public:
     uint32_t getExternalBacklogSteps() const; // 当前积压（命令 - 已发）
     uint32_t getExternalPeakBacklogSteps() const;
     uint32_t getExternalDroppedSteps() const; // 因超限没及时发出的累计步数
+    // 窗内换向自检：一个 ramp 窗口只对应一个 DMA 序列、一个 DIR，所以窗口里
+    // “先正走后反走”的脉冲只能按净和压平（终点位置仍对，中间往返不执行）。
+    // 这里只计数不改输出，用来判断实机上到底会不会出现。
+    uint32_t getExternalWindowReversals() const;
     void resetExternalPulseFollowCounters();
 
     // 读取目标位置步数。
@@ -357,6 +361,9 @@ private:
     volatile uint32_t external_backlog_steps_ = 0U;
     volatile uint32_t external_backlog_peak_steps_ = 0U;
     volatile uint32_t external_dropped_steps_ = 0U;
+    // 本窗绝对值和 != |净和| 的窗口数，即“窗内 DIR 翻转过”的次数。
+    // 这类窗口里输出层只能发一个方向的净步数，中间往返被压平。
+    volatile uint32_t external_window_reversals_ = 0U;
     // 外部跟随的 ARR 序列缓冲。不能复用 rampUpdate 里的那份（那是 DDA 专用、
     // 且跟随时 DDA 根本不跑），单独一份 130x4 = 520B，RAM 完全放得下。
     uint32_t external_arr_seq_[MAX_PULSE_ARR_LEN + 2];
