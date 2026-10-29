@@ -435,6 +435,18 @@ void telemetry_task_function(void* pvParameters)
                    static_cast<double>(steps_per_round),
                    pul_level, static_cast<unsigned long>(pul_high_pct), dir_level, dma_pending,
                    pulse_buf_overflow_flag ? 1U : 0U);
+
+            // 电流链路自检：把采集、搬运、换算三段分开看。
+            //   isr 不涨           -> ADC 没触发 或 DMA 中断没使能
+            //   isr 在涨但 raw=0   -> DMA 搬的是空数据（ADC 未转换 / 外设地址错）
+            //   raw≈2048 但 mA≈0  -> 采样正常，INA240 输出确实在中点（无电流或未供电）
+            printf("[ADC] init=%u isr=%lu rawA=%u rawB=%u mA=%.1f mB=%.1f\r\n",
+                   g_phase_current.isInitialized() ? 1U : 0U,
+                   static_cast<unsigned long>(g_phase_current.isrCount()),
+                   static_cast<unsigned>(g_phase_current.lastRawA()),
+                   static_cast<unsigned>(g_phase_current.lastRawB()),
+                   static_cast<double>(g_controller.getPhaseCurrentTelemetryA() * 1000.0f),
+                   static_cast<double>(g_controller.getPhaseCurrentTelemetryB() * 1000.0f));
             if (g_controller.isExternalPulseFollowEnabled())
             {
                 // rev = 窗内发生过换向的窗口数。一个 50us 窗口只能发一个方向，

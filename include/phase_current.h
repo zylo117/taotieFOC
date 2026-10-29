@@ -18,6 +18,14 @@ public:
     float phaseCurrentB() const;
     bool isInitialized() const;
 
+    // ===== 自检用（不参与控制）=====
+    // isrCount  ：DMA 半满/全满中断次数。不涨说明 ADC 根本没触发，或 DMA 没搬数据。
+    // lastRawA/B：最近一次算平均值用的 ADC 原始码。中点约 2048，0 说明 DMA 里全是 0。
+    // 这三个量能把“ADC 没转” / “DMA 没搬” / “信号真是 0A” 三者分开。
+    uint32_t isrCount() const { return isr_count_; }
+    uint16_t lastRawA() const { return last_raw_a_; }
+    uint16_t lastRawB() const { return last_raw_b_; }
+
 private:
     // 【每半区的采样对数 = 8】
     // TMR4 每触发一次转换 2 个通道（A/B），对应 2 个半字。
@@ -38,6 +46,9 @@ private:
     float phase_a_current_a_;
     float phase_b_current_a_;
     bool initialized_;
+    volatile uint32_t isr_count_ = 0U;
+    volatile uint16_t last_raw_a_ = 0U;
+    volatile uint16_t last_raw_b_ = 0U;
 
     static float rawToAmps(uint16_t raw);
 };

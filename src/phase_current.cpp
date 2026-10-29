@@ -111,6 +111,10 @@ void PhaseCurrentMonitor::handleDmaNotification(uint32_t notification_value)
 
     const uint16_t raw_a = static_cast<uint16_t>(sum_a / kCurrentAdcPairsPerHalf);
     const uint16_t raw_b = static_cast<uint16_t>(sum_b / kCurrentAdcPairsPerHalf);
+    // 自检量：中断确实来过、DMA 里确实有非零 ADC 码，两者都能在串口看到
+    ++isr_count_;
+    last_raw_a_ = raw_a;
+    last_raw_b_ = raw_b;
     phase_a_current_a_ = rawToAmps(raw_a);
     phase_b_current_a_ = rawToAmps(raw_b);
 }
