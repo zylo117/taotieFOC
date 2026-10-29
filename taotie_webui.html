@@ -896,6 +896,8 @@
                     </div>
                 </div>
 
+                <!-- 模式区外框：把 tab 按钮、共用区、两个模式页包在一起，视觉上是一整块 -->
+                <div style="border:1px solid rgba(148,163,184,0.32);border-radius:14px;padding:14px;margin-bottom:16px;background:rgba(15,23,42,0.35);">
                 <div class="inline" style="margin-bottom:12px;">
                     <button class="primary" id="tabMotionBtn">测速控制</button>
                     <button id="tabExtFollowBtn">外部脉冲跟随</button>
@@ -910,7 +912,6 @@
                     <div class="inline">
                         <button id="motorEnableBtn">电机使能（EN=0）</button>
                         <button id="motorDisableBtn">电机失能（EN=1）</button>
-                        <button class="warn" id="singleStepBtn">半圈正向脉冲</button>
                     </div>
                     <div class="status-line mt">
                         <span>即时转速：<strong id="waveSpeedReadout">0.00 RPM</strong></span>
@@ -975,6 +976,7 @@
                     <div class="inline mt">
                         <button class="primary" id="startMotionBtn">启动</button>
                         <button class="danger" id="stopMotionBtn">停止</button>
+                        <button class="warn" id="singleStepBtn">半圈正向脉冲</button>
                         <button id="pauseWaveBtn">暂停查看</button>
                         <button id="popWaveBtn">弹出波形</button>
                     </div>
@@ -1054,7 +1056,7 @@
                         有背隙/弹性传动的机构会按次累积偏差。持续增长就说明外部频率高到要上段队列了。
                     </div>
                 </div>
-
+                </div>
             </div>
         </section>
 

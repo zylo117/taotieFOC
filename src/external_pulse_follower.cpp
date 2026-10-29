@@ -121,7 +121,13 @@ void ExternalPulseFollower::update(uint64_t delta_ramp_ns)
     // ---- 2. 闭环补偿（0x107=1 才生效）：位置环 -> 速度环 -> 本窗修正步数 ----
     // 开环时这一段整体跳过，signed_base 就是全部输出，实现严格 1:1 转发。
     float pid_steps = 0.0f;
-    if (c.closed_loop_compensation_enabled_ && c.encoder_ != nullptr)
+    // 【没有基座命令时严格零补偿】
+    // 外部跟随是“位置跟随”：没有外部脉冲就没有命令。但速度环的输入是
+    // (0 - measured_rps)，静止时编码器量化噪声会让它积分出非 0 输出，
+    // 于是每窗都发几步 -> 电机自己走 -> 编码器跟着动 -> 误差更大，
+    // 形成正反馈，表现就是“一切到跟随 tab 电机就乱转”（哪怕没接脉冲线）。
+    // 加上 num_base > 0 后，静止时 pid_steps 恒为 0，不会有任何自走。
+    if (c.closed_loop_compensation_enabled_ && c.encoder_ != nullptr && num_base > 0U)
     {
         // 位置环输入必须是「命令 - 实际」：motion_follow_error_deg_ 定义是「实际 - 命令」，要取反
         const float position_ref_rps = c.position_pid_.update(-c.motion_follow_error_deg_ / 360.0f, dt_s);

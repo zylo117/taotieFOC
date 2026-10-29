@@ -128,6 +128,7 @@ DEFAULT_STEPS_PER_REV = 12800  # 200 步/圈 x 64 微步
 # 固件寄存器（与 include/closed_loop_protocol.h 保持一致）
 REG_MICROSTEPS = 0x100
 REG_MOTOR_ENABLE = 0x124
+REG_MOTOR_DISABLE = 0x125
 PROTOCOL_BAUD = 115200  # 固件 printf 与协议帧共用这个波特率
 
 
@@ -372,6 +373,10 @@ def main():
                              "设了之后同时会把 --steps-per-rev 改成 200 x 该值，除非你手动也传了 --steps-per-rev")
     parser.add_argument("--enable-motor", action="store_true",
                         help="发送前先写 0x124=1 使能电机（EN=0）。不使能的话脉冲发得再对也不会转")
+    parser.add_argument("--disable-after", action="store_true",
+                        help="脉冲发完后写 0x125=1 失能电机（EN=1）。和 --enable-motor 搭配就是“发完就松轴”")
+    parser.add_argument("--disable-delay", type=float, default=0.0,
+                        help="--disable-after 时，发完先等这么多秒再失能（给机械停止留时间，默认 0）")
     args = parser.parse_args()
 
     if args.port is None:
@@ -481,6 +486,13 @@ def main():
             pump(0.2)
 
         drain_output(ser)
+
+        # 发完失能：脉冲已经全部发完、日志也收完了，这时再松轴不会丢掉任何东西
+        if args.disable_after:
+            if args.disable_delay > 0.0:
+                time.sleep(args.disable_delay)
+            print("=== 发送后失能 ===")
+            write_register(ser, REG_MOTOR_DISABLE, 1, "电机失能")
         elapsed = time.time() - start
 
         if writer.error is not None:
