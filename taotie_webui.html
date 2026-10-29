@@ -913,9 +913,28 @@
                         <button id="motorEnableBtn">电机使能（EN=0）</button>
                         <button id="motorDisableBtn">电机失能（EN=1）</button>
                     </div>
+                    <div class="field mt">
+                        <label for="closedLoopEnableInput">闭环补偿（两个模式共用）</label>
+                        <label class="checkbox-row">
+                            <input id="closedLoopEnableInput" type="checkbox"/>
+                            <span>位置/速度环 PID 补偿。默认关闭：外部脉冲跟随开启补偿后会叠一层修正输出，无积压也会超速。</span>
+                        </label>
+                    </div>
                     <div class="status-line mt">
                         <span>即时转速：<strong id="waveSpeedReadout">0.00 RPM</strong></span>
                         <span>跟随误差：<strong id="waveErrorReadout">0.000°</strong></span>
+                    </div>
+                </div>
+
+                <!-- 波形图也是两个模式共用的：测速看梯形跟随，外部跟随看 1:1 转发质量 -->
+                <div class="card">
+                    <h3 style="margin:0 0 12px;">实时波形（转速 / 跟随误差）</h3>
+                    <div class="tiny mt" id="motionDurationEstimate">预计时间：等待参数</div>
+                    <canvas height="260" id="motionWaveCanvas" style="width:100%;height:260px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"
+                            width="620"></canvas>
+                    <div class="wave-readouts">
+                        <span>峰值 |误差| <strong id="waveErrorPeakReadout">0.000°</strong></span>
+                        <span>末值（停止瞬间） <strong id="waveErrorLastReadout">0.000°</strong></span>
                     </div>
                 </div>
 
@@ -965,13 +984,6 @@
                             <input id="encoderFilterWindowInput" max="256" min="0" step="1" type="number"
                                    value="4"/>
                         </div>
-                        <div class="field">
-                            <label for="closedLoopEnableInput">闭环使能</label>
-                            <label class="checkbox-row">
-                                <input id="closedLoopEnableInput" type="checkbox"/>
-                                <span>脉冲运动 PID 补偿</span>
-                            </label>
-                        </div>
                     </div>
                     <div class="inline mt">
                         <button class="primary" id="startMotionBtn">启动</button>
@@ -995,13 +1007,6 @@
                     <div class="tiny mt">STEP 输入脚固定用内部下拉（约 40k），悬空时不会乱跳，推挽驱动可直连。
                         若改接开漏 / 源极跟随这类弱驱动，需要在 pulse_capture.cpp 里把
                         PULSE_CAPTURE_INPUT_PULL_DOWN 置 0（编译期开关）后重新烧写。
-                    </div>
-                    <div class="tiny mt" id="motionDurationEstimate">预计时间：等待参数</div>
-                    <canvas height="260" id="motionWaveCanvas" style="width:100%;height:260px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"
-                            width="620"></canvas>
-                    <div class="wave-readouts">
-                        <span>峰值 |误差| <strong id="waveErrorPeakReadout">0.000°</strong></span>
-                        <span>末值（停止瞬间） <strong id="waveErrorLastReadout">0.000°</strong></span>
                     </div>
                 </div>
 
@@ -2797,6 +2802,27 @@
             document.getElementById('cardExtFollow').style.display = isMotion ? 'none' : '';
             document.getElementById('tabMotionBtn').className = isMotion ? 'primary' : '';
             document.getElementById('tabExtFollowBtn').className = isMotion ? '' : 'primary';
+
+            // 【波形采集开关跟着 tab 走】
+            // pushWaveSample 只看 state.waveCaptureActive，而这个标志原来只由「启动」按钮置位。
+            // 外部跟随模式根本不会点「启动」，所以波形图一直是空的。
+            // 切到跟随时直接开采集，切回测速时停采集（测速自己点「启动」会重新开）。
+            if (isMotion) {
+                stopWaveCapture();
+            } else {
+                startWaveCapture();
+                // 【切到外部跟随就强制关闭环补偿】
+                // 跟随是 1:1 位置转发，开环就是精确转发。开启补偿会在每窗再叠一层 PID 修正，
+                // 即使 backlog=0 也会超速（实测电流 1.4A、转速远超输入频率对应的 270 RPM）。
+                // 另外：ensureMotionDefaultsForAngleControl() 在发目标角度时会自动把 0x107 写 1，
+                // 所以从角度模式切过来时它往往是开着的，UI 也不同步。这里一起刷回去。
+                const closedLoopInput = document.getElementById('closedLoopEnableInput');
+                if (closedLoopInput) closedLoopInput.checked = false;
+                if (state.connected) {
+                    writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0)
+                        .catch((error) => log('[ERROR] 关闭闭环补偿失败：' + error.message));
+                }
+            }
 
             if (!state.connected) {
                 log('[INFO] 已切到' + (isMotion ? '测速控制' : '外部脉冲跟随') + '（未连接串口，模式未下发）');
