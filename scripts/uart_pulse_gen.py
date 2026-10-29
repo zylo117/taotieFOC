@@ -339,10 +339,6 @@ def main():
     parser.add_argument("--steps-per-rev", type=int, default=DEFAULT_STEPS_PER_REV,
                         help="每圈 STEP 数（= 200 x 驱动器微步），仅用于把频率换算成 RPM 显示。"
                              "必须是驱动器当前真实细分，否则 RPM 和角度换算全错")
-    parser.add_argument("--warmup", type=int, default=0,
-                        help="发送前先发多少个 0xFF 预热字节（默认 0）。"
-                             "实测预热无法补偿 CH340 的损耗（那 64 字节会正常上总线并多产生脉冲），"
-                             "只是留个开关以备不同驱动环境")
     args = parser.parse_args()
 
     if args.port is None:
@@ -383,18 +379,9 @@ def main():
                 pass
         ser.reset_output_buffer()
 
-        # 【本脚本不再写任何寄存器】
+        # 【不写任何寄存器、不发预热字节】
         # 细分、电机使能、切换外部脉冲跟随都在网页上做（网页用 USB CDC）。
-        # 这样 CH340 这根线只承担脉冲波形，不产生任何额外上升沿（零系统误差）。
-        # 【预热：默认关闭】
-        # 曾经以为 CH340 开头会吞 64 字节，加了 64 个 0xFF 预热；
-        # 后来用固件新加的 wrap_drop 精确计数证明：那 64 字节正常上了总线（多产生 64 个脉冲），
-        # 真正丢包是 DMA 环形绕圈（已把 RING_DEPTH 从 512 加到 2048）。
-        if args.warmup > 0:
-            ser.write(b'\xFF' * args.warmup)
-            ser.flush()
-            time.sleep(0.05)
-
+        # CH340 这根线只承担脉冲波形本身，线上不会出现任何额外上升沿（零系统误差）。
         ser.reset_input_buffer()
 
         writer = Writer(ser, plan["byte_value"], plan["total_bytes"])
