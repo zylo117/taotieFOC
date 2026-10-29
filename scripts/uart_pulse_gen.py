@@ -128,7 +128,6 @@ DEFAULT_STEPS_PER_REV = 12800  # 200 步/圈 x 64 微步
 # 固件寄存器（与 include/closed_loop_protocol.h 保持一致）
 REG_MICROSTEPS = 0x100
 REG_MOTOR_ENABLE = 0x124
-REG_MOTOR_DISABLE = 0x125
 PROTOCOL_BAUD = 115200  # 固件 printf 与协议帧共用这个波特率
 
 
@@ -153,25 +152,21 @@ def _build_frame(cmd, reg, value):
 
 
 def write_register(ser, reg, value, label):
-    """通过 CH340（USART1）写固件寄存器。
+    """以 115200 写一个寄存器并吞掉回包。
 
-    固件现在两条通道都解析 0x55/0xAA 协议帧：USB CDC 和 USART1。
-    走 CH340 的好处是能和网页共存（网页占着 CDC 也不影响脚本）。
-    协议帧的波特率固定 115200（与固件 printf 一致），写完由调用方切回脉冲波特率。
+    必须在脉冲波特率之前做：协议帧 10 字节 0x55/0xAA 开头，在别的波特率下发
+    会被固件当成噪声扫过去；而 115200 正好也是 printf 的波特率。
     """
     ser.baudrate = PROTOCOL_BAUD
     time.sleep(0.05)
     ser.reset_input_buffer()
     ser.write(_build_frame(0x02, reg, value))
     ser.flush()
-    time.sleep(0.2)
+    time.sleep(0.15)
     ack = ser.read(64)
-    # 只比较前 5 字节：55 AA 82 regHi regLo
-    # （不要写 ack[:6] 去比 5 字节的期望值，那样永远不相等，会误报“回包异常”）
     ok = ack[:5] == bytes([0x55, 0xAA, 0x82, (reg >> 8) & 0xFF, reg & 0xFF])
-    print("  %-14s reg=0x%03X value=%-6d -> %s" % (
-        label, reg, value,
-        "OK" if ok else ("回包异常: %s" % ack.hex().upper() if ack else "无回包")))
+    print("  %-14s reg=0x%03X value=%d  -> %s" % (label, reg, value,
+          "OK" if ok else ("无回包/回包异常: %s" % ack.hex().upper() if ack else "无回包")))
     return ok
 
 
@@ -377,10 +372,6 @@ def main():
                              "设了之后同时会把 --steps-per-rev 改成 200 x 该值，除非你手动也传了 --steps-per-rev")
     parser.add_argument("--enable-motor", action="store_true",
                         help="发送前先写 0x124=1 使能电机（EN=0）。不使能的话脉冲发得再对也不会转")
-    parser.add_argument("--disable-after", action="store_true",
-                        help="脉冲发完后写 0x125=1 失能电机（EN=1）。和 --enable-motor 搭配就是“发完就松轴”")
-    parser.add_argument("--disable-delay", type=float, default=0.0,
-                        help="--disable-after 时，发完先等这么多秒再失能（给机械停止留时间，默认 0）")
     args = parser.parse_args()
 
     if args.port is None:
@@ -426,7 +417,7 @@ def main():
         ser.reset_output_buffer()
 
         # 发送前写配置寄存器（细分 / 电机使能）。
-        # 走 CH340（固件现在两条通道都解析协议帧），网页开着也不影响。
+        # 必须在切到脉冲波特率之前做，否则 0x55/0xAA 那张帧会被当成脉冲波形发到 PB5。
         if args.microsteps or args.enable_motor:
             print("=== 发送前配置 ===")
             if args.microsteps:
@@ -434,7 +425,7 @@ def main():
             if args.enable_motor:
                 write_register(ser, REG_MOTOR_ENABLE, 1, "电机使能")
 
-        # 切回脉冲用的波特率（--freq 57600 时就是 115200，不会实际变化）
+        # 切到脉冲用的波特率（--freq 57600 时就是 115200，不会实际变化）
         ser.baudrate = plan["baud"]
         time.sleep(0.05)
         ser.reset_input_buffer()
@@ -490,13 +481,6 @@ def main():
             pump(0.2)
 
         drain_output(ser)
-
-        # 发完失能：脉冲已经全部发完、日志也收完了，这时再松轴不会丢掉任何东西
-        if args.disable_after:
-            if args.disable_delay > 0.0:
-                time.sleep(args.disable_delay)
-            print("=== 发送后失能 ===")
-            write_register(ser, REG_MOTOR_DISABLE, 1, "电机失能")
         elapsed = time.time() - start
 
         if writer.error is not None:
