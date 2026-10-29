@@ -348,92 +348,14 @@ void ClosedLoopController::syncProtocolTelemetry()
         return;
     }
 
-    uint32_t fault_flags = 0U;
-    if (fault_monitor_.encoderFaultActive())
-    {
-        fault_flags |= FAULT_ENCODER_READ_FAILED;
-    }
-    if (fault_monitor_.magneticFaultActive())
-    {
-        fault_flags |= FAULT_MAGNETIC_FIELD_ALARM;
-    }
-    if (fault_monitor_.outputStopped())
-    {
-        fault_flags |= FAULT_OUTPUT_STOPPED;
-    }
-
     // 本拍的档位在这里消费掉，消费完立刻清空：
     // stopMotion / enableExternalPulseFollow 这些非节拍路径也会调 syncProtocolTelemetry，
     // 它们拿到的就是 kNone，不会把已经刷过的档位再刷一遍。
     const TelemetryScheduler::Slot slot = telemetry_slot_;
     telemetry_slot_ = TelemetryScheduler::Slot::kNone;
 
-    if (slot == TelemetryScheduler::Slot::kSlow)
-    {
-        // 低速槽位（20kHz 下约 1s 一次）：这里是唯一真正改编码器滤波窗口的地方。
-        // 滤波器的环形缓冲/累加和正在采样中断里被改，只允许通过 requestFilterWindow
-        // 登记请求，由中断自己重配；这里把控住频率，就不会让跟随误差被窗口切换抖出台阶。
-        if (encoder_ != nullptr && encoder_filter_window_ != encoder_filter_window_active_)
-        {
-            encoder_->requestFilterWindow(encoder_filter_window_);
-            encoder_filter_window_active_ = encoder_filter_window_;
-        }
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_FILTER_WINDOW, encoder_filter_window_active_);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_FAULT_STATUS, fault_flags);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_FAULT, fault_monitor_.encoderFaultActive() ? 1U : 0U);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_OUTPUT_STOP, fault_monitor_.outputStopped() ? 1U : 0U);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_POS_LOOP_HZ, loop_stats_.positionLoopHz());
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_VEL_LOOP_HZ, loop_stats_.velocityLoopHz());
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_CUR_LOOP_HZ, loop_stats_.currentLoopHz());
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_LAST_FAULT, fault_flags);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_START_RPM, static_cast<uint32_t>(motion_start_rpm_));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAX_RPM, static_cast<uint32_t>(motion_max_rpm_));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ACCEL_RPM_S, static_cast<uint32_t>(motion_accel_rpm_s_));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ANGLE_MAX_RPM, static_cast<uint32_t>(angle_max_rpm_));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ANGLE_ACCEL_RPM_S, static_cast<uint32_t>(angle_accel_rpm_s_));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_PULSE_COUNT, motion_pulse_count_);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_SPEED_RPM,
-                                      static_cast<uint32_t>(static_cast<int32_t>(encoder_speed_rpm_)));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, step_pulse_width_ns_);
-    } else if (slot == TelemetryScheduler::Slot::kMedium)
-    {
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_FAULT, fault_monitor_.magneticFaultActive() ? 1U : 0U);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_A,
-                                      static_cast<uint32_t>(static_cast<int32_t>(phase_a_current_a_ * 1000.0f)));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_B,
-                                      static_cast<uint32_t>(static_cast<int32_t>(phase_b_current_a_ * 1000.0f)));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_TARGET_POSITION, static_cast<uint32_t>(target_step_));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ACTUAL_POSITION, static_cast<uint32_t>(actual_step_));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_FOLLOW_ERROR, static_cast<uint32_t>(follow_error_));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_RAW, encoder_filtered_angle_);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG, static_cast<uint32_t>(static_cast<int32_t>(getEncoderAngleMilliDegrees() * 1000.0f)));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_HIGH, magnetic_field_high_ ? 1U : 0U);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_LOW, magnetic_field_low_ ? 1U : 0U);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_MODE, static_cast<uint32_t>(motion_mode_));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_COMMAND, motion_running_ ? 1U : 0U);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_TARGET_ANGLE_DEG,
-                                      static_cast<uint32_t>(static_cast<int32_t>(target_angle_deg_ * 1000.0f)));
-        // 外部脉冲跟随遥测：命令/已发/积压/丢步（100Hz 足够上位机画图）
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_ENABLE,
-                                      external_pulse_follower_.isEnabled() ? 1U : 0U);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_MAX_STEP_S,
-                                      external_pulse_follower_.maxStepRate());
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_CMD_STEPS,
-                                      static_cast<uint32_t>(external_pulse_follower_.cmdSteps()));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_EMITTED_STEPS,
-                                      static_cast<uint32_t>(external_pulse_follower_.emittedSteps()));
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_BACKLOG,
-                                      external_pulse_follower_.backlogSteps());
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_DROPPED,
-                                      external_pulse_follower_.droppedSteps());
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS,
-                                      external_pulse_follower_.windowReversals());
-    }
-    // 原来这里还有一个 else 分支，每个窗口（20kHz）都调一次
-    // setCustomParameter(POSITION_DEG, ...)。但 POSITION_DEG(0x121) 已经由
-    // UsbCdcProtocolBridge::sendTelemetry 的 case 0 用快帧（约 200Hz）单独推送，
-    // 这里再刷 20kHz 就是纯浪费：每窗一次虚函数 + 5 层 if 比较 + 数组写，
-    // 20kHz 下约 0.4% CPU 白白烧在一个每秒只用到 200 次的值上。
+    // 具体刷哪些寄存器见 src/telemetry_reporter.cpp（94 行寄存器字典已搬过去）。
+    telemetry_reporter_.report(slot);
 }
 
 bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)

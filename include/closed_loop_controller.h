@@ -15,6 +15,7 @@
 #include "parameter_router.h"
 #include "step_output_channel.h"
 #include "stepper_driver.h"
+#include "telemetry_reporter.h"
 #include "telemetry_scheduler.h"
 
 #ifndef USE_HARD_FLOAT_ACCELERATION
@@ -235,6 +236,7 @@ private:
     friend class ExternalPulseFollower;
     friend class MotionPlanner;
     friend class FaultMonitor;
+    friend class TelemetryReporter;
 
     void updateLoopFrequencyStats(uint64_t time_ns);
     // ExternalPulseFollower 尚未抽成独立类之前，Phase 0 先把 rampUpdate 里
@@ -354,6 +356,9 @@ private:
     // 故障监控（编码器读失败 / 磁场报警）已搬到 FaultMonitor，见 include/fault_monitor.h。
     // '要不要失能驱动、要不要禁止 STEP 输出' 这个安全决策独立成类，审阅时不用再翻两处。
     FaultMonitor fault_monitor_{*this};
+    // 遥测上报（syncProtocolTelemetry 的 94 行寄存器字典）已搬到 TelemetryReporter。
+    // 控制器只负责“何时刷”，刷什么归它管。
+    TelemetryReporter telemetry_reporter_{*this};
     float phase_a_current_a_;
     float phase_b_current_a_;
     volatile uint16_t cpu_usage_centi_percent_;
