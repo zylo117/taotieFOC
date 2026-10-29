@@ -85,9 +85,31 @@
      1500000      1241394     -20.8%       620.7 kHz
      2000000      1524372     -31.2%       762.2 kHz
   也就是说 ≤500k 波特率基本准，1M 以上会明显偏慢（驱动分频精度不够）。
-  要精确的高频，用 --trim 反比例补偿，例如想得到真 1 Mbaud 就写：
+ 要精确的高频，用 --trim 反比例补偿，例如想得到真 1 Mbaud 就写：
       --baud 1107000        # 实测得到 999567 baud
   或者直接 --trim 1.107。
+
+==================================================================
+【两种用法，二选一】
+
+【用法 1：网页管配置 + 脚本只发脉冲】（推荐，两边可同时开着）
+  网页（USB CDC / COM9）   : 设细分、电机使能、切到「外部脉冲跟随」tab、看波形
+  脚本（CH340 / COM14）    : 只发脉冲 + 收日志，不要传 --microsteps / --enable-motor
+  例：
+      python scripts/uart_pulse_gen.py --port COM14 --freq 57600 --count 57600 --monitor
+  前提：先在网页上点好细分、使能、切到跟随 tab。
+
+【用法 2：脚本全包】（适合无人值守/批量跑）
+  必须先在网页上断开串口：Windows 对串口是独占的，
+  网页占着 CDC 时脚本打不开，会报 PermissionError(13, '拒绝访问')。
+  例：
+      python scripts/uart_pulse_gen.py --port COM14 --freq 57600 --count 57600 \\
+          --microsteps 64 --enable-motor --monitor
+
+【为什么配置帧一定走 CDC】
+  CH340 的 TXD 和 PB5（PUL 输入）是同一根线。如果在那里发 10 字节协议帧，
+  会被脉冲捕获当成约 20 个上升沿（约 0.5 度），对高精度角度场景是不可接受的系统误差。
+  USB CDC 完全不经过 PB5，零假脉冲。
 """
 
 import argparse
@@ -395,9 +417,12 @@ def main():
                         help="每圈 STEP 数（= 200 x 驱动器微步），仅用于把频率换算成 RPM 显示")
     parser.add_argument("--microsteps", type=int, default=0,
                         help="发送前先写 0x100 把驱动器细分设成该值（0 = 不改）。"
-                             "设了之后同时会把 --steps-per-rev 改成 200 x 该值，除非你手动也传了 --steps-per-rev")
+                             "设了之后同时会把 --steps-per-rev 改成 200 x 该值，除非你手动也传了 --steps-per-rev。"
+                             "【需要网页先断开串口】因为配置帧走 USB CDC，网页占着就打不开。"
+                             "如果你用“网页管配置”的工作流，就不要传这个参数")
     parser.add_argument("--enable-motor", action="store_true",
-                        help="发送前先写 0x124=1 使能电机（EN=0）。不使能的话脉冲发得再对也不会转")
+                        help="发送前先写 0x124=1 使能电机（EN=0）。走 USB CDC，不经过 PB5，零假脉冲。"
+                             "【需要网页先断开串口】。网页上已经点过使能的话就不用传这个")
     args = parser.parse_args()
 
     if args.port is None:
