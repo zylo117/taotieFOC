@@ -489,7 +489,19 @@ void ClosedLoopController::updateLoopFrequencyStats(uint64_t time_ns)
         const uint64_t delta_pos_ns = time_ns - last_position_tick_ns_;
         if (delta_pos_ns > 0ULL)
         {
-            position_loop_hz_ = (1000000000ULL / delta_pos_ns);
+            // 【不要用单拍算频率】这一拍如果被 USB（优先级 0）或 TMR5/DMA（优先级 2）
+            // 抢占 5.8us，瞬时值就从 20000 掉到 17919，看着像掉频，其实只是观测抖动；
+            // 真漏一拍会显示 10000，而不是 17919。
+            // 改成 500ms 窗口的计数平均：滤掉单拍抖动，同时能真实暴露漏拍。
+            position_window_ns_ += delta_pos_ns;
+            position_window_count_++;
+            if (position_window_ns_ >= 500000000ULL)
+            {
+                position_loop_hz_ = static_cast<uint32_t>(
+                    (static_cast<uint64_t>(position_window_count_) * 1000000000ULL) / position_window_ns_);
+                position_window_ns_ = 0ULL;
+                position_window_count_ = 0U;
+            }
             position_samples_++;
         }
         last_position_tick_ns_ = time_ns;
@@ -1484,6 +1496,8 @@ void ClosedLoopController::getLoopFrequencyStats(LoopFrequencyStats* stats) cons
 void ClosedLoopController::resetLoopFrequencyStats()
 {
     position_loop_hz_ = 0U;
+    position_window_ns_ = 0ULL;
+    position_window_count_ = 0U;
     velocity_loop_hz_ = 0U;
     current_loop_hz_ = 0U;
     position_samples_ = 0U;

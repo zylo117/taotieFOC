@@ -363,6 +363,10 @@ private:
     uint32_t position_loop_hz_;
     uint32_t velocity_loop_hz_;
     uint32_t current_loop_hz_;
+    // 500ms 滑动窗口，用于把位置环频率从“单拍瞬时值”改成计数平均。
+    // 单拍瞬时值会被 USB（优先级 0）/TMR5/DMA（优先级 2）的抢占放大成 17919Hz 的假掉频。
+    uint64_t position_window_ns_ = 0ULL;
+    uint32_t position_window_count_ = 0U;
     uint32_t position_samples_;
     uint32_t velocity_samples_;
     uint32_t current_samples_;

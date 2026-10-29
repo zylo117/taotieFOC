@@ -1034,19 +1034,6 @@
                     </div>
                 </div>
 
-                <div class="card">
-                    <h3 style="margin:0 0 12px;">固件维护（DFU 刷机）</h3>
-                    <div class="tiny">AT32F403A 的片内 DFU bootloader <strong>只认 BOOT0 引脚</strong>。
-                        从应用软跳转（改时钟 + 换栈 + 跳 System Memory）实测无法启动：
-                        候选地址一读就总线错误，整个系统当场停摆。所以刷机流程固定为：
-                    </div>
-                    <div class="tiny mt">1. 拨 BOOT0 上电，设备进入 DFU</div>
-                    <div class="tiny">2. 在项目目录运行：</div>
-                    <pre style="margin:6px 0 0;white-space:pre-wrap;">python scripts\auto_flash.py --skip-enter --seconds 5</pre>
-                    <div class="tiny mt">脚本会自动刷入 firmware.bin 并抓 5 秒日志。
-                        设备在 dfu-util 里是 <code>2e3c:df11</code>（不是 ST 的 <code>0483:df11</code>）。
-                    </div>
-                </div>
             </div>
         </section>
 
@@ -2775,53 +2762,6 @@
                 log('[ERROR] 串口连接失败：' + (err && err.message ? err.message : String(err)));
                 setConnBadge('未连接', false);
             }
-        }
-
-        // ===================== 一键进入 DFU =====================
-        // 让固件跳进片内 bootloader：发一个写命令 reg=0x7FFE value="FILE"。
-        // 这组地址/魔数在固件 usb_cdc_protocol.cpp 里被拦截，不会落到任何寄存器表。
-        // 跳转后 USB CDC 会消失，所以发完要主动释放串口，否则 dfu-util 拿不到设备。
-        async function enterDfuMode() {
-            if (!state.connected || !state.writer) {
-                log('[WARN] 请先连接串口再进入 DFU');
-                return;
-            }
-            const confirmed = window.confirm(
-                'MCU 将跳转到片内 bootloader 并断开 USB 串口。\n\n' +
-                '这是正常现象，之后用 dfu-util 刷机，刷完自动重启。\n\n继续？');
-            if (!confirmed) return;
-
-            log('[DFU] 发送进入 DFU 命令 ...');
-            try {
-                await writeRegister(0x7FFE, 0x454C4946);
-            } catch (error) {
-                log(`[DFU] 发送失败：${error.message}`);
-                return;
-            }
-
-            // 固件收到后会先回 ACK、延时 100ms 再跳，这里等够时间再释放串口
-            await new Promise((resolve) => window.setTimeout(resolve, 500));
-            log('[DFU] MCU 应已进入 DFU，正在释放串口 ...');
-
-            try {
-                if (state.reader) {
-                    await state.reader.cancel();
-                    state.reader = null;
-                }
-                if (state.writer) {
-                    state.writer.releaseLock();
-                    state.writer = null;
-                }
-                if (state.port) {
-                    await state.port.close();
-                    state.port = null;
-                }
-            } catch (error) {
-                log(`[DFU] 释放串口时出错（可以忽略）：${error.message}`);
-            }
-            state.connected = false;
-            setConnBadge('未连接', false);
-            log('[DFU] 串口已释放，现在可以刷机。若 dfu-util 看不到设备，检查是否出现 2e3c:df11');
         }
 
         async function readLoop() {

@@ -15,7 +15,6 @@
 #include "usbd_int.h"
 
 #include "closed_loop_controller.h"
-#include "dfu_bootloader.h"
 #include "usb_cdc_protocol.h"
 #include "tmc2209_driver.h"
 #include "kth7823_encoder.h"
@@ -242,18 +241,6 @@ int main(void)
     SCB->CPACR |= ((3UL << 10*2)|(3UL << 11*2));
     __asm volatile ("DSB");
     __asm volatile ("ISB");
-
-    // 【软跳 DFU 在 AT32F403A 上已停用】三次实测都失败：
-    //   1. FreeRTOS 任务里直接跳（PSP + 250MHz PLL）→ 跳过去后无任何响应
-    //   2. 写 BPR 标志 + NVIC_SystemReset + main 开头跳 → isr 不归零，根本没复位
-    //   3. UART 噪声会误触发（PA10 悬空），且 enter() 里的 crm_reset() 会把 250MHz
-    //      降到 HSI，UART 波特率全错、日志直接变空白
-    // 结论：AT32F403A 的片内 DFU bootloader 很可能只认 BOOT0 引脚，不支持从应用软跳。
-    // 下面这段保留但不调用；真要重启启用，先用 probeAll() 把 System Memory 地址确认清楚。
-    // if (dfu_bootloader::consumeResetRequest())
-    // {
-    //     dfu_bootloader::enter();
-    // }
 
     nvic_priority_group_config(NVIC_PRIORITY_GROUP_4);
     system_clock_config();
@@ -490,17 +477,6 @@ void telemetry_task_function(void* pvParameters)
                    static_cast<unsigned>(g_phase_current.lastRawB()),
                    static_cast<double>(g_controller.getPhaseCurrentTelemetryA() * 1000.0f),
                    static_cast<double>(g_controller.getPhaseCurrentTelemetryB() * 1000.0f));
-
-            // DFU 诊断：step>0 说明 USB 的 0x7FFE 命令确实进了 DFU 分支；
-            // 三个 sp 是三个候选 System Memory 地址读到的初始 SP（0 = 该地址上没有合法向量表）。
-            if (dfu_bootloader::g_dfu_step != 0U)
-            {
-                printf("[DFU] step=%lu sp=%08lX/%08lX/%08lX\r\n",
-                       static_cast<unsigned long>(dfu_bootloader::g_dfu_step),
-                       static_cast<unsigned long>(dfu_bootloader::g_dfu_probe_sp[0]),
-                       static_cast<unsigned long>(dfu_bootloader::g_dfu_probe_sp[1]),
-                       static_cast<unsigned long>(dfu_bootloader::g_dfu_probe_sp[2]));
-            }
             if (g_controller.isExternalPulseFollowEnabled())
             {
                 // rev = 窗内发生过换向的窗口数。一个 50us 窗口只能发一个方向，
