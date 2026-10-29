@@ -78,7 +78,12 @@
 #endif
 
 // 环形缓冲区深度，必须是 2 的幂（用位掩码取模）
-#define PULSE_CAPTURE_RING_DEPTH 512U
+//
+// 【512 -> 2048】原来 512 深在 57600Hz 下只有 8.9ms 余量，
+// 实测每次测试开头都会有一次约 5~6ms 的消费停顿，直接击穿并丢弃 259~328 个脉冲
+// （wrap_drop 精确计数确认）。2048 深把余量提到 35.5ms，这种量级的瞬时卡顿就无感了。
+// 代价：两个 DMA 环形（tick + dir）各多 6KB，共 +6KB RAM。
+#define PULSE_CAPTURE_RING_DEPTH 2048U
 
 // 注意：这里不再假设固定细分。1 个外部 PUL 脉冲 = 1 个驱动器微步，
 // 一圈脉冲数 = 200 步/圈 x 驱动器实际微步数，运行期由
@@ -119,6 +124,17 @@ void pulse_capture_clear_overflow_flag(void);
 // 上电至今已被消费的捕获事件总数（不分方向），用来和信号发生器的发送脉冲数对拍。
 // 这个计数始终有效，不需要打开 PULSE_CAPTURE_DEBUG。
 uint32_t pulse_capture_get_captured_count(void);
+
+// 因环形缓冲绕圈而被丢弃的脉冲总数（精确累加，不是布尔标记）。
+// 正常应恒为 0；一旦增长，就是 rampUpdate 停得太久、DMA 已经写满一整圈。
+uint32_t pulse_capture_get_dropped_on_wrap(void);
+
+// 最近一次绕圈丢包的现场（诊断用，定义在 pulse_capture.cpp）
+extern volatile uint32_t g_wrap_event_count;
+extern volatile uint32_t g_wrap_last_pending;
+extern volatile uint32_t g_wrap_last_rd;
+extern volatile uint32_t g_wrap_last_wr;
+extern volatile uint32_t g_wrap_last_cyc;
 
 // 只读 PUL 引脚当前电平（GPIO IDT），极轻量，可以在高频循环里连续采样做占空统计。
 // 返回 1 = MCU 认为高，0 = MCU 认为低。

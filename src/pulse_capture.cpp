@@ -103,6 +103,27 @@ namespace
 
 volatile bool pulse_buf_overflow_flag = false;
 
+// 【精确丢包计数】pulse_buf_overflow_flag 只是布尔标记，一旦置位就永远为 1，
+// 看不出到底丢了多少、丢在第几次。这里把每次绕圈时被覆盖的 pending 都累加进来，
+// 上层就能用 pulse_capture_get_dropped_on_wrap() 看到真实丢包量。
+static volatile uint32_t s_dropped_on_wrap = 0U;
+
+uint32_t pulse_capture_get_dropped_on_wrap(void)
+{
+    return s_dropped_on_wrap;
+}
+
+// 【丢包现场记录】不只记总数，还记下最近一次绕圈发生时的现场：
+//   events  = 绕圈次数
+//   pending = 当时的未消费量（真停摆时应该接近 RING_DEPTH）
+//   rd / wr = 当时的读/写指针（用于判断是不是指针突然跳变）
+//   cyc     = 当时的 DWT CYCCNT（4ns/计数，32 位约 17 秒溢出一圈）
+volatile uint32_t g_wrap_event_count = 0U;
+volatile uint32_t g_wrap_last_pending = 0U;
+volatile uint32_t g_wrap_last_rd = 0U;
+volatile uint32_t g_wrap_last_wr = 0U;
+volatile uint32_t g_wrap_last_cyc = 0U;
+
 void pulse_capture_init(void)
 {
     gpio_init_type gpio_init_struct;
@@ -292,11 +313,25 @@ int32_t pulse_capture_read_delta_ex(int32_t* abs_sum)
     }
 #endif
 
-    if (ring_wrapped || dma_bus_error)
+    if ((ring_wrapped || dma_bus_error) && pending > static_cast<uint16_t>(kRingDepth / 2U))
     {
+        // 【重要：绕圈判定必须看 pending 大小，不能只看 FDT 标志】
+        // DMA1_FDT4_FLAG 的语义是“DMA 写满一整圈”，循环模式下每绕一圈就置位一次，
+        // 它并不代表“读指针被追上、数据被覆盖”。
+        // 实测现场：evt=28 pend=3 rd=2046 wr=1 —— 只积压了 3 个（正常一拍消费量），
+        // 数据完全没被覆盖，却因为 FDT 置位把这一拍丢掉了。
+        // 28 次误判 × 3 个 ≈ 82 个，与 wrap_drop 完全对得上。
+        // 现在只有读指针真的落后超过半圈（1024 个 ≈ 18ms 积压）才当作丢包。
+        //
         // 写指针已经绕圈追上读指针：环形缓冲区里的旧数据被覆盖，丢弃并重新对齐，
         // 置位全局故障标记交给上层报错（丢脉冲必须让上层知道）。
         pulse_buf_overflow_flag = true;
+        s_dropped_on_wrap += static_cast<uint32_t>(pending);
+        ++g_wrap_event_count;
+        g_wrap_last_pending = static_cast<uint32_t>(pending);
+        g_wrap_last_rd = static_cast<uint32_t>(s_rd_index);
+        g_wrap_last_wr = static_cast<uint32_t>(wr_index);
+        g_wrap_last_cyc = DWT->CYCCNT;
         s_rd_index = wr_index;
         return 0;
     }

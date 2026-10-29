@@ -432,7 +432,11 @@ void telemetry_task_function(void* pvParameters)
         //   hi 在中间、cap 不涨    -> 引脚在跳变但捕获没记到（不该出现，出现就是定时器/DMA 问题）
         //   cap 在涨但 deg 在 0 附近来回 -> DIR 悬空，逐脉冲快照随机，正负抵消
         //   pd 一直不为 0             -> 积压，rampUpdate 消费不过来（>256 就会丢脉冲）
-        if ((xTaskGetTickCount() - last_pulse_log_tick) >= pdMS_TO_TICKS(1000))
+        // 自检行从每秒一行降到每 3 秒：三行日志（[PUL]+[ADC]+[FOL]）共约 300 字节，
+        // 115200 下就是 26ms 的忙等。虽然 Control_task 优先级 3 高于 Telemetry_task 的 2，
+        // 理论上能抢占，但实测脉冲捕获在测试开头会丢掉约 326 个（≈14.5ms 的 DMA 积压），
+        // 先把打印频率降下来排除这个嫌疑；真要定位请看 [PUL] 的 wrap_drop 字段。
+        if ((xTaskGetTickCount() - last_pulse_log_tick) >= pdMS_TO_TICKS(3000))
         {
             uint8_t pul_level = 0U;
             uint8_t dir_level = 0U;
@@ -448,11 +452,23 @@ void telemetry_task_function(void* pvParameters)
             const double total_deg = steps_per_round > 0.0f
                 ? static_cast<double>(total) * 360.0 / static_cast<double>(steps_per_round)
                 : 0.0;
-            printf("[PUL] cap=%lu deg=%.3f spr=%.0f PUL=%u hi=%lu%% DIR=%u pd=%u ovf=%u\r\n",
+            printf("[PUL] cap=%lu deg=%.3f spr=%.0f PUL=%u hi=%lu%% DIR=%u pd=%u ovf=%u wrap_drop=%lu\r\n",
                    static_cast<unsigned long>(pulse_capture_get_captured_count()), total_deg,
                    static_cast<double>(steps_per_round),
                    pul_level, static_cast<unsigned long>(pul_high_pct), dir_level, dma_pending,
-                   pulse_buf_overflow_flag ? 1U : 0U);
+                   pulse_buf_overflow_flag ? 1U : 0U,
+                   static_cast<unsigned long>(pulse_capture_get_dropped_on_wrap()));
+            // 绕圈丢包现场：evt=绕圈次数 pend=当时未消费量 rd/wr=当时指针 cyc=当时 DWT 计数
+            // 判读：pend 接近 2048 -> 真停摆；pend 很小且 wr-rd 对不上 -> 指针读错
+            if (g_wrap_event_count != 0U)
+            {
+                printf("[WRAP] evt=%lu pend=%lu rd=%lu wr=%lu cyc=%lu\r\n",
+                       static_cast<unsigned long>(g_wrap_event_count),
+                       static_cast<unsigned long>(g_wrap_last_pending),
+                       static_cast<unsigned long>(g_wrap_last_rd),
+                       static_cast<unsigned long>(g_wrap_last_wr),
+                       static_cast<unsigned long>(g_wrap_last_cyc));
+            }
 
             // 电流链路自检：把采集、搬运、换算三段分开看。
             //   isr 不涨           -> ADC 没触发 或 DMA 中断没使能
