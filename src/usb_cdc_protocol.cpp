@@ -78,6 +78,22 @@ void UsbCdcProtocolBridge::poll()
     }
 
     const uint16_t frame_len = 10U;
+    (void)frame_len;
+    dispatchRxBuffer();
+    // if (rx_len > 0U)
+    // {
+    //     printf("[USB_RX] buffered_bytes=%u\r\n", static_cast<unsigned>(rx_buffer_len_));
+    // }
+    serviceCalibrationTableDump();
+    flushTxQueue();
+}
+
+// 把 rx_buffer_ 里已凑齐的帧逐个解析掉。
+// poll()（USB CDC）和 feedBytes()（USART1/CH340）共用这一段，
+// 保证两条通道的帧格式、CRC 校验、处理分支完全一致。
+void UsbCdcProtocolBridge::dispatchRxBuffer()
+{
+    const uint16_t frame_len = 10U;
     while (rx_buffer_len_ >= 2U)
     {
         if (rx_buffer_[0] != kFrameHeaderA || rx_buffer_[1] != kFrameHeaderB)
@@ -109,12 +125,26 @@ void UsbCdcProtocolBridge::poll()
             memmove(rx_buffer_, rx_buffer_ + frame_len, rx_buffer_len_);
         }
     }
-    // if (rx_len > 0U)
-    // {
-    //     printf("[USB_RX] buffered_bytes=%u\r\n", static_cast<unsigned>(rx_buffer_len_));
-    // }
-    serviceCalibrationTableDump();
-    flushTxQueue();
+}
+
+// USART1（CH340）收到的字节也走同一个解析器。
+// 必须在任务上下文调用：handleFrame 会调 stopMotion / setEnable / printf。
+void UsbCdcProtocolBridge::feedBytes(const uint8_t* data, uint16_t len)
+{
+    if (data == nullptr || len == 0U)
+    {
+        return;
+    }
+    if (len > static_cast<uint16_t>(sizeof(rx_buffer_) - rx_buffer_len_))
+    {
+        // 单包就超过整个缓冲：说明调用方给的长度不合理，直接丢
+        ++rx_overflow_count_;
+        rx_buffer_len_ = 0U;
+        return;
+    }
+    memcpy(rx_buffer_ + rx_buffer_len_, data, len);
+    rx_buffer_len_ = static_cast<uint16_t>(rx_buffer_len_ + len);
+    dispatchRxBuffer();
 }
 
 void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)

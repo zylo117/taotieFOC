@@ -40,6 +40,8 @@ static usbd_core_type g_usb_core;
 extern "C"
 {
     extern volatile uint32_t g_dfu_uart_request;
+    // 定义在 at32f403a_407_board.c：USART1 中断收到的协议帧字节环形缓冲
+    extern uint16_t uart_protocol_read(uint8_t* dst, uint16_t max_len);
 }
 
 void led5_task_function(void* pvParameters);
@@ -503,9 +505,21 @@ void usb_task_function(void* pvParameters)
 {
     (void)pvParameters;
 
+    uint8_t uart_rx[32];
+
     while (1)
     {
         g_usb_bridge.poll();
+
+        // 【USART1/CH340 也当协议通道】把中断入队的字节吐给同一个解析器。
+        // 这样脚本只用一根 CH340 线就能写配置 + 发脉冲 + 收日志，
+        // 不用再和网页抢 USB CDC。解析在任务上下文做（handleFrame 会 stopMotion/printf）。
+        uint16_t n = 0U;
+        while ((n = uart_protocol_read(uart_rx, sizeof(uart_rx))) > 0U)
+        {
+            g_usb_bridge.feedBytes(uart_rx, n);
+        }
+
         vTaskDelay(1);
     }
 }

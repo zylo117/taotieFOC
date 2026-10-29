@@ -153,47 +153,26 @@ def _build_frame(cmd, reg, value):
 
 
 def write_register(ser, reg, value, label):
-    """写一个固件寄存器。
+    """通过 CH340（USART1）写固件寄存器。
 
-    【关键】配置帧必须走 USB CDC（VID 0x2E3C），不能走 CH340（COM14）：
-    固件里 USART1 只负责 printf 输出，它的 RX 只认 "DFU" 这个字符串（早期留给
-    软跳 bootloader 的），根本不解析 0x55/0xAA 协议帧。之前通过 COM14 写 0x125
-    一直“没反应”，就是因为帧根本没进固件。
-
-    参数 ser 在这里不用（保留签名兼容旧调用），实际自己开一个 CDC 口。
+    固件现在两条通道都解析 0x55/0xAA 协议帧：USB CDC 和 USART1。
+    走 CH340 的好处是能和网页共存（网页占着 CDC 也不影响脚本）。
+    协议帧的波特率固定 115200（与固件 printf 一致），写完由调用方切回脉冲波特率。
     """
-    del ser  # 不用 CH340 发协议帧
-    cdc_port = find_cdc_port()
-    if cdc_port is None:
-        print("  %-14s reg=0x%03X -> 失败：找不到 USB CDC 口（VID 0x2E3C），"
-              "网页是否占着串口？关闭网页的串口连接再试" % (label, reg))
-        return False
-    try:
-        with serial.Serial(cdc_port, PROTOCOL_BAUD, timeout=1.0, write_timeout=1.0) as cdc:
-            cdc.reset_input_buffer()
-            cdc.write(_build_frame(0x02, reg, value))
-            cdc.flush()
-            time.sleep(0.2)
-            ack = cdc.read(64)
-    except serial.SerialException as exc:
-        print("  %-14s reg=0x%03X -> 失败：%s" % (label, reg, exc))
-        return False
-
-    # 只比较前 5 字节：0x55 0xAA 0x82 regHi regLo
+    ser.baudrate = PROTOCOL_BAUD
+    time.sleep(0.05)
+    ser.reset_input_buffer()
+    ser.write(_build_frame(0x02, reg, value))
+    ser.flush()
+    time.sleep(0.2)
+    ack = ser.read(64)
+    # 只比较前 5 字节：55 AA 82 regHi regLo
     # （不要写 ack[:6] 去比 5 字节的期望值，那样永远不相等，会误报“回包异常”）
     ok = ack[:5] == bytes([0x55, 0xAA, 0x82, (reg >> 8) & 0xFF, reg & 0xFF])
-    print("  %-14s reg=0x%03X value=%d via %s  -> %s" % (
-        label, reg, value, cdc_port,
+    print("  %-14s reg=0x%03X value=%-6d -> %s" % (
+        label, reg, value,
         "OK" if ok else ("回包异常: %s" % ack.hex().upper() if ack else "无回包")))
     return ok
-
-
-def find_cdc_port():
-    """找 AT32 的 USB CDC（VID 0x2E3C）。CH340 是 0x1A86，不要弄混。"""
-    for port in serial.tools.list_ports.comports():
-        if port.vid == 0x2E3C:
-            return port.device
-    return None
 
 
 class Writer(threading.Thread):
@@ -447,7 +426,7 @@ def main():
         ser.reset_output_buffer()
 
         # 发送前写配置寄存器（细分 / 电机使能）。
-        # 【走 USB CDC，不走 CH340】固件的 USART1 只做 printf，不解析协议帧。
+        # 走 CH340（固件现在两条通道都解析协议帧），网页开着也不影响。
         if args.microsteps or args.enable_motor:
             print("=== 发送前配置 ===")
             if args.microsteps:
@@ -455,7 +434,7 @@ def main():
             if args.enable_motor:
                 write_register(ser, REG_MOTOR_ENABLE, 1, "电机使能")
 
-        # 切到脉冲用的波特率（--freq 57600 时就是 115200，不会实际变化）
+        # 切回脉冲用的波特率（--freq 57600 时就是 115200，不会实际变化）
         ser.baudrate = plan["baud"]
         time.sleep(0.05)
         ser.reset_input_buffer()

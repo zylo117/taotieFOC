@@ -181,6 +181,44 @@ void uart_print_init(uint32_t baudrate)
  * ============================================================ */
 volatile uint32_t g_dfu_uart_request = 0U;
 
+/* ===================== USART1 协议帧通道 =====================
+ * 为什么需要：固件的协议帧（0x55 0xAA ...）原来只从 USB CDC 收，
+ * CH340 那条线只做 printf 输出。于是网页一旦连着 CDC，脚本就再也写不了配置
+ * （Windows 独占串口）。这里把 USART1 收到的字节也入队，
+ * 由 usb_task 取出来喂给同一个帧解析器，一根 CH340 线就能完成
+ * “写配置 + 发脉冲 + 收日志”。
+ *
+ * 中断里只入队，绝不解析：handleFrame 会调 stopMotion / setEnable / printf，
+ * 那些绝不能跑在中断上下文。
+ * ============================================================ */
+#define UART_PROTO_RING_SIZE 256U  /* 2 的幂，环形缓冲 */
+static volatile uint8_t s_uart_proto_ring[UART_PROTO_RING_SIZE];
+static volatile uint16_t s_uart_proto_head = 0U;  /* ISR 写 */
+static volatile uint16_t s_uart_proto_tail = 0U;  /* 任务读 */
+static volatile uint32_t s_uart_proto_overflow = 0U;
+
+/* 任务侧取字节；返回实际取到的个数。 */
+uint16_t uart_protocol_read(uint8_t* dst, uint16_t max_len)
+{
+    uint16_t count = 0U;
+    while (count < max_len)
+    {
+        const uint16_t tail = s_uart_proto_tail;
+        if (tail == s_uart_proto_head)
+        {
+            break;
+        }
+        dst[count++] = s_uart_proto_ring[tail];
+        s_uart_proto_tail = (uint16_t)((tail + 1U) % UART_PROTO_RING_SIZE);
+    }
+    return count;
+}
+
+uint32_t uart_protocol_overflow_count(void)
+{
+    return s_uart_proto_overflow;
+}
+
 void USART1_IRQHandler(void)
 {
     if (usart_interrupt_flag_get(PRINT_UART, USART_RDBF_FLAG) != RESET)
@@ -204,6 +242,18 @@ void USART1_IRQHandler(void)
         else
         {
             s_match = 0U;
+        }
+
+        /* 协议帧字节入队（满就丢弃并计数，不阻塞中断） */
+        const uint16_t next = (uint16_t)((s_uart_proto_head + 1U) % UART_PROTO_RING_SIZE);
+        if (next != s_uart_proto_tail)
+        {
+            s_uart_proto_ring[s_uart_proto_head] = ch;
+            s_uart_proto_head = next;
+        }
+        else
+        {
+            ++s_uart_proto_overflow;
         }
     }
     /* 溢出错误必须清掉，否则后续接收会一直被打断 */

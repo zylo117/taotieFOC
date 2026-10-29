@@ -14,6 +14,10 @@ public:
     void poll();
     void sendTelemetry();
 
+    // 把另一条通道（USART1/CH340）收到的字节灌进同一个帧解析器。
+    // 必须在任务上下文调用（内部会走 handleFrame -> stopMotion / setEnable / printf）。
+    void feedBytes(const uint8_t* data, uint16_t len);
+
     // 接收侧异常计数（替代 poll() 里的 printf）：
     // rxOverflowCount = 单包超出 rx_buffer_ 容量的次数，
     // rxCrcFailCount  = CRC 不匹配被丢弃的帧数。
@@ -24,6 +28,8 @@ public:
 
 private:
     void handleFrame(const uint8_t* frame, uint16_t len);
+    // 把 rx_buffer_ 里已凑齐的帧逐个解析掉（poll 和 feedBytes 共用）
+    void dispatchRxBuffer();
     bool sendFrame(uint8_t cmd, uint16_t reg, uint32_t value);
     void flushTxQueue();
     void serviceCalibrationTableDump();
