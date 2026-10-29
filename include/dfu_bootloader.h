@@ -29,6 +29,26 @@ namespace dfu_bootloader
 
     // 只探测不跳转，给自检打印用
     uint32_t findValidBase();
+
+    // 【复位后跳转】USB 命令不应该直接跳 bootloader。
+    // 应用跑在 250MHz PLL + FreeRTOS 的 PSP 线程模式，bootloader 是按“刚从复位启动”
+    // （HSI、MSP、无中断）写的，现场改时钟+换栈再跳实测起不来（跳过去后无任何输出）。
+    // 所以改成 AT32 推荐的两步：先写 BPR 标志，再系统复位；
+    // main() 最开头 consumeResetRequest() 命中后才真跳——那时环境与 BOOT0 一致。
+    void requestAfterReset();
+    bool consumeResetRequest();
+
+    // ===== 诊断（先只标记不复位）=====
+    // 用状态码把“命令到底有没有进 DFU 分支”变成可观测的：
+    //   0 = 从没收到 DFU 命令
+    //   1 = handleFrame 的 DFU 分支命中了（收到命令）
+    //   2 = 三个候选地址的初始 SP 已读完
+    // telemetry 任务每秒把 g_dfu_step 和三个 SP 打成一行 [DFU]。
+    // 这一步刻意不调 NVIC_SystemReset()：只要能看到 step=2，就说明分支和探测都正常，
+    // 后续失败就只剩“地址不对”或“跳转环境不对”两种原因。
+    extern volatile uint32_t g_dfu_step;
+    extern volatile uint32_t g_dfu_probe_sp[kCandidateBaseCount];
+    void probeAll();
 }
 
 #endif

@@ -243,6 +243,18 @@ int main(void)
     __asm volatile ("DSB");
     __asm volatile ("ISB");
 
+    // 【软跳 DFU 在 AT32F403A 上已停用】三次实测都失败：
+    //   1. FreeRTOS 任务里直接跳（PSP + 250MHz PLL）→ 跳过去后无任何响应
+    //   2. 写 BPR 标志 + NVIC_SystemReset + main 开头跳 → isr 不归零，根本没复位
+    //   3. UART 噪声会误触发（PA10 悬空），且 enter() 里的 crm_reset() 会把 250MHz
+    //      降到 HSI，UART 波特率全错、日志直接变空白
+    // 结论：AT32F403A 的片内 DFU bootloader 很可能只认 BOOT0 引脚，不支持从应用软跳。
+    // 下面这段保留但不调用；真要重启启用，先用 probeAll() 把 System Memory 地址确认清楚。
+    // if (dfu_bootloader::consumeResetRequest())
+    // {
+    //     dfu_bootloader::enter();
+    // }
+
     nvic_priority_group_config(NVIC_PRIORITY_GROUP_4);
     system_clock_config();
 
@@ -379,14 +391,14 @@ void telemetry_task_function(void* pvParameters)
     while (1)
     {
         // 刷机触发：UART 收到 "DFU" 后，在任务上下文里跳 bootloader。
-        // 不能放到中断里做 —— 跳转要关 SysTick/NVIC/USB 时钟并换 MSP。
+        // 【已停用自动跳转】这块板子的 CH340 只接了 TX，PA10 悬空。
+        // 内部 40k 上拉挡不住噪声，实测会误触发 → enter() 里 crm_reset() 把时钟降到 8MHz，
+        // UART 波特率全错、日志变成空白，而且跳转失败还会卡死整个系统。
+        // 现在只打印，不再自动跳。
         if (g_dfu_uart_request != 0U)
         {
             g_dfu_uart_request = 0U;
-            printf("[DFU] uart trigger received, preparing jump\r\n");
-            delay_ms(30);  // 让这行日志发完
-            dfu_bootloader::enter();
-            printf("[DFU] no valid bootloader image, stay in app\r\n");
+            printf("[DFU] uart trigger received (auto-jump disabled)\r\n");
         }
 
         const TickType_t now_tick = xTaskGetTickCount();
@@ -478,6 +490,17 @@ void telemetry_task_function(void* pvParameters)
                    static_cast<unsigned>(g_phase_current.lastRawB()),
                    static_cast<double>(g_controller.getPhaseCurrentTelemetryA() * 1000.0f),
                    static_cast<double>(g_controller.getPhaseCurrentTelemetryB() * 1000.0f));
+
+            // DFU 诊断：step>0 说明 USB 的 0x7FFE 命令确实进了 DFU 分支；
+            // 三个 sp 是三个候选 System Memory 地址读到的初始 SP（0 = 该地址上没有合法向量表）。
+            if (dfu_bootloader::g_dfu_step != 0U)
+            {
+                printf("[DFU] step=%lu sp=%08lX/%08lX/%08lX\r\n",
+                       static_cast<unsigned long>(dfu_bootloader::g_dfu_step),
+                       static_cast<unsigned long>(dfu_bootloader::g_dfu_probe_sp[0]),
+                       static_cast<unsigned long>(dfu_bootloader::g_dfu_probe_sp[1]),
+                       static_cast<unsigned long>(dfu_bootloader::g_dfu_probe_sp[2]));
+            }
             if (g_controller.isExternalPulseFollowEnabled())
             {
                 // rev = 窗内发生过换向的窗口数。一个 50us 窗口只能发一个方向，

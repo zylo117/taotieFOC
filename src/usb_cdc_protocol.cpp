@@ -138,25 +138,18 @@ void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)
 
     if (cmd == kCmdWrite && reg == kRegEnterDfu && value == kEnterDfuMagic)
     {
-        // 先把 ACK 真的发出去，再动手：一旦跳进 bootloader，应用的 USB 就没了。
+        // 【软跳 DFU 已停用】只回 ACK，不做任何跳转/探测。
+        //
+        // 实测结论：0x1FFFC000 / 0x1FFFE000 / 0x1FFFF000 这三个“候选 System Memory”
+        // 在 AT32F403A 上全是非法地址。一读就总线错误 → HardFault →
+        // taskDISABLE_INTERRUPTS + 死循环 → 整个系统瞬间停摆
+        // （现象：ACK 发出去了，然后 COM9/COM14 同时没响应）。
+        // 也就是说之前几次“跳转失败”里，代码根本没走到跳转，先把地址读崩了。
+        //
+        // 结论：AT32F403A 的片内 DFU bootloader 只认 BOOT0 引脚。
+        // 刷机请：拨 BOOT0 上电 → python scripts/auto_flash.py --skip-enter
         sendFrame(0x82U, reg, value);
         flushTxQueue();
-        delay_ms(100);  // 给 USB 主机足够时间收完最后一帧
-
-        // 探测并打印将要跳转的地址（SP 不合法就不跳，留在应用里）
-        const uint32_t dfu_base = dfu_bootloader::findValidBase();
-        if (dfu_base == 0U)
-        {
-            printf("[DFU] no valid system-memory bootloader found (tried 0x1FFFC000/0x1FFFE000/0x1FFFF000); stay in app\r\n");
-            return;
-        }
-        printf("[DFU] jumping to 0x%08lX (sp=0x%08lX)\r\n",
-               static_cast<unsigned long>(dfu_base),
-               static_cast<unsigned long>(dfu_bootloader::probeInitialStackPointer(dfu_base)));
-        delay_ms(20);  // 让这行日志发完
-
-        // 不返回：关中断 + 把栈指针和复位向量交给 bootloader
-        dfu_bootloader::enter();
         return;
     }
 
