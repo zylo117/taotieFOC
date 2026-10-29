@@ -398,7 +398,13 @@ void ClosedLoopController::syncProtocolTelemetry()
         fault_flags |= FAULT_OUTPUT_STOPPED;
     }
 
-    if (ramp_loop_idx % 20000 == 0)
+    // 本拍的档位在这里消费掉，消费完立刻清空：
+    // stopMotion / enableExternalPulseFollow 这些非节拍路径也会调 syncProtocolTelemetry，
+    // 它们拿到的就是 kNone，不会把已经刷过的档位再刷一遍。
+    const TelemetryScheduler::Slot slot = telemetry_slot_;
+    telemetry_slot_ = TelemetryScheduler::Slot::kNone;
+
+    if (slot == TelemetryScheduler::Slot::kSlow)
     {
         // 低速槽位（20kHz 下约 1s 一次）：这里是唯一真正改编码器滤波窗口的地方。
         // 滤波器的环形缓冲/累加和正在采样中断里被改，只允许通过 requestFilterWindow
@@ -425,7 +431,7 @@ void ClosedLoopController::syncProtocolTelemetry()
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_SPEED_RPM,
                                       static_cast<uint32_t>(static_cast<int32_t>(encoder_speed_rpm_)));
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, step_pulse_width_ns_);
-    } else if (ramp_loop_idx % 200 == 0)
+    } else if (slot == TelemetryScheduler::Slot::kMedium)
     {
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_FAULT, magnetic_fault_active_ ? 1U : 0U);
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_A,
@@ -1419,7 +1425,8 @@ void ClosedLoopController::updateSettleStage(uint64_t now_ns, float encoder_delt
  */
 void ClosedLoopController::rampUpdate(uint64_t now_ns)
 {
-    ramp_loop_idx++;
+    // 推进遥测节拍（1Hz / 100Hz / 本拍不刷），结果留给 syncProtocolTelemetry 消费。
+    telemetry_slot_ = telemetry_scheduler_.tick();
 
     // 更新FOC频率信息
     updateLoopFrequencyStats(now_ns);

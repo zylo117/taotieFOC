@@ -10,6 +10,7 @@
 #include "pid_auto_tuner.h"
 #include "step_output_channel.h"
 #include "stepper_driver.h"
+#include "telemetry_scheduler.h"
 
 #ifndef USE_HARD_FLOAT_ACCELERATION
 #define USE_HARD_FLOAT_ACCELERATION 1
@@ -371,12 +372,11 @@ private:
     float closed_loop_threshold_angle_ = 1.8f;
     float compensated_rps_ = 0.0f;
 
-    // 控制环拍数计数器。必须是 32 位：syncProtocolTelemetry 里用
-    // ramp_loop_idx % 20000 == 0 做“每秒一档”的低速槽位，
-    // 而 uint16_t 最大只有 65535，每 3.28 秒（20kHz 下）就回绕一次，
-    // 一个周期里 % 20000 只命中 0/20000/40000/60000 四次，
-    // 平均 1.22Hz 而不是 1Hz，节奏还不均匀（1s/1s/1s/0.28s）。
-    uint32_t ramp_loop_idx = 0;
+    // 遥测节拍器：控制环每拍推进一格，syncProtocolTelemetry 按档位选刷哪一堆。
+    // 以前直接用 rampUpdate 里的 ramp_loop_idx 取模，而那个计数器是 uint16_t，
+    // 65535 回绕后 % 20000 每 3.28 秒只能命中 4 次，平均只有 1.22Hz。
+    TelemetryScheduler telemetry_scheduler_;
+    TelemetryScheduler::Slot telemetry_slot_ = TelemetryScheduler::Slot::kNone;
 
     uint32_t max_step_per_ramp = 0;
 
