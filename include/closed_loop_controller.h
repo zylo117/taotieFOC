@@ -8,19 +8,15 @@
 #include "closed_loop_protocol.h"
 #include "load_angle.h"
 #include "pid_auto_tuner.h"
+#include "step_output_channel.h"
 #include "stepper_driver.h"
 
 #ifndef USE_HARD_FLOAT_ACCELERATION
 #define USE_HARD_FLOAT_ACCELERATION 1
 #endif
 
-// 20kHz 即 50us 一个 rampUpdate。ARR 序列长度上限（头尾各留 1 个换向 guard，
-// 所以实际数组是 128+2）。
-// 步数上限由物理约束卡住：最小步距 = 2 x 脉宽(200ns) = 400ns，
-// 50us / 400ns = 125 步是理论上限；所以 128 已经贴到上限，
-// 真的发满 128 步时会略超窗（128 x 400ns = 51.2us），超出的部分靠
-// external_dropped_steps_ 记录，不再继续抬高这个值。
-#define MAX_PULSE_ARR_LEN 128U
+// MAX_PULSE_ARR_LEN 已随 ARR 序列生成/输出搬到 step_output_channel.h：
+// 那个常量本质上是“一个窗口的脉冲出口能装多少步”，不属于控制器。
 // #define CLAMP_FOC_SPEED
 
 #include <cmath>
@@ -343,9 +339,9 @@ private:
     // 本窗绝对值和 != |净和| 的窗口数，即“窗内 DIR 翻转过”的次数。
     // 这类窗口里输出层只能发一个方向的净步数，中间往返被压平。
     volatile uint32_t external_window_reversals_ = 0U;
-    // 外部跟随的 ARR 序列缓冲。不能复用 rampUpdate 里的那份（那是 DDA 专用、
-    // 且跟随时 DDA 根本不跑），单独一份 130x4 = 520B，RAM 完全放得下。
-    uint32_t external_arr_seq_[MAX_PULSE_ARR_LEN + 2];
+    // TMR2+DMA 脉冲出口。规划和外部跟随共用这一份（两者在逻辑上互斥），
+    // ARR 序列缓冲也只有它这一份，不再像以前那样两边各 520 字节。
+    StepOutputChannel step_output_;
     bool stop_on_encoder_fault_;
     bool stop_on_magnetic_fault_;
     bool encoder_fault_active_;

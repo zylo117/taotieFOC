@@ -1,6 +1,7 @@
 #include "closed_loop_controller.h"
 #include "at32f403a_407_board.h"
 #include "pulse_capture.h"
+#include "step_sequencer.h"
 
 #define STEP_PERIOD_US_DEFAULT  5000U
 #define FULL_STEPS_PER_ROUND    200U  // 1.8度步进
@@ -9,67 +10,9 @@
 #define DEFAULT_STEP_PULSE_NS   2000ULL
 #define MAX_STEP_PULSE_NS       20000ULL
 
-// ===========================================================================
-// STEP 时序模式（三档，用 STEP_SEQ_MODE 选）
-// ---------------------------------------------------------------------------
-// 背景：DDA 每 20kHz 窗口只决定“本窗发几步”，脉冲怎么落在窗口内由这里决定。
-//
-// 0 = 恒速突发（原方案）：窗口开头用 min_step_ticks(400ns) 把本窗 N 步一口气打完。
-//     优点：简单、永不丢步；缺点：位置是 20kHz 的硬台阶，谐波能量一直排到几十 kHz，
-//     落进机械共振带就会“嗡嗡”响。
-// 1 = 平滑铺满：把本窗 N 步均匀铺到整个 50us 窗口，台阶被摊平，位置/速度连续得多。
-//     这是降噪的主力，先只开这一档听效果。
-// 2 = 平滑 + 谐波注入：在 1 的基础上，把每步间隔乘 (1 + depth*sin(2*pi*f_h*t))，
-//     即对速度做正弦调频(FM)，把窄带能量摊到 f_h 两侧的边带上。
-//
-// 注意 1 和 2 的算法都保证“整窗总时长严格等于窗口预算”（剩余预算法，见
-// generate_step_sequence），所以窗口边界不会产生位置漂移 —— 这一点是上一版
-// 用 remaining/(n*(1+depth)) 缩放的死穴，那版每窗只用掉约 83% 的时间，边界必跳变。
-// ===========================================================================
-#ifndef STEP_SEQ_MODE
-#if defined(STEP_SEQ_HARMONIC_ENABLE) && (STEP_SEQ_HARMONIC_ENABLE)
-#define STEP_SEQ_MODE 2  // 兼容旧的开关写法
-#else
-#define STEP_SEQ_MODE 1  // 默认平滑：无任何副作用，可直接听/测效果
-#endif
-#endif
-
-// ---------------------------------------------------------------------------
-// 谐波注入参数（仅 STEP_SEQ_MODE == 2 生效）
-//
-// 1) f_h 不是“步频的谐波”，而是要对准的那条机械共振峰。它是电机+负载的机械属性，
-//    和步频/微步数无关。小步进的中频共振典型 100~300Hz，机架结构共振 200~800Hz。
-//    扫描方法：固定转速巡航，f_h 从 80Hz 间隔 20Hz 扫到 400Hz，选噪声最小的那个。
-// 2) depth 是速度调制深度，1.0 = ±100%。实测代价公式（单边位置纹波）：
-//        theta ≈ depth * v / (2*pi*f_h)   [rad]，v 单位 rad/s
-//    例：1200rpm = 20 rev/s，f_h=180Hz，depth=0.05 → 单边 0.0018 rev ≈ 0.64°。
-//    上一版用的 40Hz/depth=0.2 算出来是 5.7°，这就是“跟随误差跑到 3 度”的来源。
-// 3) 参数取法：先 STEP_SEQ_MODE=1 确认平滑有效，再切 2、把 depth 设 0（等价 1），
-//    然后只加 depth 到 0.05，最后扫 f_h。
-// ---------------------------------------------------------------------------
-#ifndef STEP_SEQ_HARMONIC_FREQ_HZ
-#define STEP_SEQ_HARMONIC_FREQ_HZ 180.0f
-#endif
-
-#ifndef STEP_SEQ_HARMONIC_DEPTH
-#define STEP_SEQ_HARMONIC_DEPTH 0.05f
-#endif
-
-// 平滑铺满的预算比例（千分比）。不能给 1000：每个窗口都擦着边界结束的话，
-// 控制任务偶尔晚几微秒，下一窗 stop_timer_dma_for_reload() 就会把没发完的尾巴砍掉，
-// 那是真丢步，跟随误差会反而变大。850~950 比较稳，800 留给任务抖动很大的场合。
-#ifndef STEP_SEQ_SPREAD_PERMILLE
-#define STEP_SEQ_SPREAD_PERMILLE 900
-#endif
-
-// 编译期自证：pio run 的日志里会打印这一段，可以直接确认烧进去的是哪一档。
-#if STEP_SEQ_MODE == 0
-#pragma message("[STEP_SEQ] mode 0: constant-speed burst (original)")
-#elif STEP_SEQ_MODE == 1
-#pragma message("[STEP_SEQ] mode 1: smooth spread")
-#else
-#pragma message("[STEP_SEQ] mode 2: smooth spread + harmonic injection")
-#endif
+// STEP 时序三档模式与谐波注入参数的完整说明已搬到 step_sequencer.h，
+// ARR 序列的生成与 TMR2/DMA 启动已搬到 step_sequencer / step_output_channel。
+// 本文件不再直接看 STEP_SEQ_MODE。
 
 // ===========================================================================
 // 运动收尾的沉降确认（RAMP_STAGE_SETTLE）
@@ -1298,154 +1241,9 @@ void ClosedLoopController::startMotion()
     }
 }
 
-namespace
-{
-    constexpr float k_two_pi = 6.28318530718f;
-
-#if STEP_SEQ_MODE == 2
-    // 谐波注入的相位（rad），跨 ramp 窗口连续累加：
-    // 如果每个窗口都从 0 相位重启，就等于 20kHz 的锯齿调频，会产生一大堆无用边带。
-    float g_step_seq_phase_rad = 0.0f;
-#endif
-
-    // 填充一个 ramp 窗口内的 ARR（每步间隔）序列。
-    // base_ticks  ：恒速模式下每步的固定间隔（tick，1 tick = 4ns）
-    // min_ticks   ：允许的最小步距，必须 > 脉宽 tick，否则高电平被截断直接丢步
-    // budget_ticks：本窗口可用的总 tick 预算（= remaining_ticks），平滑模式下用它守恒
-    void generate_step_sequence(uint32_t *seq, const uint32_t seq_count, const uint32_t base_ticks,
-                                const uint32_t min_ticks, const uint32_t budget_ticks)
-    {
-#if STEP_SEQ_MODE == 0
-        // ---- 档位 0：恒速突发，整窗用最小步距一口气打完，剩余时间全留给 guard ----
-        const uint32_t base = (base_ticks < min_ticks) ? min_ticks : base_ticks;
-        for (uint32_t i = 1; i < seq_count - 1; i++)  // 头尾是换向 guard，不是脉冲
-        {
-            seq[i] = base;
-        }
-#else
-        // ---- 档位 1/2：把本窗 N 步铺满整个预算窗口 ----
-        // 逐步用“剩余预算 / 剩余步数”求均值，而不是一次性算 budget/N：
-        //   1) 整数除法余数被后面的步自动吃掉，整窗总时长误差 < 1 tick(4ns)，永不累积；
-        //   2) 谐波调制的摆动会被后面的步“吸回均值”，总时长严格等于预算，
-        //      所以窗口边界不会产生位置漂移（上一版 /(1+depth) 缩放就是死在这里）。
-        uint32_t budget = budget_ticks;
-        uint32_t steps_left = seq_count - 2U;  // 头尾是换向 guard
-
-#if STEP_SEQ_MODE == 2
-        float phase = g_step_seq_phase_rad;
-#endif
-
-        for (uint32_t i = 1; i < seq_count - 1; i++)
-        {
-            uint32_t ticks;
-            if (steps_left <= 1U)
-            {
-                // 最后一步把预算里剩下的（含除法余数）全部吃掉，保证与窗口严格对齐
-                ticks = budget;
-            }
-            else
-            {
-                const uint32_t avg = budget / steps_left;
-                ticks = avg;
-
-#if STEP_SEQ_MODE == 2
-                ticks = static_cast<uint32_t>(
-                    static_cast<float>(avg) * (1.0f + STEP_SEQ_HARMONIC_DEPTH * sinf(phase)) + 0.5f);
-                // 相位按“真实流逝时间”推进（用调制后的 ticks），物理上才是正确的调频；
-                // 注入频率只由 f_h 决定，与步频无关，不存在自激问题。
-                phase += k_two_pi * STEP_SEQ_HARMONIC_FREQ_HZ *
-                         (static_cast<float>(ticks) *
-                          static_cast<float>(stepper_common::target_tick_time) * 1.0e-9f);
-                if (phase >= k_two_pi)
-                {
-                    phase -= k_two_pi;
-                }
-#endif
-
-                // 给后面每一步至少留 min_ticks，否则总线必然超窗（下一个窗口会砍掉没发完的脉冲）
-                const uint32_t reserve = (steps_left - 1U) * min_ticks;
-                const uint32_t max_this = (budget > reserve) ? (budget - reserve) : min_ticks;
-                if (ticks > max_this)
-                {
-                    ticks = max_this;
-                }
-                if (ticks < min_ticks)
-                {
-                    ticks = min_ticks;
-                }
-            }
-
-            seq[i] = ticks;
-            budget -= ticks;
-            steps_left--;
-        }
-
-#if STEP_SEQ_MODE == 2
-        g_step_seq_phase_rad = phase;
-#endif
-#endif
-    }
-
-    void reset_step_sequence_harmonic(void)
-    {
-#if STEP_SEQ_MODE == 2
-        g_step_seq_phase_rad = 0.0f;
-#endif
-    }
-} // namespace
-
-void add_dir_to_step_sequence(uint32_t *seq, uint32_t seq_count, uint32_t guard_tick, bool switch_direction)
-{
-    // 如果开局和上一次方向相同则不必加额外换向等待，否则等一个guard_tick
-    // 但是末端一定要加，避免这一局最后一步脉冲结束不到guard_tick就进入下一局开局换向
-    // 注意换向后要外面自己维护方向这个状态
-    if (not switch_direction) {
-        seq[0] = 1;  // 这1tick至关紧要，初始化的ARR如果是0就永久卡住了
-    } else {
-        seq[0] = guard_tick;
-    }
-    seq[seq_count - 1U] = guard_tick;
-}
-
-void stop_timer_dma_for_reload()
-{
-    tmr_counter_enable(TMR2, FALSE);
-    tmr_output_enable(TMR2, FALSE);
-    tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, FALSE);
-    dma_channel_enable(DMA1_CHANNEL2, FALSE);
-    dma_flag_clear(DMA1_FDT2_FLAG);
-    tmr_counter_value_set(TMR2, 0U);
-}
-
-void dma_reload_arr_sequence(uint32_t *seq, uint32_t seq_count)
-{
-    dma_init_type dma_conf;
-    dma_default_para_init(&dma_conf);
-    dma_conf.direction             = DMA_DIR_MEMORY_TO_PERIPHERAL;
-    dma_conf.buffer_size           = static_cast<uint16_t>(seq_count);
-    dma_conf.peripheral_inc_enable  = FALSE;
-    dma_conf.memory_inc_enable      = TRUE;
-    dma_conf.peripheral_data_width  = DMA_PERIPHERAL_DATA_WIDTH_WORD;
-    dma_conf.memory_data_width      = DMA_MEMORY_DATA_WIDTH_WORD;
-    dma_conf.loop_mode_enable      = FALSE;
-    dma_conf.priority              = DMA_PRIORITY_HIGH;
-
-    dma_conf.peripheral_base_addr  = reinterpret_cast<uint32_t>(&TMR2->pr);
-    dma_conf.memory_base_addr      = reinterpret_cast<uint32_t>(seq);
-    dma_flexible_config(DMA1, FLEX_CHANNEL2, DMA_FLEXIBLE_TMR2_OVERFLOW);
-    dma_init(DMA1_CHANNEL2, &dma_conf);
-
-    dma_flag_clear(DMA1_FDT2_FLAG);
-    tmr_counter_value_set(TMR2, 0U);
-    dma_channel_enable(DMA1_CHANNEL2, TRUE);
-}
-
-void start_step_sequence(uint32_t *seq, uint32_t seq_count, uint32_t k_psc, uint32_t k_step_pulse_ticks, bool direction)
-{
-    stop_timer_dma_for_reload();
-    dma_reload_arr_sequence(seq, seq_count);
-    stepper_common::stepper_init_motion_timer(k_psc, k_step_pulse_ticks, direction);
-}
+// ARR 序列生成（generate_step_sequence / add_dir_to_step_sequence / 谐波相位）
+// 已整体搬到 step_sequencer.h / step_sequencer.cpp。
+// TMR2 + DMA1_CH2 的序列装载与启动已搬到 StepOutputChannel。
 
 // ===================== 【rampUpdate 分段实现】=====================
 // 原来 rampUpdate 一个函数 640 行，里面同时住着"外部跟随 / 角度模式 / 梯形规划 / 校准修饰"
@@ -1980,16 +1778,12 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         compensated_rps_ = 0.0;
     }
 
-    // TMR2 是 32 位计数器，因此 ARR 序列必须是 32 位。
-    // 这里复用同一份周期表，正转和反转都只需要切换 DIR 输出 + 重新装载同一块 RAM，
-    // 这样既能完成“正转一圈 -> 反转一圈”，又不会把 RAM 翻倍消耗掉。
-
+    // ========== 3. 脉冲出口：把 DDA 累加到的步数铺成 ARR 序列并启动 TMR2/DMA ==========
+    // 和外部跟随走同一个 StepOutputChannel::emit：同一份缓冲区、同一套 spread/guard 逻辑。
+    // 注意这里仅支持每次 rampUpdate 最多一次换向；多次换向需要提前规划换向点。
     if ((compensated_motion_step_accumulator_ >= 1.0f) &&
         (closed_loop_angle_mode_enabled_ || motion_steps_emitted_ < motion_pulse_count_))
     {
-        // 人为规定第一个和最后arr周期是用来提前和延后换向的，
-        // 如果是同向，这两个的arr周期为0，否则arr为guard_tick
-        static uint32_t arr_seq_cycle[MAX_PULSE_ARR_LEN + 2];
         auto num_steps = static_cast<uint32_t>(floor(compensated_motion_step_accumulator_));
 
         if (num_steps > max_step_per_ramp)
@@ -2014,92 +1808,26 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         {
             num_steps = MAX_PULSE_ARR_LEN;
         }
-        const uint32_t seq_count = num_steps + 2U;
-        const bool current_direction = motion_direction_ > 0;
-        // uint32_t step_ticks = stepper_common::F_APB / current_step_speed_;
 
-        const uint64_t direction_switch_guard_time_ns = 2 * stepper_common::guard_tick * stepper_common::target_tick_time;
-        const uint64_t reserved_time_ns = 5;
-        const uint64_t overhead_ns = reserved_time_ns + direction_switch_guard_time_ns;
-        if (delta_ramp_ns <= overhead_ns)
+#ifdef USE_SOFT_PULSE
+        // 软脉冲调试通道：直接 GPIO + 忙等，效率低，只在排查硬件时打开。
+        for (uint32_t i = 0; i < num_steps; i++)
         {
+            driver_->sendStepPulse(step_pulse_width_ns_);
+        }
+        motion_direction_change_pending_ = false;
+#else
+        if (!step_output_.emit(num_steps, motion_direction_ > 0, motion_direction_change_pending_,
+                               delta_ramp_ns, k_step_pulse_ticks))
+        {
+            // 出口拒绝（窗口连头尾 guard 都放不下）：本窗不发，时间戳照样前移，
+            // 累加器里的步数留到下一拍慢慢补，比硬塞一串超窗脉冲安全。
             motion_last_ramp_time_ns_ = now_ns;
             syncProtocolTelemetry();
             return;
         }
-        const uint64_t remaining_time = delta_ramp_ns - overhead_ns;
-        const uint64_t remaining_ticks = remaining_time / stepper_common::target_tick_time;
-
-        const uint32_t min_step_ticks = k_step_pulse_ticks * 2U;  // 最少脉宽两倍，留足高电平脉宽之余的低电平脉宽
-        uint32_t step_ticks = min_step_ticks;
-        bool spread_enabled = false;  // true = 本窗用预算铺满（档位 1/2），false = 恒速突发
-
-#if STEP_SEQ_MODE != 0
-        // 高速兑底：步频超过 1/(2*脉宽) = 2.5 Mstep/s 时，连 min_step_ticks 都塞不下，
-        // 平滑没有意义且必定超窗（下一窗会砍掉没发完的脉冲 → 真丢步），退回恒速突发。
-        // 另：只铺满窗口预算的 STEP_SEQ_SPREAD_PERMILLE，剩下的余量留给控制任务
-        // 调度抖动和 start_step_sequence 的软件开销，不让每个窗口都擦着边界结束。
-        const uint64_t spread_budget_ticks =
-            (remaining_ticks * static_cast<uint64_t>(STEP_SEQ_SPREAD_PERMILLE)) / 1000ULL;
-        const uint64_t spread_need_ticks = static_cast<uint64_t>(num_steps) * min_step_ticks;
-        if ((num_steps != 0U) && (spread_budget_ticks >= spread_need_ticks))
-        {
-            spread_enabled = true;
-            // 仅用于日志/调试，实际铺开由 generate_step_sequence 在预算内逐步决定
-            step_ticks = static_cast<uint32_t>(spread_budget_ticks / num_steps);
-        }
-#endif
-
-        // 丢步直接丢了，不打印b报错，因为打印反而会加剧丢步
-        // uint64_t max_iter_time_ns = (2 * stepper_common::guard_tick + step_ticks * num_steps) * stepper_common::target_tick_time;
-        // // 因为硬件TMR定时器+DMA工作是异步的，耗时必须短于软件定时器迭代时间，否则就会输出延迟
-        // if (delta_step_ns < max_iter_time_ns)
-        // {
-        //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_ramp_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_ramp_time_ns_ / 1000.f, delta_step_ns / 1000.f);
-        //     printf("shitfuck, delta_step_ns: %.6f us < max_iter_time_ns: %.6f us, lower your iter rate.\n", delta_step_ns / 1000.f, max_iter_time_ns / 1000.f);
-        // }
-
-        // uint64_t step_ticks_wide = remaining_ticks / num_steps;
-        // const uint32_t min_step_ticks = stepper_common::k_step_pulse_ticks * 2U;
-        // if (step_ticks_wide < min_step_ticks)
-        // {
-        //     step_ticks_wide = min_step_ticks;
-        // }
-        // if (step_ticks_wide > UINT32_MAX)
-        // {
-        //     step_ticks_wide = UINT32_MAX;
-        // }
-        // const uint32_t step_ticks = static_cast<uint32_t>(step_ticks_wide);
-        // if (step_ticks < stepper_common::k_step_pulse_ticks * 2)
-        // {
-        //     printf("step_ticks: %lu, num_steps: %lu, now_ns: %.6fus, motion_last_ramp_time_ns_: %.6fus, delta_step_ns: %.6fus\n", step_ticks, num_steps, now_ns / 1000.f, motion_last_ramp_time_ns_ / 1000.f, delta_step_ns / 1000.f);
-        //     printf("shitfuck, delta_step_ns: %.6f us, step_ticks < 2*min_k_step_pulse_ticks %lu us, lower your iter rate.\n", delta_step_ns / 1000.f, stepper_common::k_step_pulse_ticks * 2);
-        // }
-#ifdef USE_SOFT_PULSE
-        // 只要累加器≥1，代表需要输出1个step脉冲；循环批量输出，直到没有脉冲待输出或者全部脉冲发完
-        // cpu软脉冲实现，效率低
-        for (int i = 0; i < num_steps; i++)
-        {
-            // 调用驱动输出STEP脉冲；脉冲高电平宽度固定为step_pulse_width_ns_，底层实现ns延时
-            driver_->sendStepPulse(step_pulse_width_ns_);
-        }
-#else
-        // 注意这里仅支持每次rampupdate最多一次换向。后续需要根据换向次数和位置提前规划好换向点并安排好guard ticks
-        //
-        // 预算窗口转 uint32（任务阻塞极端情况下 remaining_ticks 可能很大，封顶防溢出）。
-        // spread_enabled = false 时（档位 0 或高速兑底）budget 参数不被使用。
-        const uint64_t budget_ticks_wide = spread_enabled
-                                               ? (remaining_ticks * static_cast<uint64_t>(STEP_SEQ_SPREAD_PERMILLE)) / 1000ULL
-                                               : static_cast<uint64_t>(num_steps) * min_step_ticks;
-        const uint32_t budget_ticks = (budget_ticks_wide > 0x3FFFFFFFULL)
-                                          ? 0x3FFFFFFFU
-                                          : static_cast<uint32_t>(budget_ticks_wide);
-        generate_step_sequence(arr_seq_cycle, seq_count, step_ticks, min_step_ticks, budget_ticks);
-        add_dir_to_step_sequence(arr_seq_cycle, seq_count, stepper_common::guard_tick,
-                     motion_direction_change_pending_);
-        start_step_sequence(arr_seq_cycle, seq_count, stepper_common::k_psc, stepper_common::k_step_pulse_ticks, current_direction);
-#endif
         motion_direction_change_pending_ = false;
+#endif
 
         if (!closed_loop_angle_mode_enabled_)
         {
@@ -2166,10 +1894,10 @@ void ClosedLoopController::stopMotion()
     motion_last_ramp_time_ns_ = 0ULL;
     // printf("fuck3 motion_last_ramp_time_ns_: %f\n", motion_last_ramp_time_ns_/1e9);
     motion_step_high_ = false;
-    reset_step_sequence_harmonic();  // 下一局运动重新从 0 相位开始注入
+    step_sequencer::resetHarmonicPhase();  // 下一局运动重新从 0 相位开始注入
     if (driver_ != nullptr)
     {
-        stepper_common::stepper_stop_motion_timer();
+        step_output_.stop();
         driver_->setStepState(false);
     }
 }
@@ -2418,39 +2146,12 @@ void ClosedLoopController::runExternalPulseFollow(uint64_t delta_ramp_ns)
     motion_speed_rpm_ = static_cast<float>(num_steps) / dt_s * 60.0f /
                         static_cast<float>(micro_steps_per_round);
 
-    // ---- 4. 铺 ARR 序列并启动 TMR2/DMA（与 DDA 段同一套出口/同一种换向 guard）----
-    const uint64_t guard_ns =
-        2ULL * stepper_common::guard_tick * stepper_common::target_tick_time + 5ULL;
-    if (delta_ramp_ns > guard_ns)
+    // ---- 4. 交给统一脉冲出口：铺 ARR 序列 + 启动 TMR2/DMA ----
+    // 和规划模式用的是同一份 emit（同一个缓冲区、同一套 spread/guard 逻辑），
+    // 以前这里是一段 35 行的平铺代码，改一边忘一边就会让两条路径的脉冲形状跑偏。
+    if (step_output_.emit(num_steps, direction > 0, motion_direction_change_pending_,
+                          delta_ramp_ns, k_step_pulse_ticks))
     {
-        const uint64_t remaining_ticks = (delta_ramp_ns - guard_ns) / stepper_common::target_tick_time;
-        const uint32_t min_step_ticks = k_step_pulse_ticks * 2U;
-
-#if STEP_SEQ_MODE != 0
-        const uint64_t spread_budget_ticks =
-            (remaining_ticks * static_cast<uint64_t>(STEP_SEQ_SPREAD_PERMILLE)) / 1000ULL;
-        const uint64_t spread_need_ticks = static_cast<uint64_t>(num_steps) * min_step_ticks;
-        const bool spread_enabled = spread_budget_ticks >= spread_need_ticks;
-#else
-        const uint64_t spread_budget_ticks = 0ULL;
-        const bool spread_enabled = false;
-#endif
-        const uint64_t budget_wide = spread_enabled
-            ? spread_budget_ticks
-            : static_cast<uint64_t>(num_steps) * min_step_ticks;
-        const uint32_t budget_ticks = budget_wide > 0x3FFFFFFFULL
-            ? 0x3FFFFFFFU
-            : static_cast<uint32_t>(budget_wide);
-        const uint32_t step_ticks = spread_enabled
-            ? static_cast<uint32_t>(budget_ticks / num_steps)
-            : min_step_ticks;
-
-        const uint32_t seq_count = num_steps + 2U;
-        generate_step_sequence(external_arr_seq_, seq_count, step_ticks, min_step_ticks, budget_ticks);
-        add_dir_to_step_sequence(external_arr_seq_, seq_count, stepper_common::guard_tick,
-                                 motion_direction_change_pending_);
-        start_step_sequence(external_arr_seq_, seq_count, stepper_common::k_psc,
-                            stepper_common::k_step_pulse_ticks, direction > 0);
         motion_direction_change_pending_ = false;
     }
 
