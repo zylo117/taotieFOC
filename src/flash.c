@@ -91,7 +91,12 @@ error_status flash_write(uint32_t write_addr, uint16_t *p_buffer, uint16_t num_w
   uint16_t sector_remain;
   uint16_t i;
   flash_status_type status = FLASH_OPERATE_DONE;
- 
+  /* 统一出口：所有异常路径都必须经过 flash_lock()。
+     旧实现在三个 return ERROR 分支直接跳出，Flash 会一直停在解锁状态；
+     之后任何指向 0x08000000~0x08040000 的野指针写都会被硬件接受，
+     可以直接改掉代码区或校准区。 */
+  error_status result = SUCCESS;
+
   flash_unlock();
   offset_addr = write_addr - FLASH_BASE;
   sector_position = offset_addr / SECTOR_SIZE;
@@ -115,21 +120,33 @@ error_status flash_write(uint32_t write_addr, uint16_t *p_buffer, uint16_t num_w
       if((status == FLASH_PROGRAM_ERROR) || (status == FLASH_EPP_ERROR))
         flash_flag_clear(FLASH_PRGMERR_FLAG | FLASH_EPPERR_FLAG);
       else if(status == FLASH_OPERATE_TIMEOUT)
-        return ERROR;
+      {
+        result = ERROR;
+        break;
+      }
       status = flash_sector_erase(sector_position * SECTOR_SIZE + FLASH_BASE);
       if(status != FLASH_OPERATE_DONE)
-        return ERROR;
+      {
+        result = ERROR;
+        break;
+      }
       for(i = 0; i < sector_remain; i++)
       {
         flash_buf[i + sector_offset] = p_buffer[i];
       }
       if(flash_write_nocheck(sector_position * SECTOR_SIZE + FLASH_BASE, flash_buf, SECTOR_SIZE / 2) != SUCCESS)
-        return ERROR;
+      {
+        result = ERROR;
+        break;
+      }
     }
     else
     {
       if(flash_write_nocheck(write_addr, p_buffer, sector_remain) != SUCCESS)
-        return ERROR;
+      {
+        result = ERROR;
+        break;
+      }
     }
     if(num_write == sector_remain)
       break;
@@ -147,7 +164,7 @@ error_status flash_write(uint32_t write_addr, uint16_t *p_buffer, uint16_t num_w
     }
   }
   flash_lock();
-  return SUCCESS;
+  return result;
 }
 
 
