@@ -14,6 +14,14 @@ public:
     void poll();
     void sendTelemetry();
 
+    // 接收侧异常计数（替代 poll() 里的 printf）：
+    // rxOverflowCount = 单包超出 rx_buffer_ 容量的次数，
+    // rxCrcFailCount  = CRC 不匹配被丢弃的帧数。
+    // 两者持续增长说明上位机发帧有问题（波特率/帧格式/CRC），
+    // 但不会再把这个 1KB 栈任务的调用链拖进栈溢出。
+    uint32_t rxOverflowCount() const { return rx_overflow_count_; }
+    uint32_t rxCrcFailCount() const { return rx_crc_fail_count_; }
+
 private:
     void handleFrame(const uint8_t* frame, uint16_t len);
     bool sendFrame(uint8_t cmd, uint16_t reg, uint32_t value);
@@ -37,6 +45,8 @@ private:
     uint8_t tx_telemetry_frame_[10];
     uint16_t tx_telemetry_generation_;
     bool tx_telemetry_pending_;
+    uint32_t rx_overflow_count_ = 0U;
+    uint32_t rx_crc_fail_count_ = 0U;
 };
 
 #endif

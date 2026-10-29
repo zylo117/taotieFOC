@@ -73,8 +73,12 @@ void UsbCdcProtocolBridge::poll()
         // printf("[USB_RX] packet_len=%u\r\n", static_cast<unsigned>(rx_len));
         if (rx_len > sizeof(rx_buffer_) - rx_buffer_len_)
         {
-            printf("[USB_RX] BUFFER_OVERFLOW buffered=%u incoming=%u; dropping partial frame\r\n",
-                   static_cast<unsigned>(rx_buffer_len_), static_cast<unsigned>(rx_len));
+            // 【不要在 1ms 的高频路径里 printf】
+            // 这里原来用 printf 报缓冲区溢出，带 2 个参数。poll() 跑在 1KB 栈的 usb_task 里，
+            // 叠上 recv_buf[64] 和 handleFrame 调用链直接栈溢出；
+            // 配上 configCHECK_FOR_STACK_OVERFLOW 就是整个系统停机。
+            // 现在只做静默丢弃 + 计数，需要时用 getRxOverflowCount() 读。
+            ++rx_overflow_count_;
             rx_buffer_len_ = 0U;
         }
         memcpy(rx_buffer_ + rx_buffer_len_, recv_buf, rx_len);
@@ -99,10 +103,8 @@ void UsbCdcProtocolBridge::poll()
         const uint8_t expected_crc = crc8(rx_buffer_, 9U);
         if (crc != expected_crc)
         {
-            printf("[USB_RX] CRC_FAIL cmd=0x%02X reg=0x%04X got=0x%02X expected=0x%02X\r\n",
-                   rx_buffer_[2],
-                   (static_cast<unsigned>(rx_buffer_[3]) << 8U) | static_cast<unsigned>(rx_buffer_[4]),
-                   crc, expected_crc);
+            // 同上：CRC 失败帧可能连续刷屏，不能在这里 printf。
+            ++rx_crc_fail_count_;
             memmove(rx_buffer_, rx_buffer_ + 1U, rx_buffer_len_ - 1U);
             rx_buffer_len_--;
             continue;

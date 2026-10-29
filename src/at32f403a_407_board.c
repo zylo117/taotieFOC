@@ -151,10 +151,66 @@ void uart_print_init(uint32_t baudrate)
     gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
     gpio_init(PRINT_UART_TX_GPIO, &gpio_init_struct);
 
+    /* configure the uart rx pin (PA10)：纯输入，内部上拉，悬空时不乱跳。
+     * 注意 AT32 是 F1 型 GPIO：上下拉只在 GPIO_MODE_INPUT 分支里才会被真正写入，
+     * 写成 GPIO_MODE_MUX 的话 gpio_pull 会被整句丢掉。 */
+    gpio_default_para_init(&gpio_init_struct);
+    gpio_init_struct.gpio_mode = GPIO_MODE_INPUT;
+    gpio_init_struct.gpio_pins = PRINT_UART_RX_PIN;
+    gpio_init_struct.gpio_pull = GPIO_PULL_UP;
+    gpio_init(PRINT_UART_TX_GPIO, &gpio_init_struct);
+
     /* configure uart param */
     usart_init(PRINT_UART, baudrate, USART_DATA_8BITS, USART_STOP_1_BIT);
     usart_transmitter_enable(PRINT_UART, TRUE);
+    usart_receiver_enable(PRINT_UART, TRUE);
+    usart_interrupt_enable(PRINT_UART, USART_RDBF_INT, TRUE);
+    /* 优先级给最低（数值越大越低）：这个中断只做一个字节的比较，
+     * 但绝不能被它拖慢 20kHz 控制环或 TMR5 采样。 */
+    nvic_irq_enable(USART1_IRQn, 3U, 0U);
     usart_enable(PRINT_UART, TRUE);
+}
+
+/* ===================== UART 触发进入 DFU =====================
+ * 用途：刷机前不用再拨 BOOT0。上位机向 printf 串口发字符串 “DFU”，
+ * 这里置位请求标志，由 telemetry 任务在安全上下文里执行跳转。
+ *
+ * 为什么不在中断里直接跳：跳转要关 SysTick / NVIC / USB 时钟，
+ * 还要换 MSP，必须脱离中断上下文做。
+ * 误触发风险：需要连续三个字节 D、F、U，串口噪声撞中的概率可以忽略。
+ * ============================================================ */
+volatile uint32_t g_dfu_uart_request = 0U;
+
+void USART1_IRQHandler(void)
+{
+    if (usart_interrupt_flag_get(PRINT_UART, USART_RDBF_FLAG) != RESET)
+    {
+        /* 读 DT 会同时清 RDBF，不能只读标志不清数据 */
+        const uint8_t ch = (uint8_t)usart_data_receive(PRINT_UART);
+        static uint8_t s_match = 0U;
+        if (ch == (uint8_t)'D')
+        {
+            s_match = 1U;
+        }
+        else if (ch == (uint8_t)'F' && s_match == 1U)
+        {
+            s_match = 2U;
+        }
+        else if (ch == (uint8_t)'U' && s_match == 2U)
+        {
+            s_match = 0U;
+            g_dfu_uart_request = 1U;
+        }
+        else
+        {
+            s_match = 0U;
+        }
+    }
+    /* 溢出错误必须清掉，否则后续接收会一直被打断 */
+    if (usart_flag_get(PRINT_UART, USART_ROERR_FLAG) != RESET)
+    {
+        (void)usart_data_receive(PRINT_UART);
+    }
 }
 
 /**

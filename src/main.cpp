@@ -15,6 +15,7 @@
 #include "usbd_int.h"
 
 #include "closed_loop_controller.h"
+#include "dfu_bootloader.h"
 #include "usb_cdc_protocol.h"
 #include "tmc2209_driver.h"
 #include "kth7823_encoder.h"
@@ -34,6 +35,13 @@ static Kth7823Encoder g_encoder;
 static UsbCdcProtocolBridge g_usb_bridge;
 static PhaseCurrentMonitor g_phase_current;
 static usbd_core_type g_usb_core;
+
+// 定义在 at32f403a_407_board.c：USART1 收到字符串 "DFU" 时置 1。
+// 刷机不靠它就不会进 bootloader，所以放在 telemetry 任务里消费（那里不是中断上下文）。
+extern "C"
+{
+    extern volatile uint32_t g_dfu_uart_request;
+}
 
 void led5_task_function(void* pvParameters);
 void control_task_function(void* pvParameters);
@@ -98,7 +106,17 @@ static void control_timer_init(void)
     output_config.oc_polarity = TMR_OUTPUT_ACTIVE_HIGH;
     output_config.occ_polarity = TMR_OUTPUT_ACTIVE_HIGH;
     tmr_output_channel_config(TMR4, TMR_SELECT_CHANNEL_4, &output_config);
-    tmr_channel_value_set(TMR4, TMR_SELECT_CHANNEL_4, 0);
+    // 【ADC 触发的真正开关，不能给 0】
+    // PhaseCurrentMonitor 用的是 ADC12_ORDINARY_TRIG_TMR4CH4，即 TMR4 CH4 的比较事件。
+    // PWM 模式 A 下 OC4REF 只在 CNT < CCR4 时为有效电平：
+    //   CCR4 = 0  ->  CNT < 0 永不成立，OC4REF 恒低，没有上升沿，ADC 一次都不转换。
+    //                （实测就是 [ADC] init=1 isr=0 rawA=0：校准过了，但 DMA 一次中断都没来）
+    //   CCR4 = ARR/2 -> 每个周期 CNT=0 时拉高、CNT=ARR/2 时拉低，
+    //                上升沿正好落在周期开头，ADC 采样点与原设计一致。
+    // 保持 oc_output_state = FALSE 不变：CH4 的默认引脚会占用 PB14，
+    // 而 PB14 是 KTH7823 编码器的 MISO，输出到引脚会把编码器 SPI 弄坏。
+    // OC4REF 是内部参考信号，OEN=0 不影响它产生。
+    tmr_channel_value_set(TMR4, TMR_SELECT_CHANNEL_4, static_cast<uint16_t>(arr / 2U));
     tmr_channel_enable(TMR4, TMR_SELECT_CHANNEL_4, TRUE);
 
     tmr_interrupt_enable(TMR4, TMR_OVF_INT, TRUE);
@@ -294,7 +312,9 @@ int main(void)
 
     if (xTaskCreate((TaskFunction_t)usb_task_function,
                     (const char*)"USB_task",
-                    (uint16_t)256,
+                    // 512 words = 2KB。原来只有 1KB：poll() 里有 recv_buf[64] + handleFrame 调用链，
+                    // 一旦碰上带 4 个格式化参数的 printf 就会撑爆，而 1KB 在当时看着“恰好够用”。
+                    (uint16_t)512,
                     (void*)NULL,
                     (UBaseType_t)2,
                     (TaskHandle_t*)&usb_handler) != pdPASS)
@@ -358,6 +378,17 @@ void telemetry_task_function(void* pvParameters)
 
     while (1)
     {
+        // 刷机触发：UART 收到 "DFU" 后，在任务上下文里跳 bootloader。
+        // 不能放到中断里做 —— 跳转要关 SysTick/NVIC/USB 时钟并换 MSP。
+        if (g_dfu_uart_request != 0U)
+        {
+            g_dfu_uart_request = 0U;
+            printf("[DFU] uart trigger received, preparing jump\r\n");
+            delay_ms(30);  // 让这行日志发完
+            dfu_bootloader::enter();
+            printf("[DFU] no valid bootloader image, stay in app\r\n");
+        }
+
         const TickType_t now_tick = xTaskGetTickCount();
         if ((now_tick - last_usage_tick) >= pdMS_TO_TICKS(500))
         {

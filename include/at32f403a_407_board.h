@@ -95,6 +95,9 @@ typedef enum
 #define PRINT_UART_TX_PIN                GPIO_PINS_9
 #define PRINT_UART_TX_GPIO               GPIOA
 #define PRINT_UART_TX_GPIO_CRM_CLK       CRM_GPIOA_PERIPH_CLOCK
+// USART1 的 RX（PA10）。原来只配了 TX（printf 单向输出），
+// 加它是为了给“自动刷机”留一个不依赖 USB CDC 的触发通道。
+#define PRINT_UART_RX_PIN                GPIO_PINS_10
 
 /******************* define button *******************/
 typedef enum

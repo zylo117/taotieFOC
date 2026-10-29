@@ -48,16 +48,21 @@ DFU_MAGIC = 0x454C4946
 
 
 def crc8(data: bytes) -> int:
-    """TMC/USB CDC 帧用的 CRC8：多项式 0x07，初值 0。"""
+    """与固件 usb_cdc_protocol.cpp 里的 crc8 逐位一致：
+    crc ^= byte 然后 MSB-first 移 8 次，多项式 0x07。
+
+    注意不要写成 TMC 单线 UART 那种 LSB-first 的变体（用 crc>>7 与 byte&1 异或），
+    两者名字都叫 crc8 但结果完全不同 —— 写成后者时帧会被固件的 CRC 校验直接丢掉，
+    表现就是“发出去没反应，只收到周期性的 cmd=0x10 遥测帧”。
+    """
     crc = 0
     for byte in data:
-        current = byte
+        crc ^= byte
         for _ in range(8):
-            mix = ((crc >> 7) ^ (current & 0x01)) & 0x01
-            crc = (crc << 1) & 0xFF
-            if mix:
-                crc ^= 0x07
-            current >>= 1
+            if crc & 0x80:
+                crc = ((crc << 1) ^ 0x07) & 0xFF
+            else:
+                crc = (crc << 1) & 0xFF
     return crc
 
 
@@ -105,6 +110,23 @@ def wait_for_dfu(timeout_s=10.0) -> bool:
             return True
         time.sleep(0.3)
     return False
+
+
+def enter_dfu_via_uart(port: str) -> bool:
+    """通过 printf 串口发字符串 DFU，让固件自己跳进 bootloader。
+
+    这是目前唯一可靠的方式：实测这台固件的 USB CDC OUT 端点会一直 NAK
+    （主机 pyserial write 超时），但遥测方向正常，所以不能用 USB 下命令。
+    """
+    print(f"[1/4] 通过 {port} 发 UART 触发串 'DFU' ...", flush=True)
+    try:
+        with serial.Serial(port, 115200, timeout=1.0, write_timeout=1.0) as ser:
+            ser.write(b"DFU")
+            ser.flush()
+    except serial.SerialException as error:
+        print(f"      打开 {port} 失败：{error}", flush=True)
+        return False
+    return True
 
 
 def enter_dfu_via_usb(port: str) -> bool:
@@ -163,6 +185,8 @@ def main() -> int:
     parser.add_argument("--seconds", type=float, default=8.0, help="抓日志秒数")
     parser.add_argument("--skip-enter", action="store_true", help="MCU 已在 DFU，跳过第 1 步")
     parser.add_argument("--only-log", action="store_true", help="只抓日志，不刷机")
+    parser.add_argument("--enter-mode", choices=["uart", "usb"], default="uart",
+                        help="进 DFU 的方式：uart=发串口字符串 DFU（默认，实测可靠），usb=CDC 魔法帧")
     args = parser.parse_args()
 
     log_port = args.log or find_ch340_port()
@@ -175,13 +199,21 @@ def main() -> int:
         return 0
 
     if not args.skip_enter:
-        cdc_port = args.dfu_port or find_port(ARTERY_VID)
-        if not cdc_port:
-            print("找不到 USB CDC 口（VID 0x2E3C）。若 MCU 已在 DFU 模式，加 --skip-enter",
-                  file=sys.stderr)
-            return 1
-        if not enter_dfu_via_usb(cdc_port):
-            return 1
+        if args.enter_mode == "uart":
+            trigger_port = log_port
+            if not trigger_port:
+                print("找不到 CH340 串口，无法发 UART 触发（可用 --log 手动指定）", file=sys.stderr)
+                return 1
+            if not enter_dfu_via_uart(trigger_port):
+                return 1
+        else:
+            cdc_port = args.dfu_port or find_port(ARTERY_VID)
+            if not cdc_port:
+                print("找不到 USB CDC 口（VID 0x2E3C）。若 MCU 已在 DFU 模式，加 --skip-enter",
+                      file=sys.stderr)
+                return 1
+            if not enter_dfu_via_usb(cdc_port):
+                return 1
 
     print("[2/4] 等 DFU 设备出现 ...", flush=True)
     if not wait_for_dfu(12.0):
