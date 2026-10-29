@@ -242,8 +242,7 @@ ClosedLoopController::ClosedLoopController()
       step_period_us_(STEP_PERIOD_US_DEFAULT), encoder_zero_(0U), encoder_filtered_angle_(0.0F), encoder_filtered_raw_(0),
       magnetic_field_high_(false), magnetic_field_low_(false), last_process_time_us_(0U),
       last_step_state_(0U), last_dir_state_(0U), last_en_state_(0U),
-      stop_on_encoder_fault_(true), stop_on_magnetic_fault_(true), encoder_fault_active_(false),
-      magnetic_fault_active_(false), output_stopped_(false), phase_a_current_a_(0.0f),
+    phase_a_current_a_(0.0f),
     phase_b_current_a_(0.0f), cpu_usage_centi_percent_(0U), control_task_usage_centi_percent_(0U),
     calibration_lookup_raw_value_(0U), calibration_lookup_corrected_value_(0U),
     calibration_stage_(CALIBRATION_IDLE), calibration_index_(0U),
@@ -316,36 +315,17 @@ void ClosedLoopController::setProtocol(ClosedLoopDriverProtocol* protocol)
 
 void ClosedLoopController::setFaultPolicy(bool stop_on_encoder_fault, bool stop_on_magnetic_fault)
 {
-    stop_on_encoder_fault_ = stop_on_encoder_fault;
-    stop_on_magnetic_fault_ = stop_on_magnetic_fault;
+    fault_monitor_.setPolicy(stop_on_encoder_fault, stop_on_magnetic_fault);
 }
 
 void ClosedLoopController::reportEncoderFault(bool active)
 {
-    encoder_fault_active_ = active;
-    if (active && stop_on_encoder_fault_ && driver_ != nullptr)
-    {
-        driver_->setEnable(false);
-        output_stopped_ = true;
-    }
-    else if (!active && !magnetic_fault_active_)
-    {
-        output_stopped_ = false;
-    }
+    fault_monitor_.reportEncoderFault(active);
 }
 
 void ClosedLoopController::reportMagneticFieldAlarm(bool active)
 {
-    magnetic_fault_active_ = active;
-    if (active && stop_on_magnetic_fault_ && driver_ != nullptr)
-    {
-        driver_->setEnable(false);
-        output_stopped_ = true;
-    }
-    else if (!active && !encoder_fault_active_)
-    {
-        output_stopped_ = false;
-    }
+    fault_monitor_.reportMagneticFieldAlarm(active);
 }
 
 void ClosedLoopController::setPhaseCurrentTelemetry(float phase_a_a, float phase_b_a)
@@ -369,15 +349,15 @@ void ClosedLoopController::syncProtocolTelemetry()
     }
 
     uint32_t fault_flags = 0U;
-    if (encoder_fault_active_)
+    if (fault_monitor_.encoderFaultActive())
     {
         fault_flags |= FAULT_ENCODER_READ_FAILED;
     }
-    if (magnetic_fault_active_)
+    if (fault_monitor_.magneticFaultActive())
     {
         fault_flags |= FAULT_MAGNETIC_FIELD_ALARM;
     }
-    if (output_stopped_)
+    if (fault_monitor_.outputStopped())
     {
         fault_flags |= FAULT_OUTPUT_STOPPED;
     }
@@ -400,8 +380,8 @@ void ClosedLoopController::syncProtocolTelemetry()
         }
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_FILTER_WINDOW, encoder_filter_window_active_);
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_FAULT_STATUS, fault_flags);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_FAULT, encoder_fault_active_ ? 1U : 0U);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_OUTPUT_STOP, output_stopped_ ? 1U : 0U);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_FAULT, fault_monitor_.encoderFaultActive() ? 1U : 0U);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_OUTPUT_STOP, fault_monitor_.outputStopped() ? 1U : 0U);
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_POS_LOOP_HZ, loop_stats_.positionLoopHz());
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_VEL_LOOP_HZ, loop_stats_.velocityLoopHz());
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_CUR_LOOP_HZ, loop_stats_.currentLoopHz());
@@ -417,7 +397,7 @@ void ClosedLoopController::syncProtocolTelemetry()
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, step_pulse_width_ns_);
     } else if (slot == TelemetryScheduler::Slot::kMedium)
     {
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_FAULT, magnetic_fault_active_ ? 1U : 0U);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_FAULT, fault_monitor_.magneticFaultActive() ? 1U : 0U);
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_A,
                                       static_cast<uint32_t>(static_cast<int32_t>(phase_a_current_a_ * 1000.0f)));
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_AB_CURRENT_B,
@@ -682,7 +662,7 @@ void ClosedLoopController::startMotion()
     const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
     const float rpm2step = static_cast<float>(micro_steps_per_round) / 60.0f;
 
-    if (driver_ != nullptr && !encoder_fault_active_ && !magnetic_fault_active_)
+    if (driver_ != nullptr && !fault_monitor_.encoderFaultActive() && !fault_monitor_.magneticFaultActive())
     {
         driver_->setEnable(true);
         driver_->setDirection(motion_direction_ > 0);
@@ -1309,7 +1289,7 @@ void ClosedLoopController::enableExternalPulseFollow(bool enable)
     external_pulse_follower_.setPrimePending(true);
     external_pulse_follower_.setEnabled(true);
 
-    if (driver_ != nullptr && !encoder_fault_active_ && !magnetic_fault_active_)
+    if (driver_ != nullptr && !fault_monitor_.encoderFaultActive() && !fault_monitor_.magneticFaultActive())
     {
         driver_->setEnable(true);
         driver_->setDirection(true);
@@ -1523,7 +1503,7 @@ void ClosedLoopController::calibrateEncoder()
     {
         return;
     }
-    if (driver_ == nullptr || encoder_ == nullptr || encoder_fault_active_ || magnetic_fault_active_)
+    if (driver_ == nullptr || encoder_ == nullptr || fault_monitor_.encoderFaultActive() || fault_monitor_.magneticFaultActive())
     {
         printf("[CALIBRATION] start rejected: driver/encoder unavailable or fault active\r\n");
         return;

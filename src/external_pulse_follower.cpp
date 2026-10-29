@@ -58,7 +58,7 @@ void ExternalPulseFollower::update(uint64_t delta_ramp_ns)
 
     // 故障保护：编码器/磁场报警时驱动已被 reportXxxFault() 失能，
     // 这里再发脉冲只会空转 TMR2（且积压白白变成「丢步」），直接不输出。
-    if (c.output_stopped_)
+    if (c.fault_monitor_.outputStopped())
     {
         c.motion_speed_rpm_ = 0.0f;
         return;

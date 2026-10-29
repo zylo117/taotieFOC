@@ -7,6 +7,7 @@
 #include "angle_encoder.h"
 #include "closed_loop_protocol.h"
 #include "external_pulse_follower.h"
+#include "fault_monitor.h"
 #include "load_angle.h"
 #include "loop_stats.h"
 #include "motion_planner.h"
@@ -233,6 +234,7 @@ private:
     // 共用同一份，拆成 getter/setter 只会引入两套状态不同步的风险。
     friend class ExternalPulseFollower;
     friend class MotionPlanner;
+    friend class FaultMonitor;
 
     void updateLoopFrequencyStats(uint64_t time_ns);
     // ExternalPulseFollower 尚未抽成独立类之前，Phase 0 先把 rampUpdate 里
@@ -349,11 +351,9 @@ private:
     // TMR2+DMA 脉冲出口。规划和外部跟随共用这一份（两者在逻辑上互斥），
     // ARR 序列缓冲也只有它这一份。
     StepOutputChannel step_output_;
-    bool stop_on_encoder_fault_;
-    bool stop_on_magnetic_fault_;
-    bool encoder_fault_active_;
-    bool magnetic_fault_active_;
-    bool output_stopped_;
+    // 故障监控（编码器读失败 / 磁场报警）已搬到 FaultMonitor，见 include/fault_monitor.h。
+    // '要不要失能驱动、要不要禁止 STEP 输出' 这个安全决策独立成类，审阅时不用再翻两处。
+    FaultMonitor fault_monitor_{*this};
     float phase_a_current_a_;
     float phase_b_current_a_;
     volatile uint16_t cpu_usage_centi_percent_;
