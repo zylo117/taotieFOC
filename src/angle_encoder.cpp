@@ -86,6 +86,13 @@ void AngleEncoder::loadFromFlash(void)
 
 bool AngleEncoder::saveToFlash(bool yield_between_pages)
 {
+	// 【已知行为，暂时不改】这里一置 false，isNonlinearCalValid() 立刻变成 false，
+	// readRaw() 在整个写入期间（FastCal 128KB，约 5 秒）都不会做非线性校正，
+	// 角度会带系统偏差；而且 flash_halfword_program 会 stall 总线，
+	// TMR4/TMR5 中断都被推迟。
+	// 当前不修的理由：校准流程本身不跑电机，偏差和中断延迟都不影响结果；
+	// 改成“新表写完再原子切换”需要重排 Flash 写入顺序，引入新 bug 的风险更大。
+	// 如果以后要在运动过程中保存，必须先改成原子切换。
 	m_fastCalValid = false;
 	static uint16_t main_table[CALIBRATION_TABLE_SIZE];
 	uint16_t minimum = m_calData[0].value;
