@@ -20,14 +20,9 @@ namespace
     // pending_filter_window_ 的“空”标记：窗口允许取 0（关闭滤波），所以不能用 0 当空值。
     constexpr uint16_t kNoPendingFilterWindow = 0xFFFFU;
 
-    uint16_t normalize_angle(uint16_t raw, uint16_t zero)
-    {
-        if (raw >= zero)
-        {
-            return raw - zero;
-        }
-        return zero - raw;
-    }
+    // 注：这里曾有个 normalize_angle(raw, zero)，全项目零调用，而且实现是错的（
+    // 返回的是绝对差 |raw-zero|，不是环绕差）。需要环形角度归一化时用
+    // closed_loop_controller.cpp 里的 normalize_signed_delta_deg()（while 折返）。
 }
 
 Kth7823Encoder::Kth7823Encoder()
