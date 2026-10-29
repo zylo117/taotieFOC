@@ -16,7 +16,6 @@ class ClosedLoopController;
 //   已迁移：
 //   A. updateAngleMode()     —— 角度模式的位置/速度环 + 加减速限制
 //   B. updateTrapezoid()     —— 往返换向、运动结束判定、梯形加减速
-// 待迁移：
 //   C. emitSteps()           —— DDA 累加 + 脉冲出口
 class MotionPlanner
 {
@@ -32,6 +31,11 @@ public:
     // 返回 true 表示本拍已经处理完（结束或进入沉降），调用方应立即 return，
     // 不要再跑后面的 DDA 和脉冲出口 —— 这是原代码里那两个 return 的等价表达。
     bool updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns);
+
+    // DDA 微分累加 + 脉冲出口：把本拍应该走的步数累加到累加器，铺成 ARR 序列并启动 TMR2/DMA。
+    // 返回 true 表示出口拒绍（窗口连头尾 guard 都放不下），调用方应立即 return，
+    // 累加器里的步数留到下一拍慢慢补。
+    bool emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns);
 
 private:
     ClosedLoopController& owner_;

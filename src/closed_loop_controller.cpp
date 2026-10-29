@@ -1090,96 +1090,12 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     const bool alternating_motion = motion_mode_ == MOTION_MODE_ALTERNATING_FORWARD ||
                                     motion_mode_ == MOTION_MODE_ALTERNATING_REVERSE;
 
-    if (!closed_loop_angle_mode_enabled_ && driver_ != nullptr)
+    // 剩余部分（转速反算 + DDA 累加器 + 脉冲出口）已整体搬到 MotionPlanner（阶段 C）。
+    // 返回 true = 出口拒绍（窗口连头尾 guard 都放不下）：本窗不发，时间戳已由内部前移，
+    // 累加器里的步数留到下一拍慢慢补。
+    if (motion_planner_.emitSteps(delta_ramp_ns, now_ns))
     {
-        const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
-        motion_speed_rpm_ = current_step_speed_ * 60.0f / static_cast<float>(micro_steps_per_round);
-    }
-
-    // ========== 2.DDA微分累加器：生成步进脉冲，核心部分 ==========
-    // DDA原理：步进步数增量 = 瞬时速度(step/s) × 流逝时间(s)
-    // 即使任务被抢占延迟很久，delta_step_ns会记录真实流逝时间，累加器累积需要输出的步数
-    // while循环一次性输出多个脉冲，做到调度抖动下不丢脉冲
-
-    // 时间单位换算：纳秒 → 秒
-    const double dt_step_s = static_cast<double>(delta_ramp_ns) / 1.0e9f;
-
-    // 累加本次时间内应该产生的步数（浮点数，允许小数累积）
-    motion_step_accumulator_ += fast_abs(current_step_speed_) * dt_step_s;
-
-    const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
-    const auto compensated_step_speed_ = compensated_rps_ * static_cast<float>(micro_steps_per_round);
-
-    compensated_motion_step_accumulator_ += fast_abs(current_step_speed_ + compensated_step_speed_) * dt_step_s;
-
-    if (closed_loop_angle_mode_enabled_ && motion_step_accumulator_ > 1.0)
-    {
-        motion_step_accumulator_ = 1.0;
-        compensated_motion_step_accumulator_ = 1.0;
-        compensated_rps_ = 0.0;
-    }
-
-    // ========== 3. 脉冲出口：把 DDA 累加到的步数铺成 ARR 序列并启动 TMR2/DMA ==========
-    // 和外部跟随走同一个 StepOutputChannel::emit：同一份缓冲区、同一套 spread/guard 逻辑。
-    // 注意这里仅支持每次 rampUpdate 最多一次换向；多次换向需要提前规划换向点。
-    if ((compensated_motion_step_accumulator_ >= 1.0f) &&
-        (closed_loop_angle_mode_enabled_ || motion_steps_emitted_ < motion_pulse_count_))
-    {
-        auto num_steps = static_cast<uint32_t>(floor(compensated_motion_step_accumulator_));
-
-        if (num_steps > max_step_per_ramp)
-            max_step_per_ramp = num_steps;
-
-        auto num_original_command_steps = static_cast<uint32_t>(floor(motion_step_accumulator_));
-        if (!closed_loop_angle_mode_enabled_)
-        {
-            const uint32_t remaining_total_steps = motion_pulse_count_ - motion_steps_emitted_;
-            const uint32_t leg_steps_emitted = alternating_motion && motion_leg_reversed_
-                ? motion_steps_emitted_ - motion_leg_pulse_count_
-                : motion_steps_emitted_;
-            const uint32_t remaining_steps = alternating_motion
-                ? (motion_leg_reversed_ ? remaining_total_steps : motion_leg_pulse_count_ - leg_steps_emitted)
-                : remaining_total_steps;
-            if (num_steps > remaining_steps)
-            {
-                num_steps = remaining_steps;
-            }
-        }
-        if (num_steps > MAX_PULSE_ARR_LEN)
-        {
-            num_steps = MAX_PULSE_ARR_LEN;
-        }
-
-#ifdef USE_SOFT_PULSE
-        // 软脉冲调试通道：直接 GPIO + 忙等，效率低，只在排查硬件时打开。
-        for (uint32_t i = 0; i < num_steps; i++)
-        {
-            driver_->sendStepPulse(step_pulse_width_ns_);
-        }
-        motion_direction_change_pending_ = false;
-#else
-        if (!step_output_.emit(num_steps, motion_direction_ > 0, motion_direction_change_pending_,
-                               delta_ramp_ns, k_step_pulse_ticks))
-        {
-            // 出口拒绝（窗口连头尾 guard 都放不下）：本窗不发，时间戳照样前移，
-            // 累加器里的步数留到下一拍慢慢补，比硬塞一串超窗脉冲安全。
-            motion_last_ramp_time_ns_ = now_ns;
-            syncProtocolTelemetry();
-            return;
-        }
-        motion_direction_change_pending_ = false;
-#endif
-
-        if (!closed_loop_angle_mode_enabled_)
-        {
-            motion_steps_emitted_ += num_original_command_steps;
-            motion_steps_emitted_signed += motion_direction_ * num_original_command_steps;  // 正向就加步数，反向就减
-            // 本窗这批脉冲刚交给 DMA，要等下一拍（+50us）确认真的发完，
-            // 那时才并进 motion_steps_delivered_signed，用作跟随误差的命令位置。
-            motion_dma_pending_signed = motion_direction_ * static_cast<int32_t>(num_original_command_steps);
-        }
-        motion_step_accumulator_ -= num_original_command_steps;
-        compensated_motion_step_accumulator_ -= num_steps;
+        return;
     }
 
     // 更新本次ramp的时间戳，作为下一次调用的“上一次时间点”
