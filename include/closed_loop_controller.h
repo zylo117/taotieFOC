@@ -14,7 +14,13 @@
 #define USE_HARD_FLOAT_ACCELERATION 1
 #endif
 
-#define MAX_PULSE_ARR_LEN 128U  // 20khz也就是50us一个rampupdate，所以每个ramp最多可以跑250个脉冲（算100ns各起伏一次为一个完整脉冲）
+// 20kHz 即 50us 一个 rampUpdate。ARR 序列长度上限（头尾各留 1 个换向 guard，
+// 所以实际数组是 128+2）。
+// 步数上限由物理约束卡住：最小步距 = 2 x 脉宽(200ns) = 400ns，
+// 50us / 400ns = 125 步是理论上限；所以 128 已经贴到上限，
+// 真的发满 128 步时会略超窗（128 x 400ns = 51.2us），超出的部分靠
+// external_dropped_steps_ 记录，不再继续抬高这个值。
+#define MAX_PULSE_ARR_LEN 128U
 // #define CLAMP_FOC_SPEED
 
 #include <cmath>

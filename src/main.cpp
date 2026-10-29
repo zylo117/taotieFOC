@@ -74,7 +74,19 @@ static void encoder_timer_init(void)
 static void control_timer_init(void)
 {
     crm_periph_clock_enable(CRM_TMR4_PERIPH_CLOCK, TRUE);
-    tmr_base_init(TMR4, 1000U - 1U, system_core_clock / 20000000U - 1U);
+    // 【精确 20kHz，不是 20.83kHz】
+    // 旧写法 system_core_clock / 20000000U - 1 = 250e6/20e6 - 1 = 12 - 1 = 11：
+    // 整数除法把 12.5 截断成了 12，计数频率变成 250MHz/12 = 20.833MHz，
+    // 配 ARR=999 得到的周期是 1000/20.833MHz = 48us，不是 50us。
+    //
+    // 现在改成两级整除：先把计数频率降到 10MHz（250MHz/25），再用 ARR=499 分频，
+    // 得到 500 / 10MHz = 50.000us 精确 20kHz。主频换成 240MHz 也能自适应
+    // （240MHz/24 = 10MHz）。
+    const uint32_t counter_hz = 10000000U;                                  // 目标计数频率 10MHz
+    const uint32_t control_hz = 20000U;                                     // 目标控制环 20kHz
+    const uint32_t psc = (system_core_clock + counter_hz / 2U) / counter_hz - 1U;
+    const uint32_t arr = counter_hz / control_hz - 1U;                      // 499
+    tmr_base_init(TMR4, static_cast<uint16_t>(arr), static_cast<uint16_t>(psc));
     tmr_cnt_dir_set(TMR4, TMR_COUNT_UP);
     tmr_clock_source_div_set(TMR4, TMR_CLOCK_DIV2);
 
