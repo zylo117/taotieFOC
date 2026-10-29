@@ -5,7 +5,9 @@
 
 #include "FreeRTOS.h"
 #include "task.h"
+#include "at32f403a_407_board.h"
 #include "cdc_class.h"
+#include "dfu_bootloader.h"
 #include "usbd_core.h"
 
 namespace
@@ -15,6 +17,14 @@ namespace
     const uint8_t kCmdRead = 0x01U;
     const uint8_t kCmdWrite = 0x02U;
     const uint16_t kMaxRxBytes = 64U;
+
+    // 进入 DFU bootloader 的魔法指令：WRITE 一个从未使用过的 0x7FFE，值为 "FILE"。
+    // 走 WRITE 而不新增 cmd，是为了上位机不用改帧格式（现有的 writeRegister 就能发）。
+    // 选 0x7FFE 是因为它不在任何扩展寄存器区间里（扩展区只到 0x150），
+    // 万一魔法值没对上，它也只会落到协议层返回 false，不会误改任何参数。
+    const uint16_t kRegEnterDfu = 0x7FFEU;
+    const uint32_t kEnterDfuMagic = 0x454C4946UL;  // "FILE"
+
 
     uint32_t read_u32_be(const uint8_t* buf)
     {
@@ -123,6 +133,30 @@ void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)
     const uint8_t cmd = frame[2];
     const uint16_t reg = (static_cast<uint16_t>(frame[3]) << 8U) | static_cast<uint16_t>(frame[4]);
     const uint32_t value = read_u32_be(frame + 5U);
+
+    if (cmd == kCmdWrite && reg == kRegEnterDfu && value == kEnterDfuMagic)
+    {
+        // 先把 ACK 真的发出去，再动手：一旦跳进 bootloader，应用的 USB 就没了。
+        sendFrame(0x82U, reg, value);
+        flushTxQueue();
+        delay_ms(100);  // 给 USB 主机足够时间收完最后一帧
+
+        // 探测并打印将要跳转的地址（SP 不合法就不跳，留在应用里）
+        const uint32_t dfu_base = dfu_bootloader::findValidBase();
+        if (dfu_base == 0U)
+        {
+            printf("[DFU] no valid system-memory bootloader found (tried 0x1FFFC000/0x1FFFE000/0x1FFFF000); stay in app\r\n");
+            return;
+        }
+        printf("[DFU] jumping to 0x%08lX (sp=0x%08lX)\r\n",
+               static_cast<unsigned long>(dfu_base),
+               static_cast<unsigned long>(dfu_bootloader::probeInitialStackPointer(dfu_base)));
+        delay_ms(20);  // 让这行日志发完
+
+        // 不返回：关中断 + 把栈指针和复位向量交给 bootloader
+        dfu_bootloader::enter();
+        return;
+    }
 
     if (cmd == kCmdWrite && reg == TMC2209_EXT_PARAM_CALIBRATION_TABLE_DUMP)
     {
