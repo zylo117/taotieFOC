@@ -363,7 +363,12 @@ private:
     float closed_loop_threshold_angle_ = 1.8f;
     float compensated_rps_ = 0.0f;
 
-    uint16_t ramp_loop_idx = 0;
+    // 控制环拍数计数器。必须是 32 位：syncProtocolTelemetry 里用
+    // ramp_loop_idx % 20000 == 0 做“每秒一档”的低速槽位，
+    // 而 uint16_t 最大只有 65535，每 3.28 秒（20kHz 下）就回绕一次，
+    // 一个周期里 % 20000 只命中 0/20000/40000/60000 四次，
+    // 平均 1.22Hz 而不是 1Hz，节奏还不均匀（1s/1s/1s/0.28s）。
+    uint32_t ramp_loop_idx = 0;
 
     uint32_t max_step_per_ramp = 0;
 
