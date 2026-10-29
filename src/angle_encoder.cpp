@@ -41,7 +41,14 @@ namespace encoder_common
 
     uint16_t encoder_spi2_rw16(uint16_t tx_data)
     {
-        constexpr uint32_t spi_timeout = 100000U;
+        // 【超时预算必须与中断周期同量级】
+        // 本函数跑在 TMR5 采样中断里，中断周期 32us（估算：32us × 250MHz = 8000 cycles）。
+        // 正常完成一次 16bit 传输只需要 16 / 3.9MHz ≈ 4.1us ≈ 1025 cycles，
+        // 空转循环每次约 2~3 cycles，所以 2000 次 ≈ 24us 已经是 6 倍余量。
+        //
+        // 旧值 100000 次 ≈ 1.2ms，是总周期的 37 倍：MISO 断线/CS 失效/编码器掉电时，
+        // 每拍中断都会在这里卡 1.2ms，同优先级的 DMA1 电流中断被堵死，进中断风暴死机。
+        constexpr uint32_t spi_timeout = 2000U;
         uint32_t timeout = spi_timeout;
         while (spi_i2s_flag_get(KTH7823_SPI, SPI_I2S_TDBE_FLAG) == RESET && timeout > 0U)
         {
