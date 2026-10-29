@@ -167,6 +167,53 @@ namespace
     {
         return (pulse_width_ns + 999ULL) / 1000ULL;
     }
+
+    // DWT 时间戳的溢出跟踪状态。只有这一个翻译单元持有，不再每个 TU 一份。
+    uint32_t g_dwt_overflow_count = 0;
+    uint32_t g_last_dwt_value = 0;
+    bool g_dwt_initialized = false;
+}
+
+// DWT 高精度时间戳（头文件里只留声明，理由见 closed_loop_controller.h）。
+uint64_t get_hw_time_ns(void)
+{
+    // 首次初始化 DWT
+    if (!g_dwt_initialized)
+    {
+        // 解锁 DEMCR 寄存器（TRCENA 位）
+        CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+        // 清零 CYCCNT 计数器
+        DWT->CYCCNT = 0;
+        // 使能 CYCCNT 计数器
+        DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+
+        g_dwt_initialized = true;
+        g_last_dwt_value = 0;
+        g_dwt_overflow_count = 0;
+    }
+
+    // 读取当前 DWT cycle 计数（32 位）
+    uint32_t current_cc = DWT->CYCCNT;
+
+    // 检测 DWT 溢出：从大值跳变到小值表示发生了溢出
+    // 例如：0xFFFFFFFF → 0x00000000
+    if (current_cc < g_last_dwt_value)
+    {
+        g_dwt_overflow_count++;
+    }
+    g_last_dwt_value = current_cc;
+
+    // 系统核心频率参数
+    // @250MHz: 1 cycle = 4ns (10^9 / 250,000,000)
+    const uint32_t cpu_freq_hz = system_core_clock;
+    const uint64_t ns_per_cycle = 1000000000ULL / (uint64_t)cpu_freq_hz;
+
+    // 计算总周期数：溢出部分 + 当前周期内部分
+    // 使用 64 位整数避免溢出：total_cycles = overflow_count * 2^32 + current_cc
+    uint64_t total_cycles = ((uint64_t)g_dwt_overflow_count << 32) | (uint64_t)current_cc;
+
+    // 转换为纳秒
+    return total_cycles * ns_per_cycle;
 }
 
 #if USE_HARD_FLOAT_ACCELERATION

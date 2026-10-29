@@ -26,53 +26,14 @@
 // 使用 DWT (Data Watchpoint and Trace) 实现高精度纳秒计时
 // CYCCNT 是 32 位寄存器，@250MHz 时约 17.17 秒溢出一次
 // 通过跟踪溢出次数，可实现长期高精度时间戳（理论上可运行数千年）
-
-static uint32_t g_dwt_overflow_count = 0;
-static uint32_t g_last_dwt_value = 0;
-static bool g_dwt_initialized = false;
-
-static inline uint64_t get_hw_time_ns(void)
-{
-    // 首次初始化 DWT
-    if (!g_dwt_initialized)
-    {
-        // 解锁 DEMCR 寄存器（TRCENA 位）
-        CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-        // 清零 CYCCNT 计数器
-        DWT->CYCCNT = 0;
-        // 使能 CYCCNT 计数器
-        DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-
-        g_dwt_initialized = true;
-        g_last_dwt_value = 0;
-        g_dwt_overflow_count = 0;
-    }
-
-    // 读取当前 DWT cycle 计数（32 位）
-    uint32_t current_cc = DWT->CYCCNT;
-
-    // 检测 DWT 溢出：从大值跳变到小值表示发生了溢出
-    // 例如：0xFFFFFFFF → 0x00000000
-    if (current_cc < g_last_dwt_value)
-    {
-        g_dwt_overflow_count++;
-    }
-    g_last_dwt_value = current_cc;
-
-    // 系统核心频率参数
-    // @250MHz: 1 cycle = 4ns (10^9 / 250,000,000)
-    const uint32_t cpu_freq_hz = system_core_clock;
-    const uint64_t ns_per_cycle = 1000000000ULL / (uint64_t)cpu_freq_hz;
-
-    // 计算总周期数：溢出部分 + 当前周期内部分
-    // 使用 64 位整数避免溢出：total_cycles = overflow_count * 2^32 + current_cc
-    uint64_t total_cycles = ((uint64_t)g_dwt_overflow_count << 32) | (uint64_t)current_cc;
-
-    // 转换为纳秒
-    uint64_t time_ns = total_cycles * ns_per_cycle;
-
-    return time_ns;
-}
+//
+// 【实现必须放在单个 .cpp 里】
+// 旧写法是 static inline + 三个 static 变量直接写在头文件，每个包含本头文件的
+// 翻译单元都会各得一份副本：既白吃 RAM，又会让溢出检测分家——只要某个 TU 的
+// 调用间隔超过 17.17 秒，它自己的 current_cc < g_last_dwt_value 判断就失效，
+// 时间戳会直接倒退 17 秒，delta_ramp_ns 变成天文数字。
+// 现在统一到 closed_loop_controller.cpp 里的单一实现。
+uint64_t get_hw_time_ns(void);
 
 // 自适应 PID 的基础参数配置。
 // 它描述了在不同速度和加速度区间下，系统对跟随误差的容忍度与增益调整幅度。
