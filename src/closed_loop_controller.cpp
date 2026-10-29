@@ -510,11 +510,12 @@ void ClosedLoopController::syncProtocolTelemetry()
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_BACKLOG, external_backlog_steps_);
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_DROPPED, external_dropped_steps_);
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS, external_window_reversals_);
-    } else
-    {
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_POSITION_DEG,
-                                      static_cast<uint32_t>(static_cast<int32_t>(closed_loop_angle_error_deg_ * 1000.0f)));
     }
+    // 原来这里还有一个 else 分支，每个窗口（20kHz）都调一次
+    // setCustomParameter(POSITION_DEG, ...)。但 POSITION_DEG(0x121) 已经由
+    // UsbCdcProtocolBridge::sendTelemetry 的 case 0 用快帧（约 200Hz）单独推送，
+    // 这里再刷 20kHz 就是纯浪费：每窗一次虚函数 + 5 层 if 比较 + 数组写，
+    // 20kHz 下约 0.4% CPU 白白烧在一个每秒只用到 200 次的值上。
 }
 
 bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
