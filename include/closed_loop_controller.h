@@ -8,6 +8,7 @@
 #include "closed_loop_protocol.h"
 #include "external_pulse_follower.h"
 #include "load_angle.h"
+#include "motion_planner.h"
 #include "pid_auto_tuner.h"
 #include "parameter_router.h"
 #include "step_output_channel.h"
@@ -230,6 +231,7 @@ private:
     // 外部跟随同理：积压记账要和 motion_steps_emitted_signed / dma_pending_signed
     // 共用同一份，拆成 getter/setter 只会引入两套状态不同步的风险。
     friend class ExternalPulseFollower;
+    friend class MotionPlanner;
 
     void updateLoopFrequencyStats(uint64_t time_ns);
     // ExternalPulseFollower 尚未抽成独立类之前，Phase 0 先把 rampUpdate 里
@@ -341,6 +343,7 @@ private:
     // 全部状态（命令位置/已转发/积压/丢步/窗内换向/限速）都在 ExternalPulseFollower 里，
     // 控制器只保留这一个句柄；下面这几个 external_ 开头的成员属于采集侧，不属于跟随模块。
     ExternalPulseFollower external_pulse_follower_{*this};
+    MotionPlanner motion_planner_{*this};
     // TMR2+DMA 脉冲出口。规划和外部跟随共用这一份（两者在逻辑上互斥），
     // ARR 序列缓冲也只有它这一份。
     StepOutputChannel step_output_;

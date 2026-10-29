@@ -1001,78 +1001,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
     if (closed_loop_angle_mode_enabled_)
     {
-        const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
-        // 以真实机械角度误差做闭环控制，单位是度/圈；
-        // 微分步数只影响输出脉冲密度，不改变 PID 的误差定义，
-        // 因此不同驱动或不同细分设置不会让同一组 PID 失效。
-        const float desired_error_deg = normalize_signed_angle_error_deg(target_angle_deg_ - motion_position_deg_);  // 目标-实际
-        closed_loop_angle_error_deg_ = desired_error_deg;
-
-        if (dt > 0.0f)
-        {
-            const float position_error_rev = desired_error_deg / 360.0f;
-            const float position_reference_rps = position_pid_.update(position_error_rev, dt);  // 根据误差角算出位置环的速度修正量
-            // const float velocity_error_rps = position_reference_rps - (encoder_speed_rpm_ / 60.0f);
-            const float base_speed_rps = current_step_speed_ / static_cast<float>(getMicroStepsPerRound(driver_));
-            const float total_ref_rps = base_speed_rps + position_reference_rps;  // 总期望速度 = 基础速度 + 位置环修正量
-            const float velocity_error_rps = total_ref_rps - (encoder_speed_rpm_ / 60.0f);  // 总期望速度和实际速度的速度差
-            const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt); // 根据总期望速度和实际速度的速度差和当前的速度计算速度环修正量
-
-            const float max_rps = angle_max_rpm_ / 60.0f;
-            const float unconstrained_rps = fast_clamp(position_reference_rps + velocity_correction_rps,
-                                                       -max_rps,
-                                                       max_rps);
-
-            const float target_direction = desired_error_deg >= 0.0f ? 1.0f : -1.0f;
-            const float directed_rps =  unconstrained_rps * target_direction < 0.0f
-                ? 0.0f
-                : unconstrained_rps;
-            const float accel_limit_rps2 = angle_accel_rpm_s_ / 60.0f;
-            const float previous_rps = motion_speed_rpm_ / 60.0f;
-            const float max_delta_rps = accel_limit_rps2 * dt;
-            const float desired_rps = fast_clamp(directed_rps,
-                                                 previous_rps - max_delta_rps,
-                                                 previous_rps + max_delta_rps);
-            const float calibration_rps = calibration_stage_ == CALIBRATION_HOMING &&
-                                                  fast_abs(desired_error_deg) <= 0.25f
-                ? 0.0f
-                : desired_rps;
-            if (calibration_stage_ == CALIBRATION_HOMING && calibration_rps == 0.0f)
-            {
-                motion_step_accumulator_ = 0.0f;
-                compensated_motion_step_accumulator_ = 0.0f;
-                compensated_rps_ = 0.0f;
-                position_pid_.resetIntegral();
-                position_pid_.resetDeriv();
-                velocity_pid_.resetIntegral();
-                velocity_pid_.resetDeriv();
-            }
-            const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
-            current_step_speed_ = calibration_rps * static_cast<float>(micro_steps_per_round);
-            motion_speed_rpm_ = calibration_rps * 60.0f;
-            if (calibration_rps != 0.0f)
-            {
-                motion_direction_ = calibration_rps >= 0.0f ? 1 : -1;
-            }
-            // if (driver_ != nullptr)
-            // {
-            //     driver_->setDirection(motion_direction_ > 0);
-            // }
-        }
-
-        // 注释掉这段，这段代码不能启用，因为我需要它摇摆才能测好pid，但是以后需要强制定在某个角度可能有用
-        // if (fast_abs(closed_loop_angle_error_deg_) <= angle_position_tolerance_deg_)
-        // {
-        //     current_step_speed_ = 0.0f;
-        //     motion_speed_rpm_ = 0.0f;
-        //     motion_step_accumulator_ = 0.0f;
-        //     compensated_motion_step_accumulator_ = 0.0f;
-        //     compensated_rps_ = 0.0f;
-        //     position_pid_.resetIntegral();
-        //     position_pid_.resetDeriv();
-        //     velocity_pid_.resetIntegral();
-        //     velocity_pid_.resetDeriv();
-        // }
+        // 角度模式已搬到 MotionPlanner（阶段 A）。
+        // 位置环 -> 速度环 -> 限速 -> 加减速限制 -> current_step_speed_，
+        // 具体实现和注释见 src/motion_planner.cpp。
+        motion_planner_.updateAngleMode(delta_ramp_ns);
     }
     else
     {
