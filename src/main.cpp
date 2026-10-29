@@ -374,11 +374,26 @@ void telemetry_task_function(void* pvParameters)
             const uint32_t pul_high_pct = pulse_sample_count != 0U
                 ? (pulse_high_count * 100U) / pulse_sample_count
                 : 0U;
-            printf("[PUL] cap=%lu deg=%.3f PUL=%u hi=%lu%% DIR=%u pd=%u ovf=%u\r\n",
-                   static_cast<unsigned long>(pulse_capture_get_captured_count()),
-                   static_cast<double>(total) * 360.0 / static_cast<double>(PULSE_CAPTURE_PULSES_PER_REV),
+            // 角度口径：1 个外部 PUL 脉冲 = 1 个驱动器微步，一圈脉冲数随细分变化，
+            // 必须问控制器要实时值（200 步/圈 x 当前微步），不能再写死某个细分。
+            const float steps_per_round = static_cast<float>(g_controller.getStepsPerRound());
+            const double total_deg = steps_per_round > 0.0f
+                ? static_cast<double>(total) * 360.0 / static_cast<double>(steps_per_round)
+                : 0.0;
+            printf("[PUL] cap=%lu deg=%.3f spr=%.0f PUL=%u hi=%lu%% DIR=%u pd=%u ovf=%u\r\n",
+                   static_cast<unsigned long>(pulse_capture_get_captured_count()), total_deg,
+                   static_cast<double>(steps_per_round),
                    pul_level, static_cast<unsigned long>(pul_high_pct), dir_level, dma_pending,
                    pulse_buf_overflow_flag ? 1U : 0U);
+            if (g_controller.isExternalPulseFollowEnabled())
+            {
+                printf("[FOL] cmd=%ld out=%ld backlog=%lu peak=%lu drop=%lu\r\n",
+                       static_cast<long>(g_controller.getExternalCmdSteps()),
+                       static_cast<long>(g_controller.getExternalEmittedSteps()),
+                       static_cast<unsigned long>(g_controller.getExternalBacklogSteps()),
+                       static_cast<unsigned long>(g_controller.getExternalPeakBacklogSteps()),
+                       static_cast<unsigned long>(g_controller.getExternalDroppedSteps()));
+            }
             pulse_sample_count = 0U;
             pulse_high_count = 0U;
             last_pulse_log_tick = xTaskGetTickCount();

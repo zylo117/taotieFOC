@@ -200,8 +200,29 @@ public:
     int32_t getPositionSteps() const;
 
     // 最近一次 rampUpdate 周期内采集到的外部 PUL/DIR 有符号脉冲增量
-    // （由 pulse_capture_read_delta() 在 rampUpdate 开头消费，供后续闭环跟随使用）
+    // （由 pulse_capture_read_delta() 在 rampUpdate 开头消费）
     int32_t getExternalPulseDelta() const;
+
+    // 每圈微步数 = 200 步/圈 x 驱动器实际微步数（默认 200x64 = 12800）。
+    // [PUL] 自检行的 deg、上位机“脉冲转角度”都应该用它，不要再写死 51200。
+    uint32_t getStepsPerRound() const;
+
+    // ===================== 【外部 PUL/DIR 脉冲跟随】=====================
+    // 开启后，PB4/PB5 采集到的脉冲成为“命令位置”（1 脉冲 = 1 微步），由内部 DDA 重发：
+    //   闭环补偿关（0x107=0）→ 开环，按限速把积压发完，1:1 转发
+    //   闭环补偿开（0x107=1）→ 在上面叠位置/速度环 PID 修正，用编码器保证实际到位
+    // 与 0x11E/0x11F 的规划运动互斥（跟随时 startMotion() 直接忽略）。
+    void enableExternalPulseFollow(bool enable);
+    bool isExternalPulseFollowEnabled() const;
+    // 跟随限速（步/s）。0 = 跟随 angle_max_rpm_ 换算出的能力上限（推荐）。
+    void setExternalPulseMaxStepRate(uint32_t steps_per_second);
+    uint32_t getExternalPulseMaxStepRate() const;
+    int32_t getExternalCmdSteps() const;      // 外部累计命令步（有符号）
+    int32_t getExternalEmittedSteps() const;  // 已重发出去（有符号）
+    uint32_t getExternalBacklogSteps() const; // 当前积压（命令 - 已发）
+    uint32_t getExternalPeakBacklogSteps() const;
+    uint32_t getExternalDroppedSteps() const; // 因超限没及时发出的累计步数
+    void resetExternalPulseFollowCounters();
 
     // 读取目标位置步数。
     int32_t getTargetSteps() const;
@@ -230,6 +251,8 @@ public:
 
 private:
     void updateLoopFrequencyStats(uint64_t time_ns);
+    // 外部跟随的脉冲重发通道，在 rampUpdate 里与 DDA 二选一执行
+    void runExternalPulseFollow(uint64_t delta_ramp_ns);
     void updateEncoderCalibration(uint16_t raw);
     void finishEncoderCalibration(bool save_table);
     bool startEncoderCalibrationMove(uint16_t index);
@@ -320,6 +343,23 @@ private:
     volatile uint8_t last_dir_state_;
     volatile uint8_t last_en_state_;
     volatile int32_t external_pulse_delta_ = 0;  // 外部 PUL/DIR 指令脉冲增量（每 rampUpdate 刷新）
+
+    // ===== 外部脉冲跟随 =====
+    volatile bool external_follow_enabled_ = false;
+    // 使能后的第一拍要把使能前积压的历史脉冲丢掉，否则一上来就飞车
+    volatile bool external_prime_pending_ = false;
+    volatile int32_t external_cmd_steps_ = 0;      // 外部累计命令步（有符号，1 脉冲 = 1 微步）
+    volatile int32_t external_emitted_steps_ = 0;  // 已 1:1 转发出去（有符号，不含 PID 修正）
+    // PID 修正量不能算进“已转发”，否则积分把多发的步数又当成积压退回，
+    // 位置环和积压环会互相推着振荡。这里单独记“转发基准”。
+    volatile float external_base_residue_ = 0.0f;  // 低速时不足 1 步的小数余量
+    volatile uint32_t external_max_step_s_ = 0U;   // 0 = 用 angle_max_rpm_ 换算的能力上限
+    volatile uint32_t external_backlog_steps_ = 0U;
+    volatile uint32_t external_backlog_peak_steps_ = 0U;
+    volatile uint32_t external_dropped_steps_ = 0U;
+    // 外部跟随的 ARR 序列缓冲。不能复用 rampUpdate 里的那份（那是 DDA 专用、
+    // 且跟随时 DDA 根本不跑），单独一份 130x4 = 520B，RAM 完全放得下。
+    uint32_t external_arr_seq_[MAX_PULSE_ARR_LEN + 2];
     bool stop_on_encoder_fault_;
     bool stop_on_magnetic_fault_;
     bool encoder_fault_active_;

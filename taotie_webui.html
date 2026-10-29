@@ -913,7 +913,7 @@
                         </div>
                         <div class="field">
                             <label>脉冲数（STEP 个数）</label>
-                            <input id="pulseCountInput" min="0" step="51200" type="number" value="2560000"/>
+                            <input id="pulseCountInput" min="0" step="1" type="number" value="640000"/>
                         </div>
                         <div class="field">
                             <label>运动模式</label>
@@ -959,8 +959,9 @@
                         <button id="pauseWaveBtn">暂停查看</button>
                         <button id="popWaveBtn">弹出波形</button>
                     </div>
-                    <div class="tiny mt">说明：脉冲数固定按 256 细分角度基准计算，1.8° 电机每转 51200 个
-                        STEP，与驱动器微步和插值设置无关。
+                    <div class="tiny mt">说明：脉冲数就是实际下发给驱动器的 STEP 个数，1 个 STEP = 1 个微步，
+                        与驱动器当前微步设置一致（一圈 = 200 × 微步数，默认 64 细分 = 12800）。波形图的
+                        “理论累计行程”也是按这个口径换算的，不再沿用过去那套“固定 256 细分 / 51200 一圈”的说法。
                     </div>
                     <div class="tiny mt">编码器滤波窗口：0 = 关闭滤波（噪声最大、零滞后）；数值越大越平滑，
                         但引入的滞后也越大（1 个样本 = 2µs，已做群延迟补偿，所以匀速时的滞后基本能抵消，
@@ -978,6 +979,51 @@
                         <span>即时跟随误差 <strong id="waveErrorReadout">0.000°</strong></span>
                         <span>峰值 |误差| <strong id="waveErrorPeakReadout">0.000°</strong></span>
                         <span>末值（停止瞬间） <strong id="waveErrorLastReadout">0.000°</strong></span>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3 style="margin:0 0 12px;">外部脉冲跟随（PUL/DIR 从站）</h3>
+                    <div class="grid-2">
+                        <div class="field">
+                            <label for="extFollowEnableInput">跟随使能</label>
+                            <label class="checkbox-row">
+                                <input id="extFollowEnableInput" type="checkbox"/>
+                                <span>PB5/PB4 收到的脉冲 1:1 重发给电机</span>
+                            </label>
+                        </div>
+                        <div class="field">
+                            <label for="extFollowMaxStepSInput">跟随限速（步/s，0 = 自动）</label>
+                            <input id="extFollowMaxStepSInput" max="2560000" min="0" step="1000" type="number"
+                                   value="0"/>
+                        </div>
+                    </div>
+                    <div class="inline mt">
+                        <button id="extFollowResetBtn">清零跟随计数</button>
+                    </div>
+                    <div class="status-grid mt">
+                        <div class="status-item">
+                            <div class="label">命令步</div>
+                            <div class="value" id="extFollowCmdValue">0</div>
+                        </div>
+                        <div class="status-item">
+                            <div class="label">已转发</div>
+                            <div class="value" id="extFollowEmittedValue">0</div>
+                        </div>
+                        <div class="status-item">
+                            <div class="label">当前积压</div>
+                            <div class="value" id="extFollowBacklogValue">0</div>
+                        </div>
+                        <div class="status-item">
+                            <div class="label">累计丢步</div>
+                            <div class="value" id="extFollowDroppedValue">0</div>
+                        </div>
+                    </div>
+                    <div class="tiny mt">说明：1 个外部 PUL 脉冲 = 1 个驱动器微步。勾选后 PB5 上的脉冲立刻成为位置命令，
+                        并与“启动/停止”按钮互斥（跟随时启动命令会被固件忽略）。<br/>
+                        开环（不勾“脉冲运动 PID 补偿”）：只按限速把积压 1:1 发出去。<br/>
+                        闭环（勾上 PID 补偿）：再叠一层位置/速度环修正，用编码器把实际角度拉回命令位置。<br/>
+                        积压超过一圈说明输入频率已经超过限速，超出的部分计入“累计丢步”只做告警，不中断跟随。
                     </div>
                 </div>
             </div>
@@ -1500,6 +1546,13 @@
             , LOAD_ANGLE_FIT_INTERCEPT: 0x146
             , LOAD_ANGLE_FIT_EXPONENT: 0x147
             , ENCODER_FILTER_WINDOW: 0x148
+            , EXT_FOLLOW_ENABLE: 0x149
+            , EXT_FOLLOW_MAX_STEP_S: 0x14A
+            , EXT_FOLLOW_CMD_STEPS: 0x14B
+            , EXT_FOLLOW_EMITTED_STEPS: 0x14C
+            , EXT_FOLLOW_BACKLOG: 0x14D
+            , EXT_FOLLOW_DROPPED: 0x14E
+            , EXT_FOLLOW_RESET: 0x14F
             , CPU_USAGE_CENTIPERCENT: 0x137
             , CONTROL_TASK_USAGE_CENTIPERCENT: 0x138
             , MAX_RPM: 0x11B
@@ -1580,6 +1633,13 @@
             , [0x126, ['0x0126', 'SINGLE_FORWARD_STEP', 'DIR 高电平并输出单个 STEP']]
             , [0x136, ['0x0136', 'CALIBRATE_ENCODER', '磁编码器校准：写 1 触发一次校准']]
             , [CUSTOM_REGS.ENCODER_FILTER_WINDOW, ['0x0148', 'ENCODER_FILTER_WINDOW', '磁编码器滑动平均窗口，单位样本（0=关闭滤波），1 样本 = 2µs，上限 256']]
+            , [CUSTOM_REGS.EXT_FOLLOW_ENABLE, ['0x0149', 'EXT_FOLLOW_ENABLE', '外部 PUL/DIR 脉冲跟随使能：0 关 / 1 开（1 脉冲 = 1 微步）']]
+            , [CUSTOM_REGS.EXT_FOLLOW_MAX_STEP_S, ['0x014A', 'EXT_FOLLOW_MAX_STEP_S', '跟随限速，单位步/s；0 = 按角度模式 RPM 上限自动换算']]
+            , [CUSTOM_REGS.EXT_FOLLOW_CMD_STEPS, ['0x014B', 'EXT_FOLLOW_CMD_STEPS', '外部累计命令步数（有符号）']]
+            , [CUSTOM_REGS.EXT_FOLLOW_EMITTED_STEPS, ['0x014C', 'EXT_FOLLOW_EMITTED_STEPS', '已 1:1 转发步数（有符号）']]
+            , [CUSTOM_REGS.EXT_FOLLOW_BACKLOG, ['0x014D', 'EXT_FOLLOW_BACKLOG', '当前积压步数（命令 - 已转发）']]
+            , [CUSTOM_REGS.EXT_FOLLOW_DROPPED, ['0x014E', 'EXT_FOLLOW_DROPPED', '累计丢步：超过限速而长期积压的部分']]
+            , [CUSTOM_REGS.EXT_FOLLOW_RESET, ['0x014F', 'EXT_FOLLOW_RESET', '写 1 清零命令/已转发/积压/丢步计数']]
         ]);
 
         function log(message) {
@@ -1862,7 +1922,8 @@
                 frame.reg === CUSTOM_REGS.CONTROL_TASK_USAGE_CENTIPERCENT;
             const routineMotionStatus = isTelemetry && frame.reg === 0x11F;
             const isSignedRegister = frame.reg === 0x0113 || frame.reg === 0x0120 ||
-                frame.reg === 0x0121 || frame.reg === 0x0135;
+                frame.reg === 0x0121 || frame.reg === 0x0135 ||
+                frame.reg === 0x014B || frame.reg === 0x014C;
             const displayValue = isSignedRegister ? (frame.value | 0) : Number(frame.value >>> 0);
             if (!routineMotionStatus && (!isTelemetry || !diagnosticRegister)) {
                 log(`[RX] cmd=0x${frame.cmd.toString(16).padStart(2, '0')} ${description ? description[0] : '0x' + frame.reg.toString(16).padStart(4, '0')} ${name} = ${displayValue}`);
@@ -1883,6 +1944,26 @@
             }
             if (frame.reg === CUSTOM_REGS.CLOSED_LOOP_ENABLE) {
                 document.getElementById('closedLoopEnableInput').checked = frame.value !== 0;
+            }
+            if (frame.reg === CUSTOM_REGS.EXT_FOLLOW_ENABLE) {
+                const input = document.getElementById('extFollowEnableInput');
+                if (document.activeElement !== input) input.checked = frame.value !== 0;
+            }
+            if (frame.reg === CUSTOM_REGS.EXT_FOLLOW_MAX_STEP_S) {
+                const input = document.getElementById('extFollowMaxStepSInput');
+                if (document.activeElement !== input) input.value = String(frame.value >>> 0);
+            }
+            if (frame.reg === CUSTOM_REGS.EXT_FOLLOW_CMD_STEPS) {
+                document.getElementById('extFollowCmdValue').textContent = String(frame.value | 0);
+            }
+            if (frame.reg === CUSTOM_REGS.EXT_FOLLOW_EMITTED_STEPS) {
+                document.getElementById('extFollowEmittedValue').textContent = String(frame.value | 0);
+            }
+            if (frame.reg === CUSTOM_REGS.EXT_FOLLOW_BACKLOG) {
+                document.getElementById('extFollowBacklogValue').textContent = String(frame.value >>> 0);
+            }
+            if (frame.reg === CUSTOM_REGS.EXT_FOLLOW_DROPPED) {
+                document.getElementById('extFollowDroppedValue').textContent = String(frame.value >>> 0);
             }
             if (frame.reg === CUSTOM_REGS.ENCODER_FAULT) state.encoderFault = frame.value !== 0;
             if (frame.reg === CUSTOM_REGS.MAGNETIC_FAULT) state.magneticFault = frame.value !== 0;
@@ -2897,6 +2978,8 @@
                 CUSTOM_REGS.MAGNETIC_LOW,
                 CUSTOM_REGS.ENCODER_ZERO,
                 CUSTOM_REGS.ENCODER_FILTER_WINDOW,
+                CUSTOM_REGS.EXT_FOLLOW_ENABLE,
+                CUSTOM_REGS.EXT_FOLLOW_MAX_STEP_S,
                 CUSTOM_REGS.POSITION_KP,
                 CUSTOM_REGS.POSITION_KI,
                 CUSTOM_REGS.POSITION_KD,
@@ -3506,8 +3589,15 @@
             accelSelect.value = '600';
         }
 
+        function getStepsPerRevolution() {
+            // 一圈 STEP 数 = 200 步/圈 x 驱动器实际微步数，必须跟 “微步” 输入框保持一致，
+            // 不能再用写死的 51200（那是 200x256 的老口径，与实际下发脉冲不符）。
+            const microsteps = Number(document.getElementById('microsteps').value || 64);
+            return 200 * Math.max(1, microsteps);
+        }
+
         function getEffectivePulseCount() {
-            return Number(document.getElementById('pulseCountInput').value || 51200);
+            return Number(document.getElementById('pulseCountInput').value || getStepsPerRevolution());
         }
 
         function updateMotionDurationEstimate() {
@@ -3515,14 +3605,14 @@
             const startRpm = Number(document.getElementById('startRpmSelect').value || 0);
             const maxRpm = Number(document.getElementById('maxRpmSelect').value || 0);
             const accelRpm = Number(document.getElementById('accelRpmSelect').value || 0);
-            const stepsPerRevolution = 51200;
+            const stepsPerRevolution = getStepsPerRevolution();
             const accelSeconds = accelRpm > 0 && maxRpm > startRpm ? (maxRpm - startRpm) / accelRpm : 0;
             const accelPulses = ((startRpm + maxRpm) * 0.5) * accelSeconds / 60 * stepsPerRevolution;
             const physicalSeconds = accelPulses < pulseCount && maxRpm > 0
                 ? accelSeconds + (pulseCount - accelPulses) / (maxRpm / 60 * stepsPerRevolution)
                 : pulseCount / Math.max(1, startRpm / 60 * stepsPerRevolution);
             document.getElementById('motionDurationEstimate').textContent =
-                `脉冲数：${pulseCount}，理论时间（固定 256 细分，${maxRpm} RPM）：约 ${physicalSeconds.toFixed(1)} s；STEP 基准：${stepsPerRevolution} 个/圈`;
+                `脉冲数：${pulseCount}（${(pulseCount / stepsPerRevolution).toFixed(2)} 圈），理论时间（${maxRpm} RPM）：约 ${physicalSeconds.toFixed(1)} s；STEP 基准：${stepsPerRevolution} 个/圈`;
         }
 
         updateMotionDurationEstimate();
@@ -4103,6 +4193,31 @@
                 if (state.connected) {
                     await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, this.checked ? 1 : 0);
                 }
+            });
+
+            document.getElementById('extFollowEnableInput').addEventListener('change', async function () {
+                if (!state.connected) {
+                    log('[WARN] 尚未连接串口，无法切换外部脉冲跟随');
+                    return;
+                }
+                await writeRegister(CUSTOM_REGS.EXT_FOLLOW_ENABLE, this.checked ? 1 : 0);
+                log(this.checked
+                    ? '[INFO] 外部脉冲跟随已开启：PB5/PB4 的脉冲将 1:1 驱动电机'
+                    : '[INFO] 外部脉冲跟随已关闭');
+            });
+
+            document.getElementById('extFollowMaxStepSInput').addEventListener('change', async function () {
+                const value = clamp(Math.round(Number(this.value) || 0), 0, 2560000);
+                this.value = String(value);
+                if (!state.connected) return;
+                await writeRegister(CUSTOM_REGS.EXT_FOLLOW_MAX_STEP_S, value);
+                log(`[INFO] 跟随限速=${value === 0 ? '自动（按角度模式 RPM 上限换算）' : value + ' 步/s'}`);
+            });
+
+            document.getElementById('extFollowResetBtn').addEventListener('click', async () => {
+                if (!state.connected) return;
+                await writeRegister(CUSTOM_REGS.EXT_FOLLOW_RESET, 1);
+                log('[INFO] 外部跟随计数已清零（命令/已转发/积压/丢步）');
             });
 
             ['posKp', 'posKi', 'posKd', 'velKp', 'velKi', 'velKd'].forEach((id) => {

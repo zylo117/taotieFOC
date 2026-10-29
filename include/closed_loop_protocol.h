@@ -120,7 +120,18 @@ enum Tmc2209CustomExtensionRegister
     TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_EXPONENT = 0x147U,
 
     // 磁编码器滑动平均窗口（采样数 0~256，0 = 关闭滤波），上位机可调
-    TMC2209_EXT_PARAM_ENCODER_FILTER_WINDOW = 0x148U
+    TMC2209_EXT_PARAM_ENCODER_FILTER_WINDOW = 0x148U,
+
+    // ===================== 【外部 PUL/DIR 脉冲跟随】=====================
+    // 使能后 PB5(PUL)/PB4(DIR) 上的脉冲变成位置命令（1 脉冲 = 1 微步），
+    // 由 TMR2/DMA 重发到驱动器。与 0x11E/0x11F 的规划运动互斥；0x14B~0x14E 为只读遥测。
+    TMC2209_EXT_PARAM_EXT_FOLLOW_ENABLE = 0x149U,   // R/W：0=关，1=开
+    TMC2209_EXT_PARAM_EXT_FOLLOW_MAX_STEP_S = 0x14AU,  // R/W：跟随限速（步/s），0=按角度模式 RPM 上限自动换算
+    TMC2209_EXT_PARAM_EXT_FOLLOW_CMD_STEPS = 0x14BU,      // RO：外部累计命令步（有符号）
+    TMC2209_EXT_PARAM_EXT_FOLLOW_EMITTED_STEPS = 0x14CU,  // RO：已 1:1 转发步数（有符号）
+    TMC2209_EXT_PARAM_EXT_FOLLOW_BACKLOG = 0x14DU,        // RO：当前积压步数
+    TMC2209_EXT_PARAM_EXT_FOLLOW_DROPPED = 0x14EU,        // RO：累计丢步（只累加超出部分的量）
+    TMC2209_EXT_PARAM_EXT_FOLLOW_RESET = 0x14FU           // WO：写 1 清零命令/已发/积压/丢步计数
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -184,8 +195,8 @@ private:
     bool readOfficialRegister(uint8_t reg, uint32_t* value) const;
 
     ClosedLoopDriverProtocolConfig config_;
-    // 扩展参数表长度：覆盖 0x100 ~ 0x148，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x148U - 0x100U + 1U;
+    // 扩展参数表长度：覆盖 0x100 ~ 0x14F，新增寄存器时同步这个常量
+    static constexpr uint16_t kCustomParameterCount = 0x14FU - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

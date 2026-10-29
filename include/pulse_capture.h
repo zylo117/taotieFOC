@@ -80,8 +80,10 @@
 // 环形缓冲区深度，必须是 2 的幂（用位掩码取模）
 #define PULSE_CAPTURE_RING_DEPTH 512U
 
-// 200 步/圈 x 256 细分 = 51200 脉冲/圈
-#define PULSE_CAPTURE_PULSES_PER_REV 51200.0f
+// 注意：这里不再假设固定细分。1 个外部 PUL 脉冲 = 1 个驱动器微步，
+// 一圈脉冲数 = 200 步/圈 x 驱动器实际微步数，运行期由
+// ClosedLoopController::getStepsPerRound() 给出（默认 200 x 64 = 12800）。
+// （旧代码写死的 51200 = 200x256 只是打印口径，会让 [PUL] 的 deg 恒为真实值的 1/4。）
 
 // 环形缓冲区里的一条记录（软件消费时按这个结构体解释两条 DMA 环上的同一号元素）
 typedef struct
@@ -101,7 +103,7 @@ void pulse_capture_init(void);
 // （dir_snap=0 记 +1，dir_snap=1 记 -1），并累加到内部 int64_t 累计指令脉冲。
 int32_t pulse_capture_read_delta(void);
 
-// 上电至今的累计有符号指令脉冲数（角度 = total * 360.0f / PULSE_CAPTURE_PULSES_PER_REV）
+// 上电至今的累计有符号指令脉冲数（角度 = total * 360.0f / 每圈步数）
 int64_t pulse_capture_get_total(void);
 
 // 清溢出故障标记（重新对齐读写指针后由上层确认用）

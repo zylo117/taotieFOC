@@ -453,6 +453,15 @@ void ClosedLoopController::syncProtocolTelemetry()
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_COMMAND, motion_running_ ? 1U : 0U);
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_TARGET_ANGLE_DEG,
                                       static_cast<uint32_t>(static_cast<int32_t>(target_angle_deg_ * 1000.0f)));
+        // 外部脉冲跟随遥测：命令/已发/积压/丢步（100Hz 足够上位机画图）
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_ENABLE, external_follow_enabled_ ? 1U : 0U);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_MAX_STEP_S, external_max_step_s_);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_CMD_STEPS,
+                                      static_cast<uint32_t>(external_cmd_steps_));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_EMITTED_STEPS,
+                                      static_cast<uint32_t>(external_emitted_steps_));
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_BACKLOG, external_backlog_steps_);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_DROPPED, external_dropped_steps_);
     } else
     {
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_POSITION_DEG,
@@ -572,6 +581,9 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
         else
         {
             closed_loop_angle_mode_enabled_ = false;
+            // 跟随时 stopMotion() 停不掉“跟随”本身：external_follow_enabled_ 还开着，
+            // 下一拍就会接着发。所以停运动必须把跟随一起关掉。
+            enableExternalPulseFollow(false);
             stopMotion();
         }
         return true;
@@ -587,6 +599,25 @@ bool ClosedLoopController::writeParameter(uint16_t reg, uint32_t value)
         encoder_filter_window_ = value > EncoderFilterConfig::kMaxWindow
             ? EncoderFilterConfig::kMaxWindow
             : static_cast<uint16_t>(value);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_ENABLE)
+    {
+        enableExternalPulseFollow(value != 0U);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_MAX_STEP_S)
+    {
+        // 0 = 自动（按 angle_max_rpm_ 换算）；上限按 2.56Mstep/s（128 步/窗）夹住
+        setExternalPulseMaxStepRate(value > 2560000UL ? 2560000UL : value);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_RESET)
+    {
+        if (value != 0U)
+        {
+            resetExternalPulseFollowCounters();
+        }
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS)
@@ -743,6 +774,36 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_ENCODER_FILTER_WINDOW)
     {
         *value = encoder_filter_window_active_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_ENABLE)
+    {
+        *value = external_follow_enabled_ ? 1U : 0U;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_MAX_STEP_S)
+    {
+        *value = external_max_step_s_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_CMD_STEPS)
+    {
+        *value = static_cast<uint32_t>(external_cmd_steps_);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_EMITTED_STEPS)
+    {
+        *value = static_cast<uint32_t>(external_emitted_steps_);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_BACKLOG)
+    {
+        *value = external_backlog_steps_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_DROPPED)
+    {
+        *value = external_dropped_steps_;
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS)
@@ -966,6 +1027,12 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
         angle_deg = 360.0f;
     }
 
+    if (external_follow_enabled_)
+    {
+        printf("[EXT_FOLLOW] setTargetAngleDeg ignored: external pulse follow is active\r\n");
+        return;
+    }
+
     if (motion_max_rpm_ <= 0.0f)
     {
         motion_max_rpm_ = angle_max_rpm_ > 0.0f ? angle_max_rpm_ : 1200.0f;
@@ -1032,6 +1099,13 @@ void ClosedLoopController::setMotionConfig(float start_rpm, float max_rpm, float
 
 void ClosedLoopController::startMotion()
 {
+    // 跟随模式下不接受规划运动：命令位置完全由外部脉冲决定，两套逻辑同时跑必然打架
+    if (external_follow_enabled_)
+    {
+        printf("[EXT_FOLLOW] startMotion ignored: external pulse follow is active\r\n");
+        return;
+    }
+
     if (motion_start_rpm_ <= 0.0f)
     {
         motion_start_rpm_ = 60.0f;
@@ -1338,6 +1412,20 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     // 采集用 TMR3（PB4/PB5），内部 STEP 输出用 TMR2（PB10/PB11），互不干扰。
     external_pulse_delta_ = pulse_capture_read_delta();
 
+    // 跟随模式：采集到的脉冲直接累加成“命令位置”（1 脉冲 = 1 驱动器微步）。
+    // 开环/闭环都走这一条命令，区别只在后面要不要叠 PID 修正量。
+    if (external_follow_enabled_)
+    {
+        if (external_prime_pending_)
+        {
+            // 使能后的第一拍：把使能之前积压的历史脉冲扔掉，
+            // 否则一上位就先把刚才调试用的那几千个脉冲补发出去，直接飞车。
+            external_prime_pending_ = false;
+            external_pulse_delta_ = 0;
+        }
+        external_cmd_steps_ += external_pulse_delta_;
+    }
+
     if (driver_ == nullptr)
     {
         return;
@@ -1395,6 +1483,28 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     }
 
     updateEncoderCalibration(encoder_filtered_raw_);
+
+    // ===================== 【外部 PUL/DIR 跟随：独立输出通道】=====================
+    // 放在梯形规划/沉降收尾之前：跟随时命令位置完全由外部脉冲决定，
+    // 不能进“发满 motion_pulse_count_ 就收尾”那套状态机。
+    if (external_follow_enabled_)
+    {
+        // 注意：delta_ramp_ns 在本函数稍后才会算，这里自己取一次，
+        // 并限幅——首拍或长时间没进 rampUpdate 时不能拿一个巨量时间去补发。
+        const uint64_t external_delta_ns = now_ns - motion_last_ramp_time_ns_;
+        // 这里提前 return 了，下面那段更新 encoder_speed_rpm_ 的代码跑不到，
+        // 但闭环补偿的速度环要的就是它，所以在这里补一次（同一个 0.9/0.1 平滑）。
+        if (external_delta_ns > 0U && external_delta_ns <= 1000000ULL && encoder_ != nullptr)
+        {
+            const float dt = static_cast<float>(external_delta_ns) / 1.0e9f;
+            const float measured_rpm = (encoder_delta_deg / 360.0f) * (60.0f / dt);
+            encoder_speed_rpm_ = encoder_speed_rpm_ * 0.9f + measured_rpm * 0.1f;
+        }
+        runExternalPulseFollow(external_delta_ns);
+        motion_last_ramp_time_ns_ = now_ns;
+        syncProtocolTelemetry();
+        return;
+    }
 
     // 沉降阶段不参与 PID 评分：这段误差是在收敛中的尾巴，计进去会把评分刷得很漂亮
     // （结尾误差在变小），反而掩盖真实的中段跟随性能。
@@ -2066,6 +2176,318 @@ int32_t ClosedLoopController::getPositionSteps() const
 int32_t ClosedLoopController::getExternalPulseDelta() const
 {
     return external_pulse_delta_;
+}
+
+uint32_t ClosedLoopController::getStepsPerRound() const
+{
+    return getMicroStepsPerRound(driver_);
+}
+
+// ===================== 【外部 PUL/DIR 跟随】=====================
+// 命令位置 = 外部脉冲累计（1 脉冲 = 1 微步），本窗把“命令 - 已发”的积压按限速重发。
+// 走的是和 DDA 完全相同的 ARR 序列出口，区别只在于“本窗该发几步”不再由梯形规划决定。
+void ClosedLoopController::runExternalPulseFollow(uint64_t delta_ramp_ns)
+{
+    if (driver_ == nullptr || delta_ramp_ns == 0U || delta_ramp_ns > 1000000ULL)
+    {
+        // 首拍（motion_last_ramp_time_ns_ 还是 0）或调度卡顿超过 1ms 时不补发：
+        // 积压会留在 external_cmd_steps_ 里由后面几拍慢慢追，比一次吐上百步安全得多。
+        return;
+    }
+
+    // 故障保护：编码器/磁场报警时驱动已被 reportXxxFault() 失能，
+    // 这里再发脉冲只会空转 TMR2（且积压白白变成“丢步”），直接不输出。
+    if (output_stopped_)
+    {
+        motion_speed_rpm_ = 0.0f;
+        return;
+    }
+
+    const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
+    const float dt_s = static_cast<float>(delta_ramp_ns) / 1.0e9f;
+
+    // 脉宽可能在跟随时被上位机改（0x123），每窗按最新值刷一遍。
+    // DDA 路径是 startMotion() 里算的，跟随路径没人管，漏了就是一个陈旧的 min_step_ticks。
+    k_step_pulse_ticks = std::ceil(static_cast<float>(step_pulse_width_ns_) /
+                                   static_cast<float>(stepper_common::target_tick_time));
+
+    // ---- 1. 本窗要“1:1 转发”的步数：积压、限速、序列长度三者取小 ----
+    const int32_t backlog = external_cmd_steps_ - external_emitted_steps_;
+    const int32_t backlog_abs = backlog >= 0 ? backlog : -backlog;
+
+    // 限速：0 表示用 angle_max_rpm_ 换算出的驱动能力上限（默认，1200RPM x 12800 = 256k step/s）。
+    // 宁可比外部慢一点，也不要一次性灌满让电机失步——失步是真正找不回来的。
+    uint32_t rate_step_s = external_max_step_s_;
+    if (rate_step_s == 0U)
+    {
+        const float rpm_cap = angle_max_rpm_ > 0.0f ? angle_max_rpm_ : 1200.0f;
+        const float step_s_cap = rpm_cap * static_cast<float>(micro_steps_per_round) / 60.0f;
+        rate_step_s = static_cast<uint32_t>(step_s_cap > 1.0f ? step_s_cap : 1.0f);
+    }
+
+    float budget_steps = static_cast<float>(rate_step_s) * dt_s;
+    if (budget_steps < 1.0f)
+    {
+        // 低速时也至少允许 1 步，否则小数部分会被限速反复截断，永远凑不满一整步
+        budget_steps = 1.0f;
+    }
+    if (budget_steps > static_cast<float>(backlog_abs))
+    {
+        budget_steps = static_cast<float>(backlog_abs);
+    }
+
+    // 限速值不是“整步/窗”时（如 256k step/s 就是 12.8 步/窗），
+    // 直接截断会每窗少 0.8 步 = 长期恒定落后 6%，必须靠余量补回来。
+    float base_acc = budget_steps + external_base_residue_;
+    uint32_t num_base = static_cast<uint32_t>(base_acc);
+    if (num_base > static_cast<uint32_t>(backlog_abs))
+    {
+        num_base = static_cast<uint32_t>(backlog_abs);
+    }
+    external_base_residue_ = base_acc - static_cast<float>(num_base);
+    if (external_base_residue_ > 1.0f)
+    {
+        external_base_residue_ = 1.0f;
+    }
+    else if (external_base_residue_ < 0.0f)
+    {
+        external_base_residue_ = 0.0f;
+    }
+
+    const int8_t base_sign = backlog >= 0 ? static_cast<int8_t>(1) : static_cast<int8_t>(-1);
+    const float signed_base = static_cast<float>(num_base) * static_cast<float>(base_sign);
+
+    // ---- 2. 闭环补偿（0x107=1 才生效）：位置环 -> 速度环 -> 本窗修正步数 ----
+    // 开环时这一段整体跳过，signed_base 就是全部输出，实现严格 1:1 转发。
+    float pid_steps = 0.0f;
+    if (closed_loop_compensation_enabled_ && encoder_ != nullptr)
+    {
+        // 位置环输入必须是“命令 - 实际”：motion_follow_error_deg_ 定义是“实际 - 命令”，要取反
+        const float position_ref_rps = position_pid_.update(-motion_follow_error_deg_ / 360.0f, dt_s);
+        const float base_rps = signed_base / static_cast<float>(micro_steps_per_round) / dt_s;
+        const float measured_rps = encoder_speed_rpm_ / 60.0f;
+        const float velocity_correction_rps =
+            velocity_pid_.update(base_rps + position_ref_rps - measured_rps, dt_s);
+        pid_steps = velocity_correction_rps * static_cast<float>(micro_steps_per_round) * dt_s;
+        // PID 没调好时别让它一个窗口把整段序列吃光（真正超速由下面的限速和丢步计数兜）
+        const float pid_cap = static_cast<float>(MAX_PULSE_ARR_LEN) * 0.5f;
+        if (pid_steps > pid_cap)
+        {
+            pid_steps = pid_cap;
+        }
+        else if (pid_steps < -pid_cap)
+        {
+            pid_steps = -pid_cap;
+        }
+        // 让 0x121 等遥测继续看得到补偿量（开环时是 0）
+        compensated_rps_ = velocity_correction_rps;
+    }
+    else
+    {
+        compensated_rps_ = 0.0f;
+    }
+
+    // ---- 3. 合成本窗的脉冲数 ----
+    float signed_steps = signed_base + pid_steps;
+    if (signed_steps > static_cast<float>(MAX_PULSE_ARR_LEN))
+    {
+        signed_steps = static_cast<float>(MAX_PULSE_ARR_LEN);
+    }
+    else if (signed_steps < -static_cast<float>(MAX_PULSE_ARR_LEN))
+    {
+        signed_steps = -static_cast<float>(MAX_PULSE_ARR_LEN);
+    }
+    const uint32_t num_steps = static_cast<uint32_t>(fast_abs(signed_steps));
+
+    if (num_steps == 0U)
+    {
+        // 没积压、补偿也是 0：保持使能，安静等下一拍（这不等于停止跟随）
+        external_backlog_steps_ = static_cast<uint32_t>(backlog_abs);
+        motion_speed_rpm_ = 0.0f;
+        return;
+    }
+
+    const int8_t direction = signed_steps >= 0.0f ? 1 : -1;
+    // 外部 DIR 什么时候翻我们不知道，只能逐窗比：换向那一窗必须在序列头尾插 guard，
+    // 否则贴着发的脉冲会被驱动器认错方向（甚至整步丢掉）。
+    if (motion_direction_ != direction)
+    {
+        motion_direction_change_pending_ = true;
+    }
+    motion_direction_ = direction;
+    motion_speed_rpm_ = static_cast<float>(num_steps) / dt_s * 60.0f /
+                        static_cast<float>(micro_steps_per_round);
+
+    // ---- 4. 铺 ARR 序列并启动 TMR2/DMA（与 DDA 段同一套出口/同一种换向 guard）----
+    const uint64_t guard_ns =
+        2ULL * stepper_common::guard_tick * stepper_common::target_tick_time + 5ULL;
+    if (delta_ramp_ns > guard_ns)
+    {
+        const uint64_t remaining_ticks = (delta_ramp_ns - guard_ns) / stepper_common::target_tick_time;
+        const uint32_t min_step_ticks = k_step_pulse_ticks * 2U;
+
+#if STEP_SEQ_MODE != 0
+        const uint64_t spread_budget_ticks =
+            (remaining_ticks * static_cast<uint64_t>(STEP_SEQ_SPREAD_PERMILLE)) / 1000ULL;
+        const uint64_t spread_need_ticks = static_cast<uint64_t>(num_steps) * min_step_ticks;
+        const bool spread_enabled = spread_budget_ticks >= spread_need_ticks;
+#else
+        const uint64_t spread_budget_ticks = 0ULL;
+        const bool spread_enabled = false;
+#endif
+        const uint64_t budget_wide = spread_enabled
+            ? spread_budget_ticks
+            : static_cast<uint64_t>(num_steps) * min_step_ticks;
+        const uint32_t budget_ticks = budget_wide > 0x3FFFFFFFULL
+            ? 0x3FFFFFFFU
+            : static_cast<uint32_t>(budget_wide);
+        const uint32_t step_ticks = spread_enabled
+            ? static_cast<uint32_t>(budget_ticks / num_steps)
+            : min_step_ticks;
+
+        const uint32_t seq_count = num_steps + 2U;
+        generate_step_sequence(external_arr_seq_, seq_count, step_ticks, min_step_ticks, budget_ticks);
+        add_dir_to_step_sequence(external_arr_seq_, seq_count, stepper_common::guard_tick,
+                                 motion_direction_change_pending_);
+        start_step_sequence(external_arr_seq_, seq_count, stepper_common::k_psc,
+                            stepper_common::k_step_pulse_ticks, direction > 0);
+        motion_direction_change_pending_ = false;
+    }
+
+    // ---- 5. 记账：命令位置走 delivered，不凭空领先一个窗口 ----
+    // 注意只把 num_base 计入“已转发”，PID 那部分不算——否则位置环多发的步数
+    // 会被积压逻辑当成“发多了”反过来退回，两个环互相推着振荡。
+    external_emitted_steps_ += static_cast<int32_t>(num_base) * static_cast<int32_t>(base_sign);
+    const int32_t emitted = direction * static_cast<int32_t>(num_steps);
+    motion_steps_emitted_signed += emitted;
+    motion_dma_pending_signed += emitted;
+
+    const int32_t new_backlog = external_cmd_steps_ - external_emitted_steps_;
+    const uint32_t new_backlog_abs =
+        static_cast<uint32_t>(new_backlog >= 0 ? new_backlog : -new_backlog);
+    external_backlog_steps_ = new_backlog_abs;
+    if (new_backlog_abs > external_backlog_peak_steps_)
+    {
+        external_backlog_peak_steps_ = new_backlog_abs;
+    }
+    // 告警口径：积压超过一圈 = 电机已经跟不上输入频率了。只把超出部分累加，
+    // 所以“正常几拍的延迟、下一窗就补回来”不会触发；这个数持续增长才是真的超速。
+    if (new_backlog_abs > micro_steps_per_round)
+    {
+        external_dropped_steps_ += new_backlog_abs - micro_steps_per_round;
+    }
+}
+
+void ClosedLoopController::enableExternalPulseFollow(bool enable)
+{
+    if (external_follow_enabled_ == enable)
+    {
+        return;
+    }
+
+    // 切换时先把内部运动状态清干净：跟随和规划共用 DDA/TMR2，
+    // 残留的积压或半途的梯形都会在下一拍变成莫名其妙的脉冲。
+    motion_running_ = false;
+    motion_ramp_stage_ = RAMP_STAGE_DONE;
+    closed_loop_angle_mode_enabled_ = false;
+    motion_steps_emitted_ = 0U;
+    motion_steps_emitted_signed = 0;
+    motion_steps_delivered_signed = 0;
+    motion_dma_pending_signed = 0;
+    motion_commanded_travel_deg_ = 0.0f;
+    motion_encoder_travel_raw_ = 0;
+    motion_follow_error_deg_ = 0.0f;
+    motion_step_accumulator_ = 0.0f;
+    compensated_motion_step_accumulator_ = 0.0f;
+    compensated_rps_ = 0.0f;
+    current_step_speed_ = 0.0f;
+    motion_speed_rpm_ = 0.0f;
+    motion_direction_change_pending_ = true;
+    position_pid_.resetIntegral();
+    position_pid_.resetDeriv();
+    velocity_pid_.resetIntegral();
+    velocity_pid_.resetDeriv();
+    resetExternalPulseFollowCounters();
+
+    if (!enable)
+    {
+        external_follow_enabled_ = false;
+        external_prime_pending_ = false;
+        stopMotion();
+        printf("[EXT_FOLLOW] disabled\r\n");
+        return;
+    }
+
+    // 脉宽 tick 数：DDA 路径是 startMotion() 里算的，跟随路径没人替它算，
+    // 漏了这一句 k_step_pulse_ticks 就是个未初始化值，ARR 序列直接乱掉。
+    k_step_pulse_ticks = std::ceil(static_cast<float>(step_pulse_width_ns_) /
+                                   static_cast<float>(stepper_common::target_tick_time));
+
+    motion_encoder_previous_raw_ = encoder_ != nullptr ? encoder_->readFilteredRaw() : encoder_filtered_raw_;
+    motion_encoder_reference_valid_ = encoder_ != nullptr;
+    // 让跟随误差（编码器行程 - 命令行程）照常计算：0x121 和波形图都靠它
+    motion_running_ = true;
+    external_prime_pending_ = true;
+    external_follow_enabled_ = true;
+
+    if (driver_ != nullptr && !encoder_fault_active_ && !magnetic_fault_active_)
+    {
+        driver_->setEnable(true);
+        driver_->setDirection(true);
+    }
+    printf("[EXT_FOLLOW] enabled: 1 pulse = 1 microstep, %lu steps/rev, compensation=%u\r\n",
+           static_cast<unsigned long>(getMicroStepsPerRound(driver_)),
+           closed_loop_compensation_enabled_ ? 1U : 0U);
+}
+
+bool ClosedLoopController::isExternalPulseFollowEnabled() const
+{
+    return external_follow_enabled_;
+}
+
+void ClosedLoopController::setExternalPulseMaxStepRate(uint32_t steps_per_second)
+{
+    external_max_step_s_ = steps_per_second;
+}
+
+uint32_t ClosedLoopController::getExternalPulseMaxStepRate() const
+{
+    return external_max_step_s_;
+}
+
+int32_t ClosedLoopController::getExternalCmdSteps() const
+{
+    return external_cmd_steps_;
+}
+
+int32_t ClosedLoopController::getExternalEmittedSteps() const
+{
+    return external_emitted_steps_;
+}
+
+uint32_t ClosedLoopController::getExternalBacklogSteps() const
+{
+    return external_backlog_steps_;
+}
+
+uint32_t ClosedLoopController::getExternalPeakBacklogSteps() const
+{
+    return external_backlog_peak_steps_;
+}
+
+uint32_t ClosedLoopController::getExternalDroppedSteps() const
+{
+    return external_dropped_steps_;
+}
+
+void ClosedLoopController::resetExternalPulseFollowCounters()
+{
+    external_cmd_steps_ = 0;
+    external_emitted_steps_ = 0;
+    external_base_residue_ = 0.0f;
+    external_backlog_steps_ = 0U;
+    external_backlog_peak_steps_ = 0U;
+    external_dropped_steps_ = 0U;
 }
 
 int32_t ClosedLoopController::getTargetSteps() const
