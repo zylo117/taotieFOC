@@ -6,7 +6,19 @@
 class LoadAngle
 {
 public:
-    static const uint16_t MAX_POINTS = 1024U;
+    // 【拟合点数上限 = 32】
+    // 旧值 1024 在实际使用中完全不必要，而且代价惊人：
+    //   points_[1024]  = 8KB（Point 是 uint16+int32，对齐到 8 字节）
+    //   received_[1024] = 1KB
+    //   load_angle.cpp 里的 load_angle_flash_words[1024*3] = 6KB
+    //   合计 15KB，占整个 RAM 的 37%
+    // 更严重的是 fit() 要跑 5 层精化 x 20 个 exponent x N 点 x 2 次 std::pow(double)，
+    // 1024 点就是 20 万次 pow ≈ 1.6 秒；而 loadFromFlash() 在控制器 init() 里调用，
+    // 一旦 Flash 里存了满 1024 点，每次上电都要卡 1.6 秒。
+    // 负载角随转速的曲线是单调平滑的，16~32 个点拟合已经完全足够。
+    // 改为 32 后：RAM 从 15KB 降到 0.5KB，fit() 降到约 50ms。
+    // 兼容性：Flash 里旧数据若点数 > 32，loadFromFlash() 会当作无效处理（重新上传即可）。
+    static const uint16_t MAX_POINTS = 32U;
 
     LoadAngle();
 

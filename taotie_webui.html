@@ -2445,15 +2445,23 @@
                 throw new Error('请检查速度范围、步进量、采样窗口和间隔设置');
             }
             const direction = stopRpm > startRpm ? 1 : -1;
+            // 固件 side 的 LoadAngle::MAX_POINTS 已经从 1024 降到 32（省 14.9KB RAM、
+            // 启动拟合从 1.6s 降到 50ms）。点数超限时 beginUpload 会直接返回 false，
+            // 后面每个 setPoint 都静默失败，最后只报一句“拟合失败”，很难查。
+            // 所以在前端就卡住，并直接告诉用户步进要调到多少。
+            const firmwareMaxPoints = 32;
+            const maxSingleLegPoints = Math.ceil(firmwareMaxPoints / 2);   // 单程 16，往返 2*16-1 = 31
             const speeds = [startRpm];
             while (speeds[speeds.length - 1] !== stopRpm) {
                 const next = speeds[speeds.length - 1] + direction * stepRpm;
                 speeds.push(direction > 0 ? Math.min(next, stopRpm) : Math.max(next, stopRpm));
-                if (speeds.length > 1024) throw new Error('速度点超过固件上限 1024');
+                if (speeds.length > maxSingleLegPoints) {
+                    const suggested = Math.max(stepRpm, Math.ceil(Math.abs(stopRpm - startRpm) / (maxSingleLegPoints - 1)));
+                    throw new Error(`单程速度点 ${speeds.length} 个，往返后超过固件上限 ${firmwareMaxPoints} 点；请把速度步进改到 ${suggested} RPM 或更大`);
+                }
             }
             for (let index = speeds.length - 2; index >= 0; index--) {
                 speeds.push(speeds[index]);
-                if (speeds.length > 1024) throw new Error('往返校准点超过固件上限 1024');
             }
             if (speeds.length < 2) throw new Error('拟合至少需要两个速度点');
             return {startRpm, stopRpm, stepRpm, intervalSec, sampleWindowSec, samplePeriodMs, accelRpmS, speeds};
@@ -2570,6 +2578,9 @@
         }
 
         async function uploadLoadAnglePoints(points) {
+            if (points.length > 32) {
+                throw new Error(`拟合点 ${points.length} 个，超过固件上限 32`);
+            }
             await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_UPLOAD_COUNT, points.length);
             for (let index = 0; index < points.length; index++) {
                 const point = points[index];
