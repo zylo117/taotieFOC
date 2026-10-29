@@ -48,19 +48,27 @@ const StepperDriverConfig &Tmc2209Driver::config() const
 
 bool Tmc2209Driver::writeRegister(uint8_t reg, uint32_t value)
 {
+  // 【TMC UART 已禁用】不向芯片发任何波形，只返回 false 表示“没写进去”。
+  // 调用方（Tmc2209ProtocolAdapter::applyOfficialRegister）不检查这个返回值，
+  // 所以不会打断现有的参数记账流程；但任何以后想“写完再回读验证”的新代码，
+  // 会在这里老老实实拿到 false，而不是被一个假 true 骗过去。
+  // 开启条件见 tmc2209_driver.h 顶部的五条致命缺陷修复清单。
   (void)reg;
   (void)value;
-  return true;
+  return false;
 }
 
 bool Tmc2209Driver::readRegister(uint8_t reg, uint32_t *value)
 {
+  // 【TMC UART 已禁用】芯片真实寄存器一律读不到。
+  // 注意：这条路不是遥测数据的来源 —— 闭环遥测走的是控制器自己的 readParameter()，
+  // 在 closed_loop_controller.cpp 里就已经拦截返回，不会落到这里。
   (void)reg;
   if (value != nullptr)
   {
     *value = 0U;
   }
-  return true;
+  return false;
 }
 
 bool Tmc2209Driver::setMicrosteps(uint16_t microsteps)
@@ -118,6 +126,8 @@ bool Tmc2209Driver::setSingleWireUart(gpio_type *port, uint16_t pin, bool enable
   config_.uart_port = port;
   config_.uart_pin = pin;
   config_.use_single_wire_uart = enable;
+  // 这里仅同步“意图”，不配置任何串口外设。
+  // 引脚已经由 stepper_init_uart_gpio() 固定为高电平空闲态，本函数不具备让它发波的能力。
   return true;
 }
 

@@ -256,6 +256,10 @@ namespace stepper_common
         stepper_write_gpio(STEP_OUTPUT_PORT, STEP_OUT_PIN, false);
     }
 
+    // 【仅保持 PDN_UART 空闲高电平，不做任何 UART 通讯】
+    // 这里刻意用开漏输出而不是推挽：PDN_UART 是双向单线，驱动器和 MCU 共用一根线，
+    // 推挽一旦和回包对上就是直接短路。开漏 + 驱动器内部上拉 = 真正的“释放总线”。
+    // 全项目没有任何地方会把这个引脚切回推挽或配置 USART，即没有发波能力。
     void stepper_init_uart_gpio(gpio_type* port, uint16_t pin)
     {
         gpio_init_type gpio_init_struct;
