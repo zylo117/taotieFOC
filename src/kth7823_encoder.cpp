@@ -84,7 +84,18 @@ bool Kth7823Encoder::init()
     spi_default_para_init(&spi_init_struct);
     spi_init_struct.transmission_mode = SPI_TRANSMIT_FULL_DUPLEX;
     spi_init_struct.master_slave_mode = SPI_MODE_MASTER;
-    spi_init_struct.mclk_freq_division = SPI_MCLK_DIV_32;
+    // 【SPI 上限已探明：DIV_16 = 7.8MHz 是这颗芯片能用到的极限】
+    //   DIV_32 = 3.9MHz  -> 4.10us/次（最早，稳定）
+    //   DIV_16 = 7.8MHz   -> 2.05us/次（实测无错，当前）
+    //   DIV_8  = 15.6MHz  -> 1.02us/次（实测角度错乱、电机乱转，已回退）
+    //
+    // DIV_8 失败的原因：15.6MHz 下单个 SCLK 周期只有 64ns，
+    // MISO 必须在 32ns 内完成电平建立。KTH7823 的 MISO 驱动能力撑不住，
+    // 主控采样到的就是上一位的残留 -> 位错 -> 角度随机跳变。
+    // 官方参数表写的 1MHz 虽然保守（7.8MHz 已稳定），但 15.6MHz 确实是过了线。
+    //
+    // 不要再往 DIV_8 / DIV_4 试：这不是余量不足，是物理极限。
+    spi_init_struct.mclk_freq_division = SPI_MCLK_DIV_16;
     spi_init_struct.first_bit_transmission = SPI_FIRST_BIT_MSB;
     spi_init_struct.frame_bit_num = SPI_FRAME_16BIT;
     spi_init_struct.clock_polarity = SPI_CLOCK_POLARITY_HIGH;

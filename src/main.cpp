@@ -48,35 +48,22 @@ void telemetry_task_function(void* pvParameters);
 void usb_task_function(void* pvParameters);
 void current_adc_task_function(void* pvParameters);
 
-// 磁编码器采样时基：TMR5 溢出。
-// 注意：TMR3 已被 pulse_capture_init() 占用成自由运行捕获（ARR=0xFFFF、不能有周期中断），
-// 所以这个周期性时基不能再放 TMR3。
-static void encoder_timer_init(void)
-{
-    // 【采样周期是 32us，不是 2us】
-    // 旧代码 k_tick_per_us = 4000 把数量级算反了：250MHz 下 1 tick = 4ns，
-    // 1us 只有 250 tick，不是 4000 tick。按旧值算出的 ARR = 2*4000-1 = 7999
-    // 实际周期是 8000 * 4ns = 32us（31.25kHz），注释里写的 2us 差了 16 倍。
-    // 现在按真实主频推导，标注和数值终于对得上：32us * 250 = 8000 - 1 = 7999，
-    // 寄存器值和旧版完全一样，行为不变，只是把真相写清楚。
-    //
-    // 为什么不真的改成 2us：SPI2 @ 3.9MHz 读一次 16bit 就要 4.1us，比 2us 还长，
-    // 中断会自己把自己压死。31.25kHz 对 20kHz 控制环（每拍 1.5 个新样本）刚好合适。
-    // 依赖“采样周期”这个数字的注释（滤波器窗口时间常数等）都该按 32us 重算。
-    constexpr uint32_t k_encoder_sample_us = 32U;
-    const uint32_t ticks_per_us = system_core_clock / 1000000U;
-    const uint32_t k_arr_value = (k_encoder_sample_us * ticks_per_us) - 1U;
-
-    crm_periph_clock_enable(CRM_TMR5_PERIPH_CLOCK, TRUE);
-    tmr_base_init(TMR5, static_cast<uint16_t>(k_arr_value), 0U);
-    tmr_cnt_dir_set(TMR5, TMR_COUNT_UP);
-    tmr_clock_source_div_set(TMR5, TMR_CLOCK_DIV2);
-    tmr_period_buffer_enable(TMR5, TRUE);
-    tmr_interrupt_enable(TMR5, TMR_OVF_INT, TRUE);
-    nvic_irq_enable(TMR5_GLOBAL_IRQn, 2U, 0U);
-    tmr_counter_value_set(TMR5, 0U);
-    tmr_counter_enable(TMR5, TRUE);
-}
+// 【编码器采样：TMR4 中断内喷发采样，TMR5 已删除】
+//
+// 需求：滤波的时间跨度必须压在一个控制周期（50us）以内，
+// 而不是原来那种 25 样本 x 32us = 800us 的滑动历史（那会把跟随误差拖大）。
+//
+// 做法：不用额外定时器，也不做“倍率 A 分频”，直接在 TMR4 溢出中断里
+// 连续读 SPI kEncoderBurstSamples 次，用一个窗口大小等于次数的滑动平均输出。
+//   1. 时间跨度 = 4 x 2.05us = 8.2us，远小于 50us，天然满足窗口限制；
+//   2. 每拍把窗口整个替换一遍，所以不存在跨周期历史，也没有群延迟；
+//   3. 降噪 sqrt(4) = 2 倍（相对单次采样）；
+//   4. 只有一个时钟域，彻底消除 TMR4/TMR5 周期互质导致的采样点漂移。
+//
+// 代价：中断里约占 4 x 2.05us + 滤波 = 9us，即 50us 周期的 18%。
+// TMR4 优先级是 1，会把这 9us 的 USB/DMA 响应往后推，
+// 但 USB 帧 1ms、ADC 50us 一次，都能容忍。
+constexpr uint32_t kEncoderBurstSamples = 4U;
 
 static void control_timer_init(void)
 {
@@ -153,20 +140,20 @@ extern "C" void TMR4_GLOBAL_IRQHandler(void)
     {
         BaseType_t higher_priority_task_woken = pdFALSE;
         tmr_flag_clear(TMR4, TMR_OVF_FLAG);
+
+        // 【先喷发采样，再唤醒控制任务】
+        // 连续读 kEncoderBurstSamples 次，窗口就是这几次，时间跨度 < 10us。
+        // rampUpdate 拿到的永远是“这一拍刚采完的平均值”，零错位、零跨周期延迟。
+        for (uint32_t i = 0U; i < kEncoderBurstSamples; ++i)
+        {
+            g_encoder.updateFilteredSample();
+        }
+
         if (control_handler != NULL)
         {
             vTaskNotifyGiveFromISR(control_handler, &higher_priority_task_woken);
             portYIELD_FROM_ISR(higher_priority_task_woken);
         }
-    }
-}
-
-extern "C" void TMR5_GLOBAL_IRQHandler(void)
-{
-    if (tmr_interrupt_flag_get(TMR5, TMR_OVF_FLAG) != RESET)
-    {
-        tmr_flag_clear(TMR5, TMR_OVF_FLAG);
-        g_encoder.updateFilteredSample();
     }
 }
 
@@ -275,7 +262,6 @@ int main(void)
     pulse_capture_init();
     g_usb_bridge.init(&g_controller, &g_usb_core);
     control_timer_init();
-    encoder_timer_init();
     get_hw_time_ns();
 
     taskENTER_CRITICAL();

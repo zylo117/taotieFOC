@@ -940,7 +940,7 @@
                         <div class="field">
                             <label for="encoderFilterWindowInput">编码器滤波窗口（样本）</label>
                             <input id="encoderFilterWindowInput" max="256" min="0" step="1" type="number"
-                                   value="25"/>
+                                   value="4"/>
                         </div>
                         <div class="field">
                             <label for="closedLoopEnableInput">闭环使能</label>
@@ -963,9 +963,13 @@
                         与驱动器当前微步设置一致（一圈 = 200 × 微步数，默认 64 细分 = 12800）。波形图的
                         “理论累计行程”也是按这个口径换算的，不再沿用过去那套“固定 256 细分 / 51200 一圈”的说法。
                     </div>
-                    <div class="tiny mt">编码器滤波窗口：0 = 关闭滤波（噪声最大、零滞后）；数值越大越平滑，
-                        但引入的滞后也越大（1 个样本 = 2µs，已做群延迟补偿，所以匀速时的滞后基本能抵消，
-                        极端窗口下波形会略平、末端误差会“显得”更小）。改完下发约 1 秒后才生效。
+                    <div class="tiny mt">编码器滤波窗口：0 = 关闭滤波（噪声最大、零滞后）。
+                        窗口 = 4（默认）正好盖住一个控制周期内的 4 次喷发采样
+                        （SPI 7.8MHz，每次 2.05µs，总跨度 8.2µs），
+                        每拍整个替换一遍，所以没有跨周期历史、也没有群延迟。
+                        填大于 4 就会开始跨控制周期（每超 1 多 2.05µs 历史），
+                        跟随误差会随之变大，不建议。改完下发约 1 秒后才生效。
+                        SPI 已实测上限：7.8MHz；再高到 15.6MHz 会因 MISO 建立时间不足而角度错乱。
                     </div>
                     <div class="tiny mt">STEP 输入脚固定用内部下拉（约 40k），悬空时不会乱跳，推挽驱动可直连。
                         若改接开漏 / 源极跟随这类弱驱动，需要在 pulse_capture.cpp 里把
@@ -4184,7 +4188,7 @@
                 const value = readEncoderFilterWindowInput();
                 if (!state.connected) return;
                 await writeRegister(CUSTOM_REGS.ENCODER_FILTER_WINDOW, value);
-                log(`[INFO] 编码器滤波窗口=${value} 个样本（${value * 2}µs 滑动平均，约 1 秒后生效）`);
+                log(`[INFO] 编码器滤波窗口=${value} 个样本（约 ${(value * 2.05).toFixed(2)}µs 内的喷发采样平均，约 1 秒后生效）`);
             });
 
             document.getElementById('targetPosInput').addEventListener('change', function () {

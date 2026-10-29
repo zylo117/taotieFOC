@@ -112,7 +112,15 @@ namespace encoder_common
 
 struct EncoderFilterConfig
 {
-    static constexpr uint16_t kDefaultWindow = 25;
+    // 【窗口默认值 = 4，与中断里的喷发次数一致】
+    // 采样在 TMR4 中断里喷发 4 次（SPI 7.8MHz，2.05us/次，总跨度 8.2us）。
+    // 窗口 = 4 时，每拍刚好把窗口整个替换一遍：
+    //   - 滤波时间跨度 8.2us，远小于 50us 控制周期；
+    //   - 没有跨周期历史，也就没有群延迟；
+    //   - 降噪 sqrt(4) = 2 倍。
+    // 提醒：窗口 > 4 就会开始跨控制周期（每超 1 就多 2.05us 历史），
+    // 调参时不要再按旧日“25 = 800us”的习惯填。
+    static constexpr uint16_t kDefaultWindow = 4;
     // 窗口上限：也就是 delta_win_ 数组长度。窗口越大越平滑，但 RAM 占用和中断里的
     // 平移环操作都会线性增长。按真实采样周期 32us 算，256 个样本 = 8.2ms，
     // 已经是 20kHz 控制周期的 160 倍，没必要再大。
