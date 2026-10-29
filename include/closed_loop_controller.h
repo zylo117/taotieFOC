@@ -6,6 +6,7 @@
 
 #include "angle_encoder.h"
 #include "closed_loop_protocol.h"
+#include "external_pulse_follower.h"
 #include "load_angle.h"
 #include "pid_auto_tuner.h"
 #include "parameter_router.h"
@@ -224,8 +225,11 @@ public:
 
 private:
     // 参数路由需要直接读写控制器的运动状态、PID、编码器、负载角等成员，
-    // 不给它开几十个 public 访问器（那样接口会比现在更难看）。
+    // 不给它开几十个 public 访问器（那样接口会比现在更难看清）。
     friend class ParameterRouter;
+    // 外部跟随同理：积压记账要和 motion_steps_emitted_signed / dma_pending_signed
+    // 共用同一份，拆成 getter/setter 只会引入两套状态不同步的风险。
+    friend class ExternalPulseFollower;
 
     void updateLoopFrequencyStats(uint64_t time_ns);
     // ExternalPulseFollower 尚未抽成独立类之前，Phase 0 先把 rampUpdate 里
@@ -334,23 +338,11 @@ private:
     volatile int32_t external_pulse_delta_ = 0;  // 外部 PUL/DIR 指令脉冲增量（每 rampUpdate 刷新）
 
     // ===== 外部脉冲跟随 =====
-    volatile bool external_follow_enabled_ = false;
-    // 使能后的第一拍要把使能前积压的历史脉冲丢掉，否则一上来就飞车
-    volatile bool external_prime_pending_ = false;
-    volatile int32_t external_cmd_steps_ = 0;      // 外部累计命令步（有符号，1 脉冲 = 1 微步）
-    volatile int32_t external_emitted_steps_ = 0;  // 已 1:1 转发出去（有符号，不含 PID 修正）
-    // PID 修正量不能算进“已转发”，否则积分把多发的步数又当成积压退回，
-    // 位置环和积压环会互相推着振荡。这里单独记“转发基准”。
-    volatile float external_base_residue_ = 0.0f;  // 低速时不足 1 步的小数余量
-    volatile uint32_t external_max_step_s_ = 0U;   // 0 = 用 angle_max_rpm_ 换算的能力上限
-    volatile uint32_t external_backlog_steps_ = 0U;
-    volatile uint32_t external_backlog_peak_steps_ = 0U;
-    volatile uint32_t external_dropped_steps_ = 0U;
-    // 本窗绝对值和 != |净和| 的窗口数，即“窗内 DIR 翻转过”的次数。
-    // 这类窗口里输出层只能发一个方向的净步数，中间往返被压平。
-    volatile uint32_t external_window_reversals_ = 0U;
+    // 全部状态（命令位置/已转发/积压/丢步/窗内换向/限速）都在 ExternalPulseFollower 里，
+    // 控制器只保留这一个句柄；下面这几个 external_ 开头的成员属于采集侧，不属于跟随模块。
+    ExternalPulseFollower external_pulse_follower_{*this};
     // TMR2+DMA 脉冲出口。规划和外部跟随共用这一份（两者在逻辑上互斥），
-    // ARR 序列缓冲也只有它这一份，不再像以前那样两边各 520 字节。
+    // ARR 序列缓冲也只有它这一份。
     StepOutputChannel step_output_;
     bool stop_on_encoder_fault_;
     bool stop_on_magnetic_fault_;

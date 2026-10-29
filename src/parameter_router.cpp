@@ -173,7 +173,10 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
     if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_MAX_STEP_S)
     {
         // 0 = 自动（按 angle_max_rpm_ 换算）；上限按 2.56Mstep/s（128 步/窗）夹住
-        owner_.setExternalPulseMaxStepRate(value > 2560000UL ? 2560000UL : value);
+        owner_.external_pulse_follower_.setMaxStepRate(
+            value > ExternalPulseFollower::kMaxStepRateLimit
+                ? ExternalPulseFollower::kMaxStepRateLimit
+                : value);
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_RESET)
@@ -347,37 +350,37 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     }
     if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_ENABLE)
     {
-        *value = owner_.external_follow_enabled_ ? 1U : 0U;
+        *value = owner_.external_pulse_follower_.isEnabled() ? 1U : 0U;
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_MAX_STEP_S)
     {
-        *value = owner_.external_max_step_s_;
+        *value = owner_.external_pulse_follower_.maxStepRate();
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_CMD_STEPS)
     {
-        *value = static_cast<uint32_t>(owner_.external_cmd_steps_);
+        *value = static_cast<uint32_t>(owner_.external_pulse_follower_.cmdSteps());
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_EMITTED_STEPS)
     {
-        *value = static_cast<uint32_t>(owner_.external_emitted_steps_);
+        *value = static_cast<uint32_t>(owner_.external_pulse_follower_.emittedSteps());
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_BACKLOG)
     {
-        *value = owner_.external_backlog_steps_;
+        *value = owner_.external_pulse_follower_.backlogSteps();
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_DROPPED)
     {
-        *value = owner_.external_dropped_steps_;
+        *value = owner_.external_pulse_follower_.droppedSteps();
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS)
     {
-        *value = owner_.external_window_reversals_;
+        *value = owner_.external_pulse_follower_.windowReversals();
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS)
