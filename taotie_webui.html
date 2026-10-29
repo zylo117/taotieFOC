@@ -896,7 +896,15 @@
                     </div>
                 </div>
 
-                <div class="card">
+                <div class="inline" style="margin-bottom:12px;">
+                    <button class="primary" id="tabMotionBtn">测速控制</button>
+                    <button id="tabExtFollowBtn">外部脉冲跟随</button>
+                    <span class="tiny" style="margin-left:8px;">
+                        两个模式共用同一套 STEP 输出通道，固件里本来就互斥；切 tab 会同时切固件模式。
+                    </span>
+                </div>
+
+                <div class="card" id="cardMotion">
                     <h3 style="margin:0 0 12px;">测速控制</h3>
                     <div class="grid-2">
                         <div class="field">
@@ -986,7 +994,7 @@
                     </div>
                 </div>
 
-                <div class="card">
+                <div class="card" id="cardExtFollow" style="display:none;">
                     <h3 style="margin:0 0 12px;">外部脉冲跟随（PUL/DIR 从站）</h3>
                     <div class="grid-2">
                         <div class="field">
@@ -2768,6 +2776,30 @@
             }
         }
 
+        // ===================== 工作模式 tab =====================
+        // 测速控制和外部脉冲跟随共用同一个 STEP 输出通道（TMR2/DMA），固件里本来就是互斥的：
+        // 外部跟随使能时 rampUpdate 直接走 updateExternalPulseChannel 并 return。
+        // 所以这里不让它们同时出现：切 tab 就同时切固件的 0x149。
+        function switchWorkTab(tab) {
+            const isMotion = tab === 'motion';
+            document.getElementById('cardMotion').style.display = isMotion ? '' : 'none';
+            document.getElementById('cardExtFollow').style.display = isMotion ? 'none' : '';
+            document.getElementById('tabMotionBtn').className = isMotion ? 'primary' : '';
+            document.getElementById('tabExtFollowBtn').className = isMotion ? '' : 'primary';
+
+            if (!state.connected) {
+                log('[INFO] 已切到' + (isMotion ? '测速控制' : '外部脉冲跟随') + '（未连接串口，模式未下发）');
+                return;
+            }
+            writeRegister(CUSTOM_REGS.EXT_FOLLOW_ENABLE, isMotion ? 0 : 1)
+                .then(() => {
+                    const input = document.getElementById('extFollowEnableInput');
+                    if (input) input.checked = !isMotion;
+                    log('[INFO] 已切到' + (isMotion ? '测速控制（跟随已关）' : '外部脉冲跟随（跟随已开）'));
+                })
+                .catch((error) => log('[ERROR] 切换模式失败：' + error.message));
+        }
+
         async function readLoop() {
             if (!state.reader) return;
             try {
@@ -4039,6 +4071,8 @@
 
         function bindControls() {
             document.getElementById('connectBtn').addEventListener('click', connectSerial);
+                document.getElementById('tabMotionBtn').addEventListener('click', () => switchWorkTab('motion'));
+                document.getElementById('tabExtFollowBtn').addEventListener('click', () => switchWorkTab('extfollow'));
             document.getElementById('readAllBtn').addEventListener('click', readAllConfig);
             document.getElementById('loadAngleCalibrationBtn').addEventListener('click', openLoadAngleCalibration);
             document.getElementById('closeLoadAngleDialogBtn').addEventListener('click', () => {
