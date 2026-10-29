@@ -197,13 +197,16 @@ void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)
     }
     else if (cmd == kCmdWrite)
     {
+        // TARGET_POSITION(0x112) 在 ClosedLoopController::writeParameter() 里没有对应分支，
+        // 必须在这里先转成步数；TARGET_ANGLE_DEG(0x128) 则不需要额外处理。
+        //
+        // 旧代码在这里又调了一次 setTargetAngleDeg()，而 writeParameter(0x128) 内部
+        // 也会调它，等于每次写 0x128 都执行两遍。setTargetAngleDeg() 不是幂等的：
+        // 它会重置角度模式状态、清 PID 积分/微分、清运动累加器、重读编码器基准、
+        // 硬把脉宽改回 200ns 并 使能驱动器 —— 跑两遍等于刚设好的状态立刻被推倒重来一次。
         if (reg == TMC2209_EXT_PARAM_TARGET_POSITION)
         {
             controller_->setTargetStep(static_cast<int32_t>(value));
-        }
-        else if (reg == TMC2209_EXT_PARAM_TARGET_ANGLE_DEG)
-        {
-            controller_->setTargetAngleDeg(static_cast<float>(value) / 1000.0f);
         }
         controller_->writeParameter(reg, value);
         sendFrame(0x82U, reg, value);
