@@ -104,7 +104,17 @@ extern "C" {
 #define configMAX_PRIORITIES    ( 5 )
 #define configMINIMAL_STACK_SIZE  ( ( unsigned short ) 128 )
 #define configSUPPORT_DYNAMIC_ALLOCATION        1
-#define configTOTAL_HEAP_SIZE    ( ( size_t ) ( 8 * 1024 ) )
+/* 【堆大小 12KB】
+ * 旧值 8KB 几乎被吃干净：
+ *   任务栈：LED5 256w + Control 512w + Telemetry 384w + USB 256w
+ *           + Current_ADC 256w + Idle 128w = 1792 words = 7168 bytes
+ *   TCB：   6 个 x 约 88 字 = 528 bytes
+ *   heap_2 块头：6 x 8 = 48 bytes
+ *   合计约 7744 bytes，只剩 448 字节。
+ * 只要再多建一个任务/队列/信号量就会 xTaskCreate 失败；而且用的是 heap_2，
+ * 它不合并相邻空闲块，一旦出现 pvPortMalloc/vPortFree 循环还会碎片化。
+ * 提到 12KB 后余量约 4.5KB。 */
+#define configTOTAL_HEAP_SIZE    ( ( size_t ) ( 12 * 1024 ) )
 #define configMAX_TASK_NAME_LEN    ( 16 )
 #define configUSE_16_BIT_TICKS    0
 #define configIDLE_SHOULD_YIELD    1
