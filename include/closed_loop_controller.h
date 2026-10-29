@@ -222,6 +222,18 @@ public:
 
 private:
     void updateLoopFrequencyStats(uint64_t time_ns);
+    // ExternalPulseFollower 尚未抽成独立类之前，Phase 0 先把 rampUpdate 里
+    // 三段边界最清晰的逻辑抽成成员函数。后续阶段会把它们整体搬进各自的模块。
+    void collectExternalPulseCommand();
+    float refreshEncoderFeedback();
+    void updateExternalPulseChannel(uint64_t now_ns, float encoder_delta_deg);
+    // 沉降收尾：脉冲发完 ≠ 轴到位，等编码器连续若干拍不动或超时
+    void updateSettleStage(uint64_t now_ns, float encoder_delta_deg);
+    // 速度规划主体：角度模式的角误差环 / 梯形规划状态机 / 校准修饰 / PID 补偿 / DDA 累加。
+    // 返回 false 表示本拍已经在内部收尾（已自己调过 syncProtocolTelemetry），调用方直接 return。
+    bool updateMotionProfile(uint64_t now_ns, float encoder_delta_deg, uint64_t* delta_ramp_ns_out);
+    // 脉冲出口：把本拍累加到的步数铺成 ARR 序列，启动 TMR2/DMA，并完成发射记账
+    void emitStepSequence(uint64_t now_ns, uint64_t delta_ramp_ns);
     // 外部跟随的脉冲重发通道，在 rampUpdate 里与 DDA 二选一执行
     void runExternalPulseFollow(uint64_t delta_ramp_ns);
     void updateEncoderCalibration(uint16_t raw);
