@@ -2110,8 +2110,17 @@ void ClosedLoopController::stopMotion()
     // motion_commanded_travel_deg_list_.resize(0);
     // motion_encoder_travel_angle_list_.resize(0);
 
+    // 【调试打印，默认关闭】
+    // 这两行带 %f，115200 波特下输出约 100 字节 ≈ 7ms。
+    // stopMotion() 的调用点包括：每次运动沉降完成（就在 control_task 里）、
+    // 每次关闭外部跟随、使能/失能驱动、故障停机 —— 也就是说每跑完一次运动，
+    // 控制环都会在这里停摆 7ms，跟随时积压会瞬间涨 700+ 步。
+    // 需要看这两个量时把下面这行取消注释重新编译。
+    // #define DEBUG_MOTION_STOP_TRACE 1
+#ifdef DEBUG_MOTION_STOP_TRACE
     printf("max_step_per_ramp: %lu\n", static_cast<unsigned long>(max_step_per_ramp));
     printf("motion stopping!!! motion_commanded_travel_deg_: %f, motion_encoder_travel_deg_: %f\n", motion_commanded_travel_deg_, static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F);
+#endif
     motion_running_ = false;
     motion_first_run_ = false;
     motion_paused_ = false;
