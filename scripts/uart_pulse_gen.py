@@ -90,26 +90,20 @@
   或者直接 --trim 1.107。
 
 ==================================================================
-【两种用法，二选一】
+【用法】网页管配置 + 脚本只发脉冲（两边可同时开着）
 
-【用法 1：网页管配置 + 脚本只发脉冲】（推荐，两边可同时开着）
   网页（USB CDC / COM9）   : 设细分、电机使能、切到「外部脉冲跟随」tab、看波形
-  脚本（CH340 / COM14）    : 只发脉冲 + 收日志，不要传 --microsteps / --enable-motor
+  脚本（CH340 / COM14）    : 只发脉冲 + 收日志
   例：
       python scripts/uart_pulse_gen.py --port COM14 --freq 57600 --count 57600 --monitor
   前提：先在网页上点好细分、使能、切到跟随 tab。
 
-【用法 2：脚本全包】（适合无人值守/批量跑）
-  必须先在网页上断开串口：Windows 对串口是独占的，
-  网页占着 CDC 时脚本打不开，会报 PermissionError(13, '拒绝访问')。
-  例：
-      python scripts/uart_pulse_gen.py --port COM14 --freq 57600 --count 57600 \\
-          --microsteps 64 --enable-motor --monitor
-
-【为什么配置帧一定走 CDC】
-  CH340 的 TXD 和 PB5（PUL 输入）是同一根线。如果在那里发 10 字节协议帧，
-  会被脉冲捕获当成约 20 个上升沿（约 0.5 度），对高精度角度场景是不可接受的系统误差。
-  USB CDC 完全不经过 PB5，零假脉冲。
+【本脚本不写任何寄存器】
+  早期版本有过 --microsteps / --enable-motor / --disable-after，已经全部移除。
+  原因：如果配置帧走 CH340，它和 PB5（PUL 输入）是同一根线，
+  10 字节协议帧会被脉冲捕获当成约 20 个上升沿（约 0.5 度），
+  对高精度角度场景是不可接受的系统误差。
+  所以配置一律走 USB CDC（另一个端口），CH340 只运波形。
 """
 
 import argparse
