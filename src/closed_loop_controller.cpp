@@ -1105,19 +1105,6 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
 void ClosedLoopController::stopMotion()
 {
-    // for (int i = 0; i < 300; i++)
-    // {
-    //     printf("fuck:commanded_travel_deg: %.3f, encoder_travel_angle: %.3f\n", motion_commanded_travel_deg_list_[i], motion_encoder_travel_angle_list_[i]);
-    // }
-    // for (int i = motion_commanded_travel_deg_list_.size() - 300; i < motion_commanded_travel_deg_list_.size(); i++)
-    // {
-    //     printf("shit:commanded_travel_deg: %.3f, encoder_travel_angle: %.3f\n", motion_commanded_travel_deg_list_[i], motion_encoder_travel_angle_list_[i]);
-    // }
-    // motion_commanded_travel_deg_list_.clear();
-    // motion_encoder_travel_angle_list_.clear();
-    // motion_commanded_travel_deg_list_.resize(0);
-    // motion_encoder_travel_angle_list_.resize(0);
-
     // 【调试打印，默认关闭】
     // 这两行带 %f，115200 波特下输出约 100 字节 ≈ 7ms。
     // stopMotion() 的调用点包括：每次运动沉降完成（就在 control_task 里）、

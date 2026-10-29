@@ -374,9 +374,6 @@ private:
     uint32_t velocity_samples_;
     uint32_t current_samples_;
 
-    std::vector<float> motion_commanded_travel_deg_list_;
-    std::vector<float> motion_encoder_travel_angle_list_;
-
     float closed_loop_threshold_angle_ = 1.8f;
     float compensated_rps_ = 0.0f;
 
