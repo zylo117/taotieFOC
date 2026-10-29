@@ -8,6 +8,7 @@
 #include "closed_loop_protocol.h"
 #include "external_pulse_follower.h"
 #include "load_angle.h"
+#include "loop_stats.h"
 #include "motion_planner.h"
 #include "pid_auto_tuner.h"
 #include "parameter_router.h"
@@ -344,6 +345,7 @@ private:
     // 控制器只保留这一个句柄；下面这几个 external_ 开头的成员属于采集侧，不属于跟随模块。
     ExternalPulseFollower external_pulse_follower_{*this};
     MotionPlanner motion_planner_{*this};
+    LoopStats loop_stats_;
     // TMR2+DMA 脉冲出口。规划和外部跟随共用这一份（两者在逻辑上互斥），
     // ARR 序列缓冲也只有它这一份。
     StepOutputChannel step_output_;
@@ -359,20 +361,8 @@ private:
     uint16_t calibration_lookup_raw_value_;
     uint16_t calibration_lookup_corrected_value_;
 
-    bool loop_stats_enabled_;
-    uint64_t last_position_tick_ns_;
-    uint64_t last_velocity_tick_ns_;
-    uint64_t last_current_tick_ns_;
-    uint32_t position_loop_hz_;
-    uint32_t velocity_loop_hz_;
-    uint32_t current_loop_hz_;
-    // 500ms 滑动窗口，用于把位置环频率从“单拍瞬时值”改成计数平均。
-    // 单拍瞬时值会被 USB（优先级 0）/TMR5/DMA（优先级 2）的抢占放大成 17919Hz 的假掉频。
-    uint64_t position_window_ns_ = 0ULL;
-    uint32_t position_window_count_ = 0U;
-    uint32_t position_samples_;
-    uint32_t velocity_samples_;
-    uint32_t current_samples_;
+    // 频率统计（位置/速度/电流环）已整体搬到 LoopStats，见 include/loop_stats.h。
+    // 里面包含 12 个成员和 500ms 窗口平均算法，控制器只保留这个句柄。
 
     float closed_loop_threshold_angle_ = 1.8f;
     float compensated_rps_ = 0.0f;

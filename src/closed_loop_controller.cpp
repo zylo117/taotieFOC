@@ -246,10 +246,7 @@ ClosedLoopController::ClosedLoopController()
       magnetic_fault_active_(false), output_stopped_(false), phase_a_current_a_(0.0f),
     phase_b_current_a_(0.0f), cpu_usage_centi_percent_(0U), control_task_usage_centi_percent_(0U),
     calibration_lookup_raw_value_(0U), calibration_lookup_corrected_value_(0U),
-    loop_stats_enabled_(false), last_position_tick_ns_(0ULL),
-      last_velocity_tick_ns_(0ULL), last_current_tick_ns_(0ULL), position_loop_hz_(0U),
-      velocity_loop_hz_(0U), current_loop_hz_(0U), position_samples_(0U), velocity_samples_(0U),
-    current_samples_(0U), calibration_stage_(CALIBRATION_IDLE), calibration_index_(0U),
+    calibration_stage_(CALIBRATION_IDLE), calibration_index_(0U),
     calibration_sample_count_(0U), calibration_sample_attempts_(0U),
     calibration_sample_min_(0), calibration_sample_max_(0), calibration_sample_anchor_(0U),
     calibration_sample_sum_(0), calibration_home_stable_count_(0U), calibration_home_wait_ticks_(0U),
@@ -405,9 +402,9 @@ void ClosedLoopController::syncProtocolTelemetry()
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_FAULT_STATUS, fault_flags);
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_ENCODER_FAULT, encoder_fault_active_ ? 1U : 0U);
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_OUTPUT_STOP, output_stopped_ ? 1U : 0U);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_POS_LOOP_HZ, position_loop_hz_);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_VEL_LOOP_HZ, velocity_loop_hz_);
-        protocol_->setCustomParameter(TMC2209_EXT_PARAM_CUR_LOOP_HZ, current_loop_hz_);
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_POS_LOOP_HZ, loop_stats_.positionLoopHz());
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_VEL_LOOP_HZ, loop_stats_.velocityLoopHz());
+        protocol_->setCustomParameter(TMC2209_EXT_PARAM_CUR_LOOP_HZ, loop_stats_.currentLoopHz());
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_LAST_FAULT, fault_flags);
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_START_RPM, static_cast<uint32_t>(motion_start_rpm_));
         protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAX_RPM, static_cast<uint32_t>(motion_max_rpm_));
@@ -474,6 +471,14 @@ bool ClosedLoopController::readParameter(uint16_t reg, uint32_t* value)
 
 void ClosedLoopController::updateLoopFrequencyStats(uint64_t time_ns)
 {
+    // 频率统计已搬到 LoopStats（include/loop_stats.h）：
+    // 12 个成员 + 500ms 窗口平均算法都在那边，这里只转发一下。
+    loop_stats_.update(time_ns);
+}
+
+#if 0  // 原实现，保留作对照
+void ClosedLoopController::updateLoopFrequencyStats_old(uint64_t time_ns)
+{
     if (!loop_stats_enabled_)
     {
         return;
@@ -529,6 +534,7 @@ void ClosedLoopController::updateLoopFrequencyStats(uint64_t time_ns)
         last_current_tick_ns_ = time_ns;
     }
 }
+#endif  // 原 updateLoopFrequencyStats 实现结束，已完成归档到 LoopStats
 
 void ClosedLoopController::setTargetStep(int32_t target_step)
 {
@@ -1203,13 +1209,7 @@ void ClosedLoopController::updateAdaptivePid(float speed_rps, float acceleration
 
 void ClosedLoopController::enableLoopStats(bool enable)
 {
-    loop_stats_enabled_ = enable;
-    if (enable)
-    {
-        last_position_tick_ns_ = 0ULL;
-        last_velocity_tick_ns_ = 0ULL;
-        last_current_tick_ns_ = 0ULL;
-    }
+    loop_stats_.setEnabled(enable);
 }
 
 void ClosedLoopController::getLoopFrequencyStats(LoopFrequencyStats* stats) const
@@ -1219,27 +1219,17 @@ void ClosedLoopController::getLoopFrequencyStats(LoopFrequencyStats* stats) cons
         return;
     }
 
-    stats->position_loop_hz = position_loop_hz_;
-    stats->velocity_loop_hz = velocity_loop_hz_;
-    stats->current_loop_hz = current_loop_hz_;
-    stats->position_samples = position_samples_;
-    stats->velocity_samples = velocity_samples_;
-    stats->current_samples = current_samples_;
+    stats->position_loop_hz = loop_stats_.positionLoopHz();
+    stats->velocity_loop_hz = loop_stats_.velocityLoopHz();
+    stats->current_loop_hz = loop_stats_.currentLoopHz();
+    stats->position_samples = loop_stats_.positionSamples();
+    stats->velocity_samples = loop_stats_.velocitySamples();
+    stats->current_samples = loop_stats_.currentSamples();
 }
 
 void ClosedLoopController::resetLoopFrequencyStats()
 {
-    position_loop_hz_ = 0U;
-    position_window_ns_ = 0ULL;
-    position_window_count_ = 0U;
-    velocity_loop_hz_ = 0U;
-    current_loop_hz_ = 0U;
-    position_samples_ = 0U;
-    velocity_samples_ = 0U;
-    current_samples_ = 0U;
-    last_position_tick_ns_ = 0ULL;
-    last_velocity_tick_ns_ = 0ULL;
-    last_current_tick_ns_ = 0ULL;
+    loop_stats_.reset();
 }
 
 int32_t ClosedLoopController::getPositionSteps() const
@@ -1435,17 +1425,17 @@ float ClosedLoopController::getPhaseCurrentTelemetryB() const
 
 uint32_t ClosedLoopController::getPositionLoopHz() const
 {
-    return position_loop_hz_;
+    return loop_stats_.positionLoopHz();
 }
 
 uint32_t ClosedLoopController::getVelocityLoopHz() const
 {
-    return velocity_loop_hz_;
+    return loop_stats_.velocityLoopHz();
 }
 
 uint32_t ClosedLoopController::getCurrentLoopHz() const
 {
-    return current_loop_hz_;
+    return loop_stats_.currentLoopHz();
 }
 
 bool ClosedLoopController::readCalibrationTablePair(uint8_t table, uint16_t pair_index,
