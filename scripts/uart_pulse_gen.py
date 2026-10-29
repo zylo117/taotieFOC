@@ -179,7 +179,9 @@ def write_register(ser, reg, value, label):
         print("  %-14s reg=0x%03X -> 失败：%s" % (label, reg, exc))
         return False
 
-    ok = ack[:6] == bytes([0x55, 0xAA, 0x82, (reg >> 8) & 0xFF, reg & 0xFF])
+    # 只比较前 5 字节：0x55 0xAA 0x82 regHi regLo
+    # （不要写 ack[:6] 去比 5 字节的期望值，那样永远不相等，会误报“回包异常”）
+    ok = ack[:5] == bytes([0x55, 0xAA, 0x82, (reg >> 8) & 0xFF, reg & 0xFF])
     print("  %-14s reg=0x%03X value=%d via %s  -> %s" % (
         label, reg, value, cdc_port,
         "OK" if ok else ("回包异常: %s" % ack.hex().upper() if ack else "无回包")))
