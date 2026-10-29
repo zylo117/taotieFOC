@@ -8,6 +8,7 @@
 #include "closed_loop_protocol.h"
 #include "load_angle.h"
 #include "pid_auto_tuner.h"
+#include "parameter_router.h"
 #include "step_output_channel.h"
 #include "stepper_driver.h"
 #include "telemetry_scheduler.h"
@@ -69,6 +70,10 @@ struct LoopFrequencyStats
 class ClosedLoopController
 {
 public:
+    // STEP 脉宽的硬限制（ns）。没写明细分步距时，100ns 已经接近 TMC2209 的
+    // 最小脉宽识别能力；再短就会被驱动器整步忽略。上限 20us 是给低速调试留的。
+    static constexpr uint64_t kMinStepPulseNs = 100ULL;
+    static constexpr uint64_t kMaxStepPulseNs = 20000ULL;
 
     enum FaultFlags : uint32_t
     {
@@ -218,6 +223,10 @@ public:
     void calibrateEncoder();
 
 private:
+    // 参数路由需要直接读写控制器的运动状态、PID、编码器、负载角等成员，
+    // 不给它开几十个 public 访问器（那样接口会比现在更难看）。
+    friend class ParameterRouter;
+
     void updateLoopFrequencyStats(uint64_t time_ns);
     // ExternalPulseFollower 尚未抽成独立类之前，Phase 0 先把 rampUpdate 里
     // 三段边界最清晰的逻辑抽成成员函数。后续阶段会把它们整体搬进各自的模块。
@@ -377,6 +386,11 @@ private:
     // 65535 回绕后 % 20000 每 3.28 秒只能命中 4 次，平均只有 1.22Hz。
     TelemetryScheduler telemetry_scheduler_;
     TelemetryScheduler::Slot telemetry_slot_ = TelemetryScheduler::Slot::kNone;
+
+    // 参数路由（writeParameter / readParameter 的大表）。
+    // 这是控制器的 friend：参数分散在运动状态/PID/编码器/负载角等多个子模块里，
+    // 逐个开 public 访问器会把接口撑得比现在更难看清。
+    ParameterRouter parameter_router_{*this};
 
     uint32_t max_step_per_ramp = 0;
 
