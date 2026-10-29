@@ -444,8 +444,8 @@ def main():
     try:
         ser = serial.Serial(
             port=args.port,
-            # 先用 115200 打开：下面要写配置寄存器，协议帧只能在这个波特率下发
-            baudrate=PROTOCOL_BAUD,
+            # 直接按脉冲波特率打开：配置寄存器走 USB CDC（另一个端口），不碰这根线
+            baudrate=plan["baud"],
             bytesize=serial.EIGHTBITS,
             parity=serial.PARITY_NONE,
             stopbits=serial.STOPBITS_ONE,
@@ -468,7 +468,7 @@ def main():
         ser.reset_output_buffer()
 
         # 发送前写配置寄存器（细分 / 电机使能）。
-        # 走 USB CDC，不经过 PB5，零假脉冲（代价：网页占着 CDC 时要先关掉）
+        # 走 USB CDC（另一个端口），不经过 PB5，零假脉冲；不做任何波特率切换。
         if args.microsteps or args.enable_motor:
             print("=== 发送前配置 ===")
             if args.microsteps:
@@ -476,9 +476,6 @@ def main():
             if args.enable_motor:
                 write_register(ser, REG_MOTOR_ENABLE, 1, "电机使能")
 
-        # 切回脉冲用的波特率（--freq 57600 时就是 115200，不会实际变化）
-        ser.baudrate = plan["baud"]
-        time.sleep(0.05)
         ser.reset_input_buffer()
 
         writer = Writer(ser, plan["byte_value"], plan["total_bytes"])
