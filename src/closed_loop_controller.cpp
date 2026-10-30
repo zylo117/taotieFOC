@@ -866,9 +866,41 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         encoder_ != nullptr && delta_ramp_ns > 0U && motion_max_step_s_ > 0.0f)
     {
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
-        // 位置跟随误差定义为“命令 - 实际”。如果命令已经领先真实位置，说明该减速；
-        // 这里必须取反后再送入位置 PID，否则正误差会被误当成要求继续加速。
-        const float position_reference_rps = position_pid_.update(-motion_follow_error_deg_ / 360.0f, dt);
+
+        // 【阶段 2：负载角前馈】电机轴永远落后于命令脉冲，这个滞后角就是负载角，
+        // 是物理必然，不应该被 PID 当成误差去“追”——追不上会让积分项无限累积，
+        // 最后表现为脉冲暴增、电机停摆。
+        //
+        // 做法：用 load_angle_ 表（按速度拟合的幂律模型）算出“理论上应该落后多少”，
+        // 从跟随误差里减掉，PID 只处理“超出预期的偏差”。
+        //
+        // 符号约定：
+        //   motion_follow_error_deg_ = 实际 - 命令 → 落后时为负数
+        //   getLoadAngleMilliDegrees() 返回正值（落后多少度）
+        //   所以稳态时 follow_error + load_angle ≈ 0，effective_error 就是残差。
+        float load_angle_deg = 0.0f;
+        if (load_angle_.isFitted())
+        {
+            const float speed_abs = fast_abs(encoder_speed_rpm_);
+            const auto speed_rpm_u16 = static_cast<uint16_t>(
+                speed_abs > 65535.0f ? 65535.0f : speed_abs);
+            load_angle_deg =
+                static_cast<float>(load_angle_.getLoadAngleMilliDegrees(speed_rpm_u16)) / 1000.0f;
+        }
+        const float effective_error_deg = motion_follow_error_deg_ + load_angle_deg;
+
+        // 残差死区：负载角模型不可能完全准（拟合误差 + 机械差异），
+        // 剩下的零点几度不该让积分项持续爬升。死区外的部分才送进 PID。
+        constexpr float kResidualDeadbandDeg = 0.05f;
+        float pid_error_deg = 0.0f;
+        if (fast_abs(effective_error_deg) >= kResidualDeadbandDeg)
+        {
+            pid_error_deg = effective_error_deg -
+                (effective_error_deg > 0.0f ? kResidualDeadbandDeg : -kResidualDeadbandDeg);
+        }
+
+        // 位置跟随误差为正时表示实际超前，应该减速；取反后送入位置 PID。
+        const float position_reference_rps = position_pid_.update(-pid_error_deg / 360.0f, dt);
         const float measured_motion_rps = encoder_speed_rpm_ / 60.0f;
         // 总期望速度 = 基础速度 + 位置环修正量
         // 【修复 BUG 1】原来是 static const，只初始化一次：
