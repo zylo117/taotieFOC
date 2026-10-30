@@ -987,6 +987,21 @@ void ClosedLoopController::stopMotion()
     motion_direction_change_pending_ = false;
     motion_step_accumulator_ = 0.0f;
     compensated_motion_step_accumulator_ = 0.0f;
+    // 【必须清零】这三个都是有“记忆”的状态，不清理会让下一次启动从错误速度起跑：
+    //
+    // compensated_rps_（补偿速度 rps）：自从加了加速度限制后，它每拍的值是
+    //   clamp(目标, 上一拍 ± accel*dt) —— 变成了带状态的东西。
+    //   运动中按停止时它保留着停止那一刻的补偿量，再启动时规划速度从 0 开始，
+    //   但这个残留值仍然叠加在 current_step_speed_ 上，且需要好几拍才能衰减掉，
+    //   表现为“以停止时的速度启动”。旧代码每拍直接重算（无限幅）所以没这个残留。
+    //
+    // current_step_speed_（微步/s）：startMotion() 只重算 motion_start_step_s_ /
+    //   motion_max_step_s_ / steps_to_decel_，完全不会摸这个值。
+    //
+    // motion_ramp_stage_：如果上次停在 DECEL，下次启动第一拍会先减速而不是从 0 加速。
+    compensated_rps_ = 0.0f;
+    current_step_speed_ = 0.0f;
+    motion_ramp_stage_ = RAMP_STAGE_ACCEL;
     motion_last_ramp_time_ns_ = 0ULL;
     // printf("fuck3 motion_last_ramp_time_ns_: %f\n", motion_last_ramp_time_ns_/1e9);
     motion_step_high_ = false;

@@ -36,58 +36,41 @@ namespace stepper_common
     }
 
     // k_psc: 每tick时间， k_step_pulse_ticks: 脉宽tick数， direction: true为正
-    //
-    // 【关键性能优化】这个函数每窗（50us）都被 emit() 调一次。原来每次都在跑
-    // tmr_output_default_para_init x2 + tmr_output_channel_config x2 + tmr_base_init 等
-    // 共 20 个库函数调用（内部还带多重判断和多次寄存器写）。
-    // 实测：开环跑运动时 rampUpdate 从 <50us 涨到 58~62us，就是这里的固定开销累积。
-    //
-    // 但这些配置（PWM 模式、极性、时钟分频、预装载、CH3/CH4 输出模式）从不改变，
-    // 唯一需要每窗更新的是脉宽（CCR3）和方向（CCR4）。
-    // 所以改成：第一次全量配置，之后只写两个 CCR。
     void stepper_init_motion_timer(uint32_t k_psc, uint32_t k_step_pulse_ticks, bool direction)
     {
         tmr_counter_enable(TMR2, FALSE);
         tmr_output_enable(TMR2, FALSE);
         tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, FALSE);
 
-        static bool timer_configured = false;
-        if (!timer_configured)
-        {
-            tmr_output_config_type output_config;
-            tmr_output_default_para_init(&output_config);
+        tmr_output_config_type output_config;
+        tmr_output_default_para_init(&output_config);
 
-            tmr_base_init(TMR2, 1, k_psc);  // 1是垃圾值，只为了初始，后期会被dma的arr取代
-            tmr_cnt_dir_set(TMR2, TMR_COUNT_UP);
-            tmr_clock_source_div_set(TMR2, TMR_CLOCK_DIV2);
-            tmr_period_buffer_enable(TMR2, TRUE);  //ARR预装载，保证周期不会中途撕裂波形，高频必须打开
+        tmr_base_init(TMR2, 1, k_psc);  // 1是垃圾值，只为了初始，后期会被dma的arr取代
+        tmr_cnt_dir_set(TMR2, TMR_COUNT_UP);
+        tmr_clock_source_div_set(TMR2, TMR_CLOCK_DIV2);
+        tmr_period_buffer_enable(TMR2, TRUE);  //ARR预装载，保证周期不会中途撕裂波形，高频必须打开
 
-            output_config.oc_mode = TMR_OUTPUT_CONTROL_PWM_MODE_A;
-            output_config.oc_idle_state = FALSE;
-            output_config.occ_idle_state = FALSE;
-            output_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
-            output_config.oc_output_state = TRUE;
-            tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_3, &output_config);
-            tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
-
-            // CH4：DIR 使用同一个 ARR 计时基准；前后加保护时间，保证 DIR 在 STEP 产生前后都稳定。
-            tmr_output_config_type dir_config;
-            tmr_output_default_para_init(&dir_config);
-            dir_config.oc_mode = TMR_OUTPUT_CONTROL_PWM_MODE_A;
-            dir_config.oc_idle_state = FALSE;
-            dir_config.occ_idle_state = FALSE;
-            dir_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
-            dir_config.oc_output_state = TRUE;
-            tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_4, &dir_config);
-            tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_4, TRUE);
-
-            timer_configured = true;
-        }
-
-        // 每窗唯一需要变的两个值：脉宽 + 方向
+        output_config.oc_mode = TMR_OUTPUT_CONTROL_PWM_MODE_A;
+        output_config.oc_idle_state = FALSE;
+        output_config.occ_idle_state = FALSE;
+        output_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
+        output_config.oc_output_state = TRUE;
+        tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_3, &output_config);
         // 高电平宽度按真正被要求的脉宽保持，随后拉低，避免过窄导致被忽略。
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, k_step_pulse_ticks);
-        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, direction ? 0xFFFFFFFFU : 0U);
+        tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
+
+        // CH4：DIR 使用同一个 ARR 计时基准；前后加保护时间，保证 DIR 在 STEP 产生前后都稳定。
+        tmr_output_config_type dir_config;
+        tmr_output_default_para_init(&dir_config);
+        dir_config.oc_mode = TMR_OUTPUT_CONTROL_PWM_MODE_A;
+        dir_config.oc_idle_state = FALSE;
+        dir_config.occ_idle_state = FALSE;
+        dir_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
+        dir_config.oc_output_state = TRUE;
+        tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_4, &dir_config);
+        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, direction? 0xFFFFFFFF: 0U);
+        tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_4, TRUE);
 
         tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, TRUE);
 
