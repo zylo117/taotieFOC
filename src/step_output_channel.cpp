@@ -80,44 +80,54 @@ bool StepOutputChannel::emit(uint32_t num_steps, bool direction, bool direction_
 
     const uint32_t seq_count = num_steps + 2U;  // 头尾各一个换向 guard
 
+    // 【性能】整个预算计算用 32 位完成。
+    // 原因：Cortex-M4 只有 32 位硬件除法（UDIV，2~12 周期），64 位除法会变成软件库
+    // __aeabi_uldivmod（约 300 周期/次），乘法 __aeabi_lmul 也要几十周期。
+    // 原实现每窗跑 3 次 64 位除法 + 2 次 64 位乘法 ≈ 3.9us，而整个控制周期才 50us。
+    //
+    // 为什么能降到 32 位：window_ns 正常是 50000（50us），即使调度卡顿到 10ms
+    // （10,000,000）也远小于 2^32，remaining_ticks x PERMILLE 最大约 1.1e9 也不溢出。
+    // 超过 10ms 的卡顿本来就要丢帧，钳位是安全且必要的。
+    constexpr uint64_t kMaxWindowNs = 10000000ULL;  // 10ms 上限（200 个控制周期）
+    const uint32_t window_ns_32 = (window_ns > kMaxWindowNs)
+        ? static_cast<uint32_t>(kMaxWindowNs)
+        : static_cast<uint32_t>(window_ns);
+
     // 头尾 guard 占掉的固定时间：两端各一个 guard_tick，再加 5ns 余量吸收取整。
-    const uint64_t guard_ns =
-        2ULL * stepper_common::guard_tick * stepper_common::target_tick_time + 5ULL;
-    if (window_ns <= guard_ns)
+    const uint32_t guard_ns = static_cast<uint32_t>(
+        2U * static_cast<uint32_t>(stepper_common::guard_tick) *
+        static_cast<uint32_t>(stepper_common::target_tick_time) + 5U);
+    if (window_ns_32 <= guard_ns)
     {
         // 窗口连 guard 都放不下（首拍或调度严重卡顿），这一窗不发。
         // 调用方会把这段时间留给下一拍，比硬塞一串超窗脉冲安全。
         return false;
     }
 
-    const uint64_t remaining_ticks = (window_ns - guard_ns) / stepper_common::target_tick_time;
+    const uint32_t tick_ns = static_cast<uint32_t>(stepper_common::target_tick_time);
+    const uint32_t remaining_ticks = (window_ns_32 - guard_ns) / tick_ns;
     const uint32_t min_step_ticks = step_pulse_ticks * 2U;  // 高电平 + 低电平各一个脉宽
 
     uint32_t step_ticks = min_step_ticks;
     bool spread_enabled = false;
+    // 预算窗口（两种模式共用，不再重复算一遍 64 位乘除）
+    uint32_t budget_ticks = num_steps * min_step_ticks;
 
 #if STEP_SEQ_MODE != 0
     // 高速兜底：步频超过 1/(2*脉宽) = 2.5 Mstep/s 时，连 min_step_ticks 都塞不下，
     // 平滑没有意义且必定超窗（下一窗会砍掉没发完的脉冲 → 真丢步），退回恒速突发。
     // 另：只铺满窗口预算的 STEP_SEQ_SPREAD_PERMILLE，剩下的余量留给控制任务
     // 调度抖动和启动序列的软件开销，不让每个窗口都擦着边界结束。
-    const uint64_t spread_budget_ticks =
-        (remaining_ticks * static_cast<uint64_t>(STEP_SEQ_SPREAD_PERMILLE)) / 1000ULL;
-    const uint64_t spread_need_ticks = static_cast<uint64_t>(num_steps) * min_step_ticks;
+    const uint32_t spread_budget_ticks =
+        (remaining_ticks * static_cast<uint32_t>(STEP_SEQ_SPREAD_PERMILLE)) / 1000U;
+    const uint32_t spread_need_ticks = num_steps * min_step_ticks;
     if (spread_budget_ticks >= spread_need_ticks)
     {
         spread_enabled = true;
-        step_ticks = static_cast<uint32_t>(spread_budget_ticks / num_steps);
+        step_ticks = spread_budget_ticks / num_steps;
+        budget_ticks = spread_budget_ticks;
     }
 #endif
-
-    // 预算窗口转 uint32（任务阻塞极端情况下 remaining_ticks 可能很大，封顶防溢出）。
-    const uint64_t budget_ticks_wide = spread_enabled
-        ? (remaining_ticks * static_cast<uint64_t>(STEP_SEQ_SPREAD_PERMILLE)) / 1000ULL
-        : static_cast<uint64_t>(num_steps) * min_step_ticks;
-    const uint32_t budget_ticks = (budget_ticks_wide > 0x3FFFFFFFULL)
-        ? 0x3FFFFFFFU
-        : static_cast<uint32_t>(budget_ticks_wide);
 
     step_sequencer::fill(seq_buffer_, seq_count, step_ticks, min_step_ticks, budget_ticks);
     step_sequencer::addDirectionGuard(seq_buffer_, seq_count, stepper_common::guard_tick,
