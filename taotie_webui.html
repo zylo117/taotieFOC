@@ -1145,7 +1145,7 @@
                     </div>
                     <div class="status-item">
                         <div class="label">空闲抖动范围</div>
-                        <div class="value" id="encoderJitterValue">--</div>
+                        <div class="value" id="encoderJitterValue" style="white-space:nowrap;">--</div>
                     </div>
                     <div class="status-item">
                         <div class="label">磁场状态 MGH / MGL</div>
@@ -4046,7 +4046,12 @@
                     const loadAngleComp = excludeLoadAngleChecked
                         ? Number(entry.loadAngle || 0)
                         : 0;
-                    const y = followErrorLine(entry.followError + loadAngleComp);
+                    // 勾选「误差不计负载角」时扣除负载角：
+                    // 注意固件发来的负载角是**带符号**的，且和 follow_error 同号：
+                    //   正向运动：follow_error = -1.5°，loadAngle = -1.5°
+                    //   反向运动：follow_error = +1.5°，loadAngle = +1.5°
+                    // 所以是「减去」而不是「加上」（旧版本固件发正值时才用 +）。
+                    const y = followErrorLine(entry.followError - loadAngleComp);
                     if (i === 0) ctx.moveTo(x, y);
                     else ctx.lineTo(x, y);
                 });
