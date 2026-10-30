@@ -887,6 +887,18 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_load_angle_deg_ = (encoder_speed_rpm_ >= 0.0f)
             ? -load_magnitude_deg
             : load_magnitude_deg;
+
+        // 【前馈信任度】0~100%，默认 100%。
+        // 负载角不只与速度有关，还和实际负载有关：表是按某个标定负载拟合的，
+        // 负载变化时真实负载角会偏离表值。信任度降到 50~70% 可以让前馈更保守，
+        // 把偏差交给 PID（代价是响应变慢），避免表值偏高时前馈过度、PID 反向修正。
+        motion_load_angle_deg_ *= load_angle_feedforward_ratio_;
+
+        // 【上限钳位】防止标定数据异常（或速度外推）导致前馈爆表。
+        // 5° 远大于实际负载角量级（1200RPM 约 3°），只做安全网用。
+        constexpr float kMaxLoadAngleCompDeg = 5.0f;
+        motion_load_angle_deg_ = fast_clamp(motion_load_angle_deg_,
+                                           -kMaxLoadAngleCompDeg, kMaxLoadAngleCompDeg);
     }
 
     if (closed_loop_angle_mode_enabled_)

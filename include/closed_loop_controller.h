@@ -382,6 +382,12 @@ private:
     // 换向时设为 kTurnaroundSkipRamps，每拍递减到 0 后恢复采样。
     uint32_t motion_turnaround_skip_ramps_ = 0U;
 
+    // 负载角前馈信任度（0.0~1.0）。
+    // 负载角只与速度有关是个简化假设：真实负载角还取决于负载大小，而本方案
+    // 无法接入 TMC2209 的电流环，感知不到负载变化。信任度降到 0.5~0.7 可以
+    // 让前馈变保守，把偏差交给 PID（代价是响应变慢），避免表值偏高时过度补偿。
+    float load_angle_feedforward_ratio_ = 1.0f;
+
     // 遥测节拍器：控制环每拍推进一格，syncProtocolTelemetry 按档位选刷哪一堆。
     // 以前直接用 rampUpdate 里的 ramp_loop_idx 取模，而那个计数器是 uint16_t，
     // 65535 回绕后 % 20000 每 3.28 秒只能命中 4 次，平均只有 1.22Hz。

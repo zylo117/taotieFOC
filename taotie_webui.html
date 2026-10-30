@@ -991,6 +991,11 @@
                             <input id="encoderFilterWindowInput" max="256" min="0" step="1" type="number"
                                    value="4"/>
                         </div>
+                        <div class="field">
+                            <label for="loadAngleFfRatioInput">负载角前馈信任度（%）</label>
+                            <input id="loadAngleFfRatioInput" max="100" min="0" step="5" type="number"
+                                   value="100"/>
+                        </div>
                     </div>
                     <div class="inline mt">
                         <button class="primary" id="startMotionBtn">启动</button>
@@ -1598,6 +1603,7 @@
             , EXT_FOLLOW_RESET: 0x14F
             , EXT_FOLLOW_WINDOW_REVERSALS: 0x150
             , LOAD_ANGLE_MDEG: 0x151
+            , LOAD_ANGLE_FF_RATIO: 0x152
             , CPU_USAGE_CENTIPERCENT: 0x137
             , CONTROL_TASK_USAGE_CENTIPERCENT: 0x138
             , MAX_RPM: 0x11B
@@ -4438,6 +4444,24 @@
                         if (document.getElementById('wavePopup').classList.contains('visible')) {
                             drawWaveform('motionWavePopupCanvas');
                         }
+                    }
+                });
+            }
+
+            // 负载角前馈信任度：改动时下发 0x152（百分数）。
+            // 负载角表按某个标定负载拟合，实际负载变化时真实负载角会偏离表值；
+            // 降到 50~70 让前馈更保守（偏差交给 PID），0 = 完全关闭前馈。
+            const ffRatioInput = document.getElementById('loadAngleFfRatioInput');
+            if (ffRatioInput) {
+                ffRatioInput.addEventListener('change', async function () {
+                    const percent = clamp(Math.round(Number(this.value) || 0), 0, 100);
+                    this.value = String(percent);
+                    if (!state.connected) return;
+                    try {
+                        await writeRegister(CUSTOM_REGS.LOAD_ANGLE_FF_RATIO, percent);
+                        log(`[INFO] 负载角前馈信任度 = ${percent}%`);
+                    } catch (error) {
+                        log(`[ERROR] 设置前馈信任度失败：${error.message}`);
                     }
                 });
             }

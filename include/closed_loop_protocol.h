@@ -141,7 +141,13 @@ enum Tmc2209CustomExtensionRegister
     // 含义：按当前转速从 load_angle_ 拟合模型算出的“理论滞后角”。
     // 用途：网页显示 + “波形不计负载角”勾选（勾选后用 follow_error + load_angle 绘制）。
     // 注意：未标定负载角表时恒为 0（isFitted() == false 不启用前馈）。
-    TMC2209_EXT_PARAM_LOAD_ANGLE_MDEG = 0x151U
+    TMC2209_EXT_PARAM_LOAD_ANGLE_MDEG = 0x151U,
+
+    // R/W：负载角前馈信任度（百分数，0~100，默认 100）。
+    // 负载角不只与速度有关，还取决于实际负载；本方案感知不到负载变化
+    // （无法接入 TMC2209 电流环），表值偏高时前馈过度会让 PID 反向修正。
+    // 降到 50~70 让前馈变保守，把偏差交给 PID（代价是响应变慢）。
+    TMC2209_EXT_PARAM_LOAD_ANGLE_FF_RATIO = 0x152U
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -205,8 +211,8 @@ private:
     bool readOfficialRegister(uint8_t reg, uint32_t* value) const;
 
     ClosedLoopDriverProtocolConfig config_;
-    // 扩展参数表长度：覆盖 0x100 ~ 0x151，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x151U - 0x100U + 1U;
+    // 扩展参数表长度：覆盖 0x100 ~ 0x152，新增寄存器时同步这个常量
+    static constexpr uint16_t kCustomParameterCount = 0x152U - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

@@ -30,6 +30,14 @@ ParameterRouter::ParameterRouter(ClosedLoopController& owner) : owner_(owner)
 
 bool ParameterRouter::write(uint16_t reg, uint32_t value)
 {
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FF_RATIO)
+    {
+        // 负载角前馈信任度：网页传百分数 0~100，内部存 0.0~1.0。
+        // 写 0 = 完全关闭前馈（退回无前馈行为）；写 100 = 完全相信表。
+        const uint32_t percent = value > 100U ? 100U : value;
+        owner_.load_angle_feedforward_ratio_ = static_cast<float>(percent) / 100.0f;
+        return owner_.protocol_ != nullptr && owner_.protocol_->writeRegister(reg, percent);
+    }
     if (reg == TMC2209_EXT_PARAM_CLOSED_LOOP_ENABLE)
     {
         owner_.closed_loop_compensation_enabled_ = value != 0U;
@@ -282,6 +290,12 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     if (value == nullptr)
     {
         return false;
+    }
+    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FF_RATIO)
+    {
+        // 回读百分数（0~100），与写入口径一致
+        *value = static_cast<uint32_t>(owner_.load_angle_feedforward_ratio_ * 100.0f + 0.5f);
+        return true;
     }
     if (reg == TMC2209_EXT_PARAM_CLOSED_LOOP_ENABLE)
     {

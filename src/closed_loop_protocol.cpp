@@ -147,6 +147,7 @@ bool Tmc2209ProtocolAdapter::isCustomExtensionRegister(uint16_t id)
     case TMC2209_EXT_PARAM_EXT_FOLLOW_RESET:
     case TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS:
     case TMC2209_EXT_PARAM_LOAD_ANGLE_MDEG:
+    case TMC2209_EXT_PARAM_LOAD_ANGLE_FF_RATIO:
         return true;
     default:
         return false;
@@ -428,6 +429,7 @@ bool Tmc2209ProtocolAdapter::setCustomParameter(uint16_t id, uint32_t value)
     case TMC2209_EXT_PARAM_EXT_FOLLOW_RESET:
     case TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS:
     case TMC2209_EXT_PARAM_LOAD_ANGLE_MDEG:
+    case TMC2209_EXT_PARAM_LOAD_ANGLE_FF_RATIO:
         custom_parameters_[index] = value;
         break;
     default:
