@@ -135,7 +135,13 @@ enum Tmc2209CustomExtensionRegister
     // RO：窗内发生过换向的窗口数。一个 50us 窗口只能发一个方向，这种窗口里
     // “先正走后反走”的脉冲被净和压平（终点位置仍对，中间往返不执行）。
     // 只做统计，不影响输出；持续增长就说明外部信号频率高到一窗内会换向。
-    TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS = 0x150U
+    TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS = 0x150U,
+
+    // RO：实时负载角（mdeg，有符号）。
+    // 含义：按当前转速从 load_angle_ 拟合模型算出的“理论滞后角”。
+    // 用途：网页显示 + “波形不计负载角”勾选（勾选后用 follow_error + load_angle 绘制）。
+    // 注意：未标定负载角表时恒为 0（isFitted() == false 不启用前馈）。
+    TMC2209_EXT_PARAM_LOAD_ANGLE_MDEG = 0x151U
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -199,8 +205,8 @@ private:
     bool readOfficialRegister(uint8_t reg, uint32_t* value) const;
 
     ClosedLoopDriverProtocolConfig config_;
-    // 扩展参数表长度：覆盖 0x100 ~ 0x150，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x150U - 0x100U + 1U;
+    // 扩展参数表长度：覆盖 0x100 ~ 0x151，新增寄存器时同步这个常量
+    static constexpr uint16_t kCustomParameterCount = 0x151U - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

@@ -371,6 +371,10 @@ private:
 
     float closed_loop_threshold_angle_ = 1.8f;
     float compensated_rps_ = 0.0f;
+    // 实时负载角（度，正值 = 电机轴相对于命令脉冲的理论滞后量）。
+    // 由补偿段每拍更新（load_angle_.getLoadAngleMilliDegrees 按当前转速查模），
+    // 遥测通过 0x151 发给网页显示，也用于“波形不计负载角”的后处理。
+    float motion_load_angle_deg_ = 0.0f;
 
     // 遥测节拍器：控制环每拍推进一格，syncProtocolTelemetry 按档位选刷哪一堆。
     // 以前直接用 rampUpdate 里的 ramp_loop_idx 取模，而那个计数器是 uint16_t，

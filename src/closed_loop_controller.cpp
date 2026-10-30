@@ -887,6 +887,8 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
             load_angle_deg =
                 static_cast<float>(load_angle_.getLoadAngleMilliDegrees(speed_rpm_u16)) / 1000.0f;
         }
+        // 供遥测（0x151）和网页“波形不计负载角”使用；未标定时保持 0
+        motion_load_angle_deg_ = load_angle_deg;
         const float effective_error_deg = motion_follow_error_deg_ + load_angle_deg;
 
         // 残差死区：负载角模型不可能完全准（拟合误差 + 机械差异），

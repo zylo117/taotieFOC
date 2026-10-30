@@ -924,6 +924,7 @@
                     </div>
                     <div class="status-line mt">
                         <span>即时转速：<strong id="waveSpeedReadout">0.00 RPM</strong></span>
+                        <span>实时负载角：<strong id="waveLoadAngleReadout">0.000°</strong></span>
                         <span>跟随误差：<strong id="waveErrorReadout">0.000°</strong></span>
                     </div>
                 </div>
@@ -931,6 +932,10 @@
                 <!-- 波形图也是两个模式共用的：测速看梯形跟随，外部跟随看 1:1 转发质量 -->
                 <div class="card">
                     <h3 style="margin:0 0 12px;">实时波形（转速 / 跟随误差）</h3>
+                    <label class="checkbox-row" style="margin:-6px 0 10px;">
+                        <input id="waveExcludeLoadAngleInput" type="checkbox"/>
+                        <span>误差不计负载角（勾选后波形用 跟随误差 + 负载角 绘制；仅影响显示，不改控制）</span>
+                    </label>
                     <div class="tiny mt" id="motionDurationEstimate">预计时间：等待参数</div>
                     <canvas height="260" id="motionWaveCanvas" style="width:100%;height:260px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"
                             width="620"></canvas>
@@ -1466,6 +1471,8 @@
             , wavePaused: false
             , wavePausedAt: 0
             , motionWaveTimer: null
+            // 0x11F 连续为 0 的帧数，用于防抖（见 handleCustomTelemetry 里的收尾逻辑）
+            , waveZeroStreak: 0
             , waveCaptureActive: false
             , waveCaptureStartedAt: 0
             , waveMotionObserved: false
@@ -1590,6 +1597,7 @@
             , EXT_FOLLOW_DROPPED: 0x14E
             , EXT_FOLLOW_RESET: 0x14F
             , EXT_FOLLOW_WINDOW_REVERSALS: 0x150
+            , LOAD_ANGLE_MDEG: 0x151
             , CPU_USAGE_CENTIPERCENT: 0x137
             , CONTROL_TASK_USAGE_CENTIPERCENT: 0x138
             , MAX_RPM: 0x11B
@@ -3757,7 +3765,10 @@
             const sample = {
                 t: now,
                 rpm: Number(state.motionSpeedRpm || 0),
-                followError: Number(state.motionFollowErrorDeg || 0)
+                followError: Number(state.motionFollowErrorDeg || 0),
+                // 历史样本里也存下当时的负载角，勾选“误差不计负载角”时用它做扣除，
+                // 而不是用当前值近似（否则波形在速度变化段会失真）。
+                loadAngle: Number(state.motionLoadAngleDeg || 0)
             };
             state.waveHistory.push(sample);
             const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 10000), 10000, 10000);
@@ -3771,7 +3782,10 @@
         function startWaveCapture() {
             if (state.motionWaveTimer !== null) {
                 window.clearInterval(state.motionWaveTimer);
+                state.motionWaveTimer = null;   // 先置 null：万一下面抛异常，看门狗能感知到“无定时器”并重启
             }
+            // 防抖计数器：连续 3 帧 0x11F==0 才认定运动结束
+            state.waveZeroStreak = 0;
             state.waveHistory = [];
             state.motionSpeedRpm = 0;
             state.motionFollowErrorDeg = 0;
@@ -3797,7 +3811,35 @@
             }, 40);
         }
 
+        // 波形定时器自愈（看门狗）。
+        // 由独立的 200ms 心跳调用，不依赖波形自己的定时器（否则死循环）。
+        // 僵尸状态：waveCaptureActive 为 true 但 motionWaveTimer 为 null
+        // —— 表现为“波形永久不再推进，但电机还在转”。
+        // 可能来源：startWaveCapture 里 clear 后抛异常、或切 tab/stop 的异步竞争。
+        let waveWatchdogLogCount = 0;
+        function ensureWaveTimerAlive() {
+            if (!state.waveCaptureActive || state.motionWaveTimer !== null) return;
+            // 重建定时器，内容和 startWaveCapture 里完全一致
+            state.motionWaveTimer = window.setInterval(() => {
+                if (!state.waveCaptureActive) return;
+                pushWaveSample();
+                drawWaveform();
+                if (document.getElementById('wavePopup').classList.contains('visible')) {
+                    drawWaveform('motionWavePopupCanvas');
+                }
+            }, 40);
+            // 只在头几次打日志，避免控制台被刷屏
+            if (waveWatchdogLogCount < 5) {
+                waveWatchdogLogCount++;
+                console.warn('[WAVE] 检测到采集标志为真但定时器丢失，已自动重启（第 ' + waveWatchdogLogCount + ' 次）');
+            }
+        }
+
         function stopWaveCapture() {
+            // 【临时诊断】把调用栈打出来：波形“时不时卡住”时，先确认是不是这里被误调用。
+            // 控制台会看到 [WAVE] stop 加一串调用行，第一个业务函数就是元凶。
+            // 定位完可以删掉这一行。
+            console.trace('[WAVE] stopWaveCapture');
             if (state.waveStopFreezeTimer !== null) {
                 window.clearTimeout(state.waveStopFreezeTimer);
                 state.waveStopFreezeTimer = null;
@@ -3909,6 +3951,10 @@
             const lastReadoutId = canvasId === 'motionWavePopupCanvas' ? 'wavePopupErrorLastReadout' : 'waveErrorLastReadout';
             const lastSample = filtered.length ? filtered[filtered.length - 1] : {followError: 0};
             document.getElementById(speedReadoutId).textContent = `${Number(state.motionSpeedRpm || 0).toFixed(2)} RPM`;
+            const loadAngleReadout = document.getElementById('waveLoadAngleReadout');
+            if (loadAngleReadout) {
+                loadAngleReadout.textContent = `${Number(state.motionLoadAngleDeg || 0).toFixed(3)}°`;
+            }
             document.getElementById(errorReadoutId).textContent = `${Number(state.motionFollowErrorDeg || 0).toFixed(3)}°`;
             document.getElementById(peakReadoutId).textContent = `${errorAbsPeak.toFixed(3)}°`;
             document.getElementById(lastReadoutId).textContent = `${Number(lastSample.followError || 0).toFixed(3)}°`;
@@ -3964,9 +4010,18 @@
                 // clip() 不会清空当前路径，必须重新 beginPath，
                 // 否则最后那次 stroke() 会把上面这个裁剪矩形也描出来（多一圈绿框）。
                 ctx.beginPath();
+                // 勾选“误差不计负载角”时，把当时的负载角加回去：
+                // follow_error 稳定在 -L，加上 L 后归零，图上就能看出“真实偏差”。
+                // 用 entry.loadAngle（采样时刻的值）而不是当前值，速度变化段才不失真。
+                // 【性能】勾选状态提到循环外：原来每个点都查一次 DOM，2000 个点就是 2000 次查询/帧。
+                const excludeLoadAngle = document.getElementById('waveExcludeLoadAngleInput');
+                const excludeLoadAngleChecked = !!(excludeLoadAngle && excludeLoadAngle.checked);
                 filtered.forEach((entry, i) => {
                     const x = plotLeft + ((now - entry.t) / windowMs) * (plotRight - plotLeft);
-                    const y = followErrorLine(entry.followError);
+                    const loadAngleComp = excludeLoadAngleChecked
+                        ? Number(entry.loadAngle || 0)
+                        : 0;
+                    const y = followErrorLine(entry.followError + loadAngleComp);
                     if (i === 0) ctx.moveTo(x, y);
                     else ctx.lineTo(x, y);
                 });
@@ -4330,6 +4385,19 @@
                 }
             });
 
+            // 波形图“误差不计负载角”勾选框：勾选/取消时立即重绘，不用等下一次采样刷新
+            const excludeLoadAngleInput = document.getElementById('waveExcludeLoadAngleInput');
+            if (excludeLoadAngleInput) {
+                excludeLoadAngleInput.addEventListener('change', () => {
+                    if (state.waveCaptureActive || state.waveHistory.length > 0) {
+                        drawWaveform();
+                        if (document.getElementById('wavePopup').classList.contains('visible')) {
+                            drawWaveform('motionWavePopupCanvas');
+                        }
+                    }
+                });
+            }
+
             // 编码器滤波窗口快捷对比按钮
             const filterShortcuts = [
                 ['filterWin0Btn', 0],
@@ -4392,6 +4460,11 @@
                 const followErrorDeg = (frame.value | 0) / 1000.0;
                 state.motionFollowErrorDeg = followErrorDeg;
             }
+            if (frame.reg === CUSTOM_REGS.LOAD_ANGLE_MDEG) {
+                // 实时负载角（mdeg 有符号）：按当前转速从 load_angle_ 拟合模型算出。
+                // 未标定负载角表时固件恒发 0。
+                state.motionLoadAngleDeg = (frame.value | 0) / 1000.0;
+            }
             if (frame.reg === 0x122) {
                 const windowValue = clamp(Number(frame.value || 10000), 10000, 10000);
                 document.getElementById('waveWindowMsInput').value = String(windowValue);
@@ -4404,27 +4477,22 @@
                     input.value = String(clamp(Number(frame.value) || 0, 0, 256));
                 }
             }
+            // 【波形采集不再依赖 0x11F 自动收尾】
+            //
+            // 原因：0x11F 是双向寄存器（写=启动/停止命令，读=运动状态），网页里有 7 处
+            // writeRegister(0x11F, 0)，而这些写入路径不一定真的停电机（有些只写了
+            // custom_parameters_ 而没调 stopMotion）。一旦某一处把 0x11F 刷成 0，
+            // 这里的收尾逻辑就会把波形冻结，但电机仍在正常跑 —— 表现为“波形走一段就停住”。
+            //
+            // 现在完全由用户控制：
+            //   点「暂停查看」-> 冻结在那一刻，再点恢复
+            //   切 tab / 关弹窗 -> stopWaveCapture()
+            //   运动结束后波形继续滚（能看到稳态误差），想看结果就手动暂停
+            //
+            // 下面这段只保留观测记录（给整定器 / 调试用），不再触发任何停止。
             if (frame.reg === 0x11F && (frame.cmd === 0x10 || frame.cmd === 0x81 || frame.cmd === 0x82) && state.waveCaptureActive) {
                 if ((frame.value | 0) !== 0) {
                     state.waveMotionObserved = true;
-                } else if (state.waveMotionObserved) {
-                    // 固件报 0 只代表“脉冲发完 / 定时器已停”，机械轴可能还差一个负载角。
-                    // 所以这里先补一个末点，再留一小段尾迹，等误差收敛完再冻结，
-                    // 否则波形会被砍在“还没真正停转”的那一帧上，看着像少走了角度。
-                    if (state.waveStopFreezeTimer === null) {
-                        state.waveStoppedAt = performance.now();
-                        pushWaveSample();
-                        drawWaveform();
-                        if (document.getElementById('wavePopup').classList.contains('visible')) {
-                            drawWaveform('motionWavePopupCanvas');
-                        }
-                        state.waveStopFreezeTimer = window.setTimeout(() => {
-                            state.waveStopFreezeTimer = null;
-                            stopWaveCapture();
-                        }, WAVE_POST_ROLL_MS);
-                    }
-                } else if (performance.now() - state.waveCaptureStartedAt >= 800) {
-                    stopWaveCapture();
                 }
             }
             if (frame.reg === 0x11F && (frame.cmd === 0x10 || frame.cmd === 0x81) && state.tuneTrialActive) {
@@ -4456,6 +4524,12 @@
         bindDialDrag();
         bindWavePopupDrag();
         bindControls();
+        // 【调试便利】把内部 state 挂到 window，卡住时可在控制台直接看：
+        //   __waveState.waveCaptureActive / motionWaveTimer / waveHistory.length / waveMotionObserved
+        // active=true 且 timer=null  -> 定时器丢了（看门狗会重启）
+        // active=false              -> stopWaveCapture 被调了（看控制台的 [WAVE] stop 调用栈）
+        // active=true 但 samples 不涨 -> pushWaveSample 内部抛异常
+        window.__waveState = state;
         buildMotionControlOptions();
         renderTuneActionRows();
         renderRegisterMap();
@@ -4465,6 +4539,7 @@
 
         setInterval(() => {
             updateTelemetryDisplay();
+            ensureWaveTimerAlive();
         }, 200);
 
         const originalHandleIncomingFrame = handleIncomingFrame;

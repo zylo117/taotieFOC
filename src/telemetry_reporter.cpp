@@ -66,8 +66,9 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_ANGLE_MAX_RPM, static_cast<uint32_t>(c.angle_max_rpm_));
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_ANGLE_ACCEL_RPM_S, static_cast<uint32_t>(c.angle_accel_rpm_s_));
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_PULSE_COUNT, c.motion_pulse_count_);
-        c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_SPEED_RPM,
-                                        static_cast<uint32_t>(static_cast<int32_t>(c.encoder_speed_rpm_)));
+        // 【注意】SPEED_RPM 原来在这里（kSlow ≈ 1Hz），但波形图按 25Hz 采样：
+        // 1 秒内 25 个采样点读到的都是同一个值，转速曲线看起来就是“纹丝不动”。
+        // 已移到 kMedium（≈ 100Hz）档。
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, c.step_pulse_width_ns_);
     }
     else if (slot == TelemetryScheduler::Slot::kMedium)
@@ -88,6 +89,9 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_MAGNETIC_LOW, c.magnetic_field_low_ ? 1U : 0U);
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_MODE, static_cast<uint32_t>(c.motion_mode_));
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_COMMAND, c.motion_running_ ? 1U : 0U);
+        // 实时转速：波形图按 25Hz 采样，必须和误差同档（kMedium ≈ 100Hz）才有意义。
+        c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_SPEED_RPM,
+                                        static_cast<uint32_t>(static_cast<int32_t>(c.encoder_speed_rpm_)));
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_TARGET_ANGLE_DEG,
                                         static_cast<uint32_t>(static_cast<int32_t>(c.target_angle_deg_ * 1000.0f)));
         // 外部脉冲跟随遥测：命令/已发/积压/丢步（100Hz 足够上位机画图）
@@ -105,5 +109,8 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
                                         c.external_pulse_follower_.droppedSteps());
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS,
                                         c.external_pulse_follower_.windowReversals());
+        // 实时负载角（mdeg，有符号）：网页用于显示和“波形不计负载角”
+        c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_LOAD_ANGLE_MDEG,
+                                        static_cast<uint32_t>(static_cast<int32_t>(c.motion_load_angle_deg_ * 1000.0f)));
     }
 }
