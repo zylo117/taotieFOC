@@ -3571,27 +3571,41 @@
 
                 bestScore = await scoreProfiles(bestGains, candidateProfiles);
                 const gainKeys = ['posKp', 'posKi', 'posKd', 'velKp', 'velKi', 'velKd'];
-                for (const key of gainKeys) {
-                    if (state.autoTuneCancelled) break;
-                    const center = bestGains[key];
-                    const maxGain = key === 'posKp' || key === 'posKd' ? 30000 : 3000;
-                    const candidates = [
-                        Math.max(0, center * (1 - stepRatio)),
-                        Math.min(maxGain, center * (1 + stepRatio))
-                    ];
-                    if (center < 0.001) candidates[1] = Math.min(maxGain, Math.max(0.01, stepRatio * 0.1));
-
-                    for (const candidateValue of candidates) {
+                // 【几何搜索 + 多轮】原来单轮 + 每候选只试 ±stepRatio（默认 ±25%），
+                // 从 Kp=1 一轮最多到 1.25，而最优值可能在 50~200（差 100 倍）—— 永远到不了。
+                // 改成：候选 ×2 / ÷2，每轮 6 个参数全试，有改善就继续，无改善就停。
+                // 8 轮就能覆盖 256 倍。几何因子仍受 tuneGainStep 影响。
+                const geometricFactor = Math.max(1.2, 1.0 + stepRatio * 4.0);
+                const kMaxSearchRounds = 10;
+                for (let round = 0; round < kMaxSearchRounds && !state.autoTuneCancelled; round++) {
+                    let improvedThisRound = false;
+                    for (const key of gainKeys) {
                         if (state.autoTuneCancelled) break;
-                        const candidate = {...bestGains, [key]: candidateValue};
-                        const score = await scoreProfiles(candidate, candidateProfiles);
-                        if (score < bestScore) {
-                            bestScore = score;
-                            bestGains = candidate;
-                            appendTuneLog(`${key}=${candidateValue.toFixed(3)} 成为当前最佳，短行程评分 ${score.toFixed(3)}`);
+                        const center = bestGains[key];
+                        const maxGain = key === 'posKp' || key === 'posKd' ? 30000 : 3000;
+                        const lower = center / geometricFactor;
+                        const upper = Math.min(maxGain, center * geometricFactor);
+                        const candidates = [
+                            lower > 0.001 ? lower : 0,
+                            center < 0.001 ? Math.min(maxGain, stepRatio) : upper
+                        ];
+                        for (const candidateValue of candidates) {
+                            if (state.autoTuneCancelled) break;
+                            const candidate = {...bestGains, [key]: candidateValue};
+                            const score = await scoreProfiles(candidate, candidateProfiles);
+                            if (score < bestScore) {
+                                bestScore = score;
+                                bestGains = candidate;
+                                improvedThisRound = true;
+                                appendTuneLog(`第 ${round + 1} 轮：${key}=${candidateValue.toFixed(3)} 成为当前最佳，评分 ${score.toFixed(3)}`);
+                            }
                         }
+                        await writePidParameters(bestGains);
                     }
-                    await writePidParameters(bestGains);
+                    if (!improvedThisRound) {
+                        appendTuneLog(`第 ${round + 1} 轮无改善，搜索结束（几何因子 ${geometricFactor.toFixed(2)}）`);
+                        break;
+                    }
                 }
 
                 if (state.autoTuneCancelled) {
@@ -4485,6 +4499,12 @@
             }
             if (frame.reg === 0x120) {
                 state.motionSpeedRpm = frame.value | 0;
+                // 【整定器】用转速判断“运动已开始”。0x11F 是双向寄存器（网页自己
+                // 有 7 处 writeRegister(0x11F, 0)），靠它判断启动会超时报“运动失败”；
+                // 0x120 是纯只读遥测，> 20RPM 就证明电机真在转。
+                if (state.tuneTrialActive && Math.abs(state.motionSpeedRpm) > 20) {
+                    state.tuneMotionObserved = true;
+                }
             }
             if (frame.reg === 0x121) {
                 const followErrorDeg = (frame.value | 0) / 1000.0;

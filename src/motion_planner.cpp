@@ -128,6 +128,17 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
         c.motion_step_accumulator_ = 0.0f;
         c.compensated_motion_step_accumulator_ = 0.0f;
         c.compensated_rps_ = 0.0f;
+        // 【换向必须重算减速点】steps_to_decel_ 是在 startMotion 里按“全程”算的，
+        // 换向后剩余行程是全新的另一程。不重算的话：如果第一程快跑完时 steps_to_decel_
+        // 已经把剩余脉冲数吃进去，换向后 remaining_steps 仍然 <= steps_to_decel_
+        // -> 第一拍就直接进 DECEL -> 速度从 0 往下减（已经是 0）
+        // -> DDA 累加不到步 -> 不发脉冲 -> 反向那一程提前停住，
+        //   剩下的脉冲看上去就变成“单向转”了。
+        c.steps_to_decel_ = c.decel_total_steps_;
+        // 【评分屏蔽】换向瞬间的误差是物理必然（命令已反转、机械还在减速），
+        // 100ms（2000 拍 @ 20kHz）足够涵盖减速 + 反向加速过程。
+        // 不屏蔽的话这个几十度的误差会把评分 RMS 抬到几十度，整定器完全失效。
+        c.motion_turnaround_skip_ramps_ = 2000U;
         printf("[MOTION] turnaround: leg_steps=%lu total=%lu dir=%d\r\n",
                static_cast<unsigned long>(c.motion_leg_pulse_count_),
                static_cast<unsigned long>(c.motion_pulse_count_),

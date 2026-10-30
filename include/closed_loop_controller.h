@@ -376,6 +376,12 @@ private:
     // 遥测通过 0x151 发给网页显示，也用于“波形不计负载角”的后处理。
     float motion_load_angle_deg_ = 0.0f;
 
+    // 换向后的“评分屏蔽拍数”。往返运动换向那一刻命令方向翻转、机械还在减速，
+    // follow_error 会瞬间拉开几十度（物理必然，不是 PID 差），如果计进评分
+    // 会把 RMS 抬到几十度，完全淹没真实跟随性能（实测短行程评分 58.7°、全场景 104.5°）。
+    // 换向时设为 kTurnaroundSkipRamps，每拍递减到 0 后恢复采样。
+    uint32_t motion_turnaround_skip_ramps_ = 0U;
+
     // 遥测节拍器：控制环每拍推进一格，syncProtocolTelemetry 按档位选刷哪一堆。
     // 以前直接用 rampUpdate 里的 ramp_loop_idx 取模，而那个计数器是 uint16_t，
     // 65535 回绕后 % 20000 每 3.28 秒只能命中 4 次，平均只有 1.22Hz。

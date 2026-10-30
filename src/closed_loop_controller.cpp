@@ -817,11 +817,21 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
     // 沉降阶段不参与 PID 评分：这段误差是在收敛中的尾巴，计进去会把评分刷得很漂亮
     // （结尾误差在变小），反而掩盖真实的中段跟随性能。
-    if (motion_running_ && !closed_loop_angle_mode_enabled_ && closed_loop_compensation_enabled_ &&
-        motion_ramp_stage_ != RAMP_STAGE_SETTLE)
+    // 换向后 100ms 也不采样：那时命令方向刚翻转、机械还在减速，
+    // follow_error 会拉到几十度（物理必然），计进去会把评分 RMS 抬到 58~104°。
+    if (motion_turnaround_skip_ramps_ > 0U)
+    {
+        --motion_turnaround_skip_ramps_;
+    }
+    const bool tune_sampling_allowed = (motion_turnaround_skip_ramps_ == 0U);
+    if (tune_sampling_allowed && motion_running_ && !closed_loop_angle_mode_enabled_ &&
+        closed_loop_compensation_enabled_ && motion_ramp_stage_ != RAMP_STAGE_SETTLE)
     {
         const bool latter_half = motion_steps_emitted_ >= motion_pulse_count_ / 2U;
-        pid_auto_tuner_.addSample(-motion_follow_error_deg_, latter_half);
+        // 【评分用残差】扣掉负载角：稳态时 follow_error 本来就应该等于 -负载角，
+        // 不扣的话所有 PID 组合的评分都被固有滞后的 1.5° 抬高，好差参数差异被压缩。
+        pid_auto_tuner_.addSample(
+            -(motion_follow_error_deg_ - motion_load_angle_deg_), latter_half);
     }
 
     // 如果当前没有运动在运行，直接退出
