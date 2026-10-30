@@ -50,6 +50,16 @@ void telemetry_task_function(void* pvParameters);
 void usb_task_function(void* pvParameters);
 void current_adc_task_function(void* pvParameters);
 
+// 【编码器更新率诊断专用互锁】
+// 诊断会在 telemetry_task 里连续调 g_encoder.readRaw()，而 TMR4 中断里的
+// updateFilteredSample() 用的是同一个 SPI2。两个上下文同时操作 SPI2 会打乱
+// 状态机（甚至互相等待对方清掉的标志），必须互斥。
+//
+// 注意不能用 taskENTER_CRITICAL 包住整段测试：那会屏蔽 TMR4 中断 4ms，直接丢 80 拍。
+// 所以改成标志位：诊断期间 true，TMR4 中断看到它就跳过采样（用上一拍的旧值继续跑控制环），
+// 测试结束立刻清 false。静止场景下跳过几拍没有影响（角度本来就不变）。
+static volatile bool g_encoder_rate_test_active = false;
+
 // 【编码器采样：TMR4 中断内喷发采样，TMR5 已删除】
 //
 // 需求：滤波的时间跨度必须压在一个控制周期（50us）以内，
@@ -146,9 +156,15 @@ extern "C" void TMR4_GLOBAL_IRQHandler(void)
         // 【先喷发采样，再唤醒控制任务】
         // 连续读 kEncoderBurstSamples 次，窗口就是这几次，时间跨度 < 10us。
         // rampUpdate 拿到的永远是“这一拍刚采完的平均值”，零错位、零跨周期延迟。
-        for (uint32_t i = 0U; i < kEncoderBurstSamples; ++i)
+        //
+        // 编码器更新率诊断期间跳过采样：那个诊断会独占 SPI2，与这里冲突。
+        // 跳过几拍后用上一拍的旧值继续控制（静止时角度不变，无影响）。
+        if (!g_encoder_rate_test_active)
         {
-            g_encoder.updateFilteredSample();
+            for (uint32_t i = 0U; i < kEncoderBurstSamples; ++i)
+            {
+                g_encoder.updateFilteredSample();
+            }
         }
 
         if (control_handler != NULL)
@@ -468,6 +484,63 @@ void telemetry_task_function(void* pvParameters)
                        static_cast<unsigned long>(g_wrap_last_rd),
                        static_cast<unsigned long>(g_wrap_last_wr),
                        static_cast<unsigned long>(g_wrap_last_cyc));
+            }
+
+            // ============ 编码器内部更新率诊断 ============
+            // 目的：不预设任何数值，直接实测「读到的角度多久才真变一次」。
+            // 方法：连续调 readRaw()（每次 2.05us @7.8MHz），统计相邻样本里值发生变化的次数，
+            //       再用 DWT 测总耗时，得到「每次读取的实际耗时」和「平均多久出现一个新值」。
+            // 判读：
+            //   avg_interval 接近 per_read   -> 内部基本每次都在更新（很短的时间常数）
+            //   avg_interval 远大于 per_read -> 被内部滤波冻住，喷发采样拿到的都是同一个值
+            //       （chip 手册型号表写 τ=0.51ms，但只用这个数字验证，不拿它当预设）
+            // 注意：本测试会直接读走编码器的原始帧，这期间控制环拿到的是这些原始值，
+            //       建议在电机完全静止时观察，避免影响运行中的控制。
+            static TickType_t s_encoder_rate_test_tick = 0;
+            // 只在完全静止时测：测试期间 TMR4 会跳过编码器采样，如果这时候有运动，
+            // 控制环会拿到冻结 4ms 的角度，PID 可能因为“位置不变”而超调。
+            // 转速 < 5 RPM 且没有规划运动在跑，才视为静止。
+            const bool encoder_rate_test_idle =
+                !g_controller.isMotionRunning() &&
+                (fabsf(static_cast<float>(g_controller.getMotionSpeedRpm())) < 5.0f);
+            if (encoder_rate_test_idle &&
+                (xTaskGetTickCount() - s_encoder_rate_test_tick) >= pdMS_TO_TICKS(10000))
+            {
+                s_encoder_rate_test_tick = xTaskGetTickCount();
+                // 先抢到 SPI2 的独占权，再做连续读取（详见 g_encoder_rate_test_active 的注释）
+                g_encoder_rate_test_active = true;
+                __DMB();
+                // 置位那一刻，TMR4 中断可能正在执行 updateFilteredSample()（SPI 传输已启动）。
+                // 等 2ms（40 个控制拍）让它跑完，确保之后的 SPI 完全独占。
+                vTaskDelay(2);
+                constexpr uint32_t kRateTestSamples = 2000U;  // 2000 x 2.05us ≈ 4.1ms
+                uint32_t change_count = 0U;
+                uint16_t previous_raw = 0xFFFFU;
+                const uint32_t start_cycles = DWT->CYCCNT;
+                for (uint32_t i = 0U; i < kRateTestSamples; ++i)
+                {
+                    const uint16_t raw = g_encoder.readRaw();
+                    if (i > 0U && raw != previous_raw)
+                    {
+                        ++change_count;
+                    }
+                    previous_raw = raw;
+                }
+                const uint32_t total_cycles = DWT->CYCCNT - start_cycles;
+                const float cycles_per_us = static_cast<float>(system_core_clock) / 1000000.0f;
+                const float total_us = static_cast<float>(total_cycles) / cycles_per_us;
+                const float per_read_us = total_us / static_cast<float>(kRateTestSamples);
+                const float avg_interval_us =
+                    change_count > 0U ? total_us / static_cast<float>(change_count) : 0.0f;
+                // 测试结束，立刻把 SPI2 还给 TMR4 中断
+                __DMB();
+                g_encoder_rate_test_active = false;
+                printf("[UPD] n=%lu chg=%lu total=%.0fus per_read=%.2fus avg_interval=%.1fus\r\n",
+                       static_cast<unsigned long>(kRateTestSamples),
+                       static_cast<unsigned long>(change_count),
+                       static_cast<double>(total_us),
+                       static_cast<double>(per_read_us),
+                       static_cast<double>(avg_interval_us));
             }
 
             // 电流链路自检：把采集、搬运、换算三段分开看。

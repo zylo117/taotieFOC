@@ -4330,6 +4330,19 @@
                 }
             });
 
+            // 编码器滤波窗口快捷对比按钮
+            const filterShortcuts = [
+                ['filterWin0Btn', 0],
+                ['filterWin2Btn', 2],
+                ['filterWin4Btn', 4],
+                ['filterWin16Btn', 16],
+                ['filterWin32Btn', 32]
+            ];
+            filterShortcuts.forEach(([id, value]) => {
+                const btn = document.getElementById(id);
+                if (btn) btn.addEventListener('click', () => setEncoderFilterWindowShortcut(value, id));
+            });
+
             document.getElementById('extFollowEnableInput').addEventListener('change', async function () {
                 if (!state.connected) {
                     log('[WARN] 尚未连接串口，无法切换外部脉冲跟随');
