@@ -856,18 +856,27 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // encoder_speed_rpm_ = measured_rpm;
     }
 
-    // 【负载角前馈】实时计算，供遥测（0x151）、网页「误差不计负载角」和下面的补偿段共用。
+    // 【负载角前馈】实时计算，供遥测（0x151）、网页「误差不计负载角」和补偿段共用。
     // 必须每拍都算：补偿段只在 closed_loop_compensation_enabled_ 为真时执行，
     // 如果把计算放在那里，用户不勾闭环补偿时网页的负载角就永远是 0。
-    // 代价：每拍一次 powf（约 100 周期 = 0.4us），且只有标定过负载角表才执行。
+    //
+    // 【符号必须带方向】和 motion_follow_error_deg_ 同号：
+    //   正向运动（落后）：follow_error = -L  ->  负载角也取 -L
+    //   反向运动（落后）：follow_error = +L  ->  负载角也取 +L
+    // 这样两边同号，补偿段用 follow_error - load_angle 才能在上两种情况下都得 0。
+    // 早期版本这里存绝对值，导致反向时 effective = +L + L = 2L，
+    // PID 输出过大的负修正直接把基础速度抵消掉，表现为“反向直接卡住”。
     motion_load_angle_deg_ = 0.0f;
     if (load_angle_.isFitted())
     {
         const float load_speed_abs = fast_abs(encoder_speed_rpm_);
         const auto load_speed_u16 = static_cast<uint16_t>(
             load_speed_abs > 65535.0f ? 65535.0f : load_speed_abs);
-        motion_load_angle_deg_ =
+        const float load_magnitude_deg =
             static_cast<float>(load_angle_.getLoadAngleMilliDegrees(load_speed_u16)) / 1000.0f;
+        motion_load_angle_deg_ = (encoder_speed_rpm_ >= 0.0f)
+            ? -load_magnitude_deg
+            : load_magnitude_deg;
     }
 
     if (closed_loop_angle_mode_enabled_)
@@ -897,14 +906,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // 从跟随误差里减掉，PID 只处理“超出预期的偏差”。
         //
         // 符号约定：
-        //   motion_follow_error_deg_ = 实际 - 命令 → 落后时为负数
-        //   getLoadAngleMilliDegrees() 返回正值（落后多少度）
-        //   所以稳态时 follow_error + load_angle ≈ 0，effective_error 就是残差。
-        // 负载角已在上面每拍算好（motion_load_angle_deg_），这里直接取用；
-        // 符号：motion_follow_error_deg_ = 实际 - 命令（落后时为负），
-        //       motion_load_angle_deg_ 为正值（落后多少度）。
-        const float load_angle_deg = motion_load_angle_deg_;
-        const float effective_error_deg = motion_follow_error_deg_ + load_angle_deg;
+        //   motion_follow_error_deg_ = 实际 - 命令（正向落后时为负，反向落后时为正）
+        //   motion_load_angle_deg_   = 已带方向，与 follow_error 同号
+        //   所以这里用「减」：正向 -L - (-L) = 0，反向 +L - (+L) = 0。
+        const float effective_error_deg = motion_follow_error_deg_ - motion_load_angle_deg_;
 
         // 残差死区：负载角模型不可能完全准（拟合误差 + 机械差异），
         // 剩下的零点几度不该让积分项持续爬升。死区外的部分才送进 PID。
@@ -973,14 +978,16 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // const float directed_rps =  velocity_correction_rps * target_direction < 0.0f
         //     ? 0.0f
         //     : velocity_correction_rps;
-        // 【修复 BUG 2】位置环的贡献已经体现在 total_ref_rps 里，速度环输出是
-        // “相对这个参考的修正量”。原来最后又把 position_reference_rps 加了一遍，
-        // 等于位置环增益被放大一倍 —— 这就是“稍微调大一点 Kp 就无限超调”的来源。
-        //
-        // 【修复 BUG 3】去掉了 target_direction 乘法。position_reference_rps 和
-        // velocity_correction_rps 本身都带符号（误差为正就输出为正），再乘一个 ±1
-        // 会让结果永远为正 —— 只能加速不能减速，误差反向时更会失控。
-        const float compensated_rps = position_reference_rps + velocity_correction_rps;
+        // 【关键：乘运动方向】base_speed_rps 是速度**大小**（永远正），而 position_reference_rps /
+        // velocity_correction_rps 是带物理方向的。emitSteps 里用 |base + comp| 算步数，
+        // 所以必须把 comp 转成“沿运动方向的大小增量”：
+        //   正向(dir=+1)：落后 -> PID 正 -> comp 正 -> base+comp 增大 -> 加速 ✓
+        //   反向(dir=-1)：落后 -> PID 负 -> comp = 负 x (-1) = 正 -> 同样增大 -> 加速 ✓
+        // 不乘的话反向会变成减速：实测反向时转速只有 20RPM（应该 1200+）、
+        // 跟随误差挂到 +14°，看起来像卡住。
+        const float compensated_rps =
+            (position_reference_rps + velocity_correction_rps) *
+            static_cast<float>(motion_direction_);
 
         // 【修复 BUG 4】必须限幅。原来 compensated_rps_ = directed_rps 没有任何上限，
         // PID 一冲高就是每窗几十上百步，电机脉冲太多直接停摆。

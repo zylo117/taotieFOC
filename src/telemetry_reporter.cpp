@@ -109,19 +109,12 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
                                         c.external_pulse_follower_.droppedSteps());
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS,
                                         c.external_pulse_follower_.windowReversals());
-        // 实时负载角（mdeg，有符号）：网页用于显示和「误差不计负载角」。
-        //
-        // 符号约定（很重要）：motion_load_angle_deg_ 内部始终是**正值**（滞后量大小），
-        // 因为补偿段要用 follow_error + load_angle 归零，必须同向相加。
-        // 但对外显示要和 follow_error 同号才直观：正向运动时电机滞后 \u2192 follow_error 是负值，
-        // 负载角也应该是负的。所以按方向取反后再发：
-        //   encoder_speed_rpm >= 0  ->  发 -L
-        //   encoder_speed_rpm <  0  ->  发 +L
-        // 网页那边扣除时用 followError - loadAngle（因为两者同号）。
-        const float signed_load_angle_deg = (c.encoder_speed_rpm_ >= 0.0f)
-            ? -c.motion_load_angle_deg_
-            : c.motion_load_angle_deg_;
+        // 实时负载角（mdeg，已带方向）：网页用于显示和「误差不计负载角」。
+        // motion_load_angle_deg_ 在控制器里已经按方向取过符号了：
+        //   正向运动 -> -L（和 follow_error 同号）
+        //   反向运动 -> +L
+        // 这里直接发，不能再取反（否则反向运动时符号会错）。
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_LOAD_ANGLE_MDEG,
-                                        static_cast<uint32_t>(static_cast<int32_t>(signed_load_angle_deg * 1000.0f)));
+                                        static_cast<uint32_t>(static_cast<int32_t>(c.motion_load_angle_deg_ * 1000.0f)));
     }
 }
