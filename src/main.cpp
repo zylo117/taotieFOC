@@ -60,22 +60,54 @@ void current_adc_task_function(void* pvParameters);
 // 测试结束立刻清 false。静止场景下跳过几拍没有影响（角度本来就不变）。
 static volatile bool g_encoder_rate_test_active = false;
 
-// 【编码器采样：TMR4 中断内喷发采样，TMR5 已删除】
+// 【Allan 简方差诊断】判断抖动是白噪声还是低频漂移。
+// 原理：测不同时间尺度上的差值 RMS：
+//   lag=1    → 50us  尺度
+//   lag=10   → 500us
+//   lag=100  → 5ms
+//   lag=1000 → 50ms
+// 判读：
+//   各 lag 的 RMS 基本相等  → 白噪声（加大滤波窗口/拍内平均有效）
+//   RMS 随 lag 明显增长    → 低频漂移（1/f），µs 级窗口没用，得用 ms 级低通
+static constexpr uint16_t kAllanSamples = 2048U;  // 2048 x 50us = 102ms
+static int16_t s_allan_buf[kAllanSamples];
+static volatile bool s_allan_capture_active = false;
+static volatile uint16_t s_allan_index = 0U;
+
+// 【编码器采样：TMR5 高频独立采样 + TMR4 拍内取平均】
 //
-// 需求：滤波的时间跨度必须压在一个控制周期（50us）以内，
-// 而不是原来那种 25 样本 x 32us = 800us 的滑动历史（那会把跟随误差拖大）。
+// 实测背景（[UPD] 诊断）：KTH7823 内部更新间隔约 13us（77kHz），
+// 而原来在 TMR4 里“喷发 4 次”（14.4us）只能拿到约 1.1 个独立样本，降噪几乎为 0，
+// 还白烧 29% 的 CPU（4 x 3.61us / 50us）。
 //
-// 做法：不用额外定时器，也不做“倍率 A 分频”，直接在 TMR4 溢出中断里
-// 连续读 SPI kEncoderBurstSamples 次，用一个窗口大小等于次数的滑动平均输出。
-//   1. 时间跨度 = 4 x 2.05us = 8.2us，远小于 50us，天然满足窗口限制；
-//   2. 每拍把窗口整个替换一遍，所以不存在跨周期历史，也没有群延迟；
-//   3. 降噪 sqrt(4) = 2 倍（相对单次采样）；
-//   4. 只有一个时钟域，彻底消除 TMR4/TMR5 周期互质导致的采样点漂移。
+// 新方案：
+//   TMR5（13us，优先级 2）→ g_encoder.sampleRawFast()   只 SPI 读 + 存环形缓冲
+//   TMR4（50us，优先级 1）→ g_encoder.takeRawAverage()   环绕安全平均（~0.5us）
+//                          → g_encoder.updateFilteredSample(raw)  只滤波不碰 SPI
 //
-// 代价：中断里约占 4 x 2.05us + 滤波 = 9us，即 50us 周期的 18%。
-// TMR4 优先级是 1，会把这 9us 的 USB/DMA 响应往后推，
-// 但 USB 帧 1ms、ADC 50us 一次，都能容忍。
-constexpr uint32_t kEncoderBurstSamples = 4U;
+// 收益：50us 内 3.8 个独立样本 → 降噪上限 √3.8 ≈ 1.95 倍（原 1.05 倍）；
+//       TMR4 中断时长从 14.4us 降到 ~2us（平均 + 滤波）；
+//       非线性校准查表从“每读一次”改成“一拍一次”，省 1.56us/次。
+//
+// 13us 对应 ARR：TMR5 计数时钟 = 250MHz / 2 = 125MHz，13us x 125MHz = 1625 → ARR = 1624
+static void encoder_sampler_timer_init(void)
+{
+    constexpr uint32_t kEncoderSampleIntervalUs = 13U;
+    // TMR5 计数时钟固定为 PCLK/2（APB1 125MHz → 125MHz）
+    const uint32_t sampler_clock_hz = system_core_clock / 2U;
+    const uint32_t arr = (kEncoderSampleIntervalUs * (sampler_clock_hz / 1000000U)) - 1U;
+
+    crm_periph_clock_enable(CRM_TMR5_PERIPH_CLOCK, TRUE);
+    tmr_base_init(TMR5, static_cast<uint16_t>(arr), 0U);
+    tmr_cnt_dir_set(TMR5, TMR_COUNT_UP);
+    tmr_clock_source_div_set(TMR5, TMR_CLOCK_DIV2);
+    tmr_period_buffer_enable(TMR5, TRUE);
+    tmr_interrupt_enable(TMR5, TMR_OVF_INT, TRUE);
+    // 优先级 2：低于 TMR4（1），但高于任务。ISR 只做一次 SPI 读（~2us）。
+    nvic_irq_enable(TMR5_GLOBAL_IRQn, 2U, 0U);
+    tmr_counter_value_set(TMR5, 0U);
+    tmr_counter_enable(TMR5, TRUE);
+}
 
 static void control_timer_init(void)
 {
@@ -146,6 +178,20 @@ extern "C" void USBFS_L_CAN1_RX0_IRQHandler(void)
     usbd_irq_handler(&g_usb_core);
 }
 
+extern "C" void TMR5_GLOBAL_IRQHandler(void)
+{
+    if (tmr_interrupt_flag_get(TMR5, TMR_OVF_FLAG) != RESET)
+    {
+        tmr_flag_clear(TMR5, TMR_OVF_FLAG);
+        // 只做一次 SPI 读 + 存环形缓冲（~2us，不含校准查表）
+        // 诊断期间跳过：那个诊断会独占 SPI2
+        if (!g_encoder_rate_test_active)
+        {
+            g_encoder.sampleRawFast();
+        }
+    }
+}
+
 extern "C" void TMR4_GLOBAL_IRQHandler(void)
 {
     if (tmr_interrupt_flag_get(TMR4, TMR_OVF_FLAG) != RESET)
@@ -153,17 +199,20 @@ extern "C" void TMR4_GLOBAL_IRQHandler(void)
         BaseType_t higher_priority_task_woken = pdFALSE;
         tmr_flag_clear(TMR4, TMR_OVF_FLAG);
 
-        // 【先喷发采样，再唤醒控制任务】
-        // 连续读 kEncoderBurstSamples 次，窗口就是这几次，时间跨度 < 10us。
-        // rampUpdate 拿到的永远是“这一拍刚采完的平均值”，零错位、零跨周期延迟。
+        // 【取平均后只滤波，不碰 SPI】
+        // 这一段累积的所有样本（50us / 13us ≈ 3.8 个）由 takeRawAverage 环绕安全地平均，
+        // 非线性校准也只在平均后查一次表。
         //
-        // 编码器更新率诊断期间跳过采样：那个诊断会独占 SPI2，与这里冲突。
-        // 跳过几拍后用上一拍的旧值继续控制（静止时角度不变，无影响）。
+        // 编码器更新率诊断期间跳过：那个诊断会独占 SPI2。
         if (!g_encoder_rate_test_active)
         {
-            for (uint32_t i = 0U; i < kEncoderBurstSamples; ++i)
+            const uint16_t raw = g_encoder.takeRawAverage();
+            g_encoder.updateFilteredSample(raw);
+
+            // Allan 诊断采样：每拍存一个原始值（50us 间隔）
+            if (s_allan_capture_active && s_allan_index < kAllanSamples)
             {
-                g_encoder.updateFilteredSample();
+                s_allan_buf[s_allan_index++] = static_cast<int16_t>(raw);
             }
         }
 
@@ -280,6 +329,9 @@ int main(void)
     pulse_capture_init();
     g_usb_bridge.init(&g_controller, &g_usb_core);
     control_timer_init();
+    // 编码器高频采样时基（TMR5，13us）——必须在内核启动前开，
+    // 否则 TMR4 第一拍取平均时会因为环形缓冲为空而回退到 last_frame_raw_。
+    encoder_sampler_timer_init();
     get_hw_time_ns();
 
     taskENTER_CRITICAL();
@@ -541,6 +593,56 @@ void telemetry_task_function(void* pvParameters)
                        static_cast<double>(total_us),
                        static_cast<double>(per_read_us),
                        static_cast<double>(avg_interval_us));
+            }
+
+            // ============ Allan 简方差诊断（判断白噪声 vs 低频漂移）============
+            // 静止时每 30 秒跑一次，采 2048 个原始值（50us 间隔，共 102ms），
+            // 统计不同时间尺度上的差值 RMS。
+            static TickType_t s_allan_test_tick = 0;
+            if (encoder_rate_test_idle &&
+                (xTaskGetTickCount() - s_allan_test_tick) >= pdMS_TO_TICKS(30000))
+            {
+                s_allan_test_tick = xTaskGetTickCount();
+                s_allan_index = 0U;
+                __DMB();
+                s_allan_capture_active = true;
+                // 2048 x 50us = 102ms，留 150ms 余量
+                vTaskDelay(pdMS_TO_TICKS(150));
+                s_allan_capture_active = false;
+                __DMB();
+                const uint16_t captured = s_allan_index;
+
+                if (captured > 100U)
+                {
+                    // 算某个 lag 上的差值 RMS（环绕安全）
+                    auto lag_rms = [captured](uint16_t lag) -> float
+                    {
+                        double sum_sq = 0.0;
+                        uint32_t count = 0U;
+                        for (uint16_t i = 0U; i + lag < captured; ++i)
+                        {
+                            int32_t d = static_cast<int32_t>(s_allan_buf[i + lag]) -
+                                        static_cast<int32_t>(s_allan_buf[i]);
+                            while (d > 32768) d -= 65536;
+                            while (d < -32768) d += 65536;
+                            sum_sq += static_cast<double>(d) * static_cast<double>(d);
+                            ++count;
+                        }
+                        return count > 0U
+                            ? static_cast<float>(sqrt(sum_sq / static_cast<double>(count)))
+                            : 0.0f;
+                    };
+                    // 1 LSB = 360/65536 = 0.00549°，换算成度方便判读
+                    const float lsb_deg = 360.0f / 65536.0f;
+                    const float r1 = lag_rms(1U) * lsb_deg;
+                    const float r10 = lag_rms(10U) * lsb_deg;
+                    const float r100 = lag_rms(100U) * lsb_deg;
+                    const float r1000 = lag_rms(1000U) * lsb_deg;
+                    printf("[ALLAN] n=%u lag1(50us)=%.4f lag10(0.5ms)=%.4f lag100(5ms)=%.4f lag1000(50ms)=%.4f deg\r\n",
+                           static_cast<unsigned>(captured),
+                           static_cast<double>(r1), static_cast<double>(r10),
+                           static_cast<double>(r100), static_cast<double>(r1000));
+                }
             }
 
             // 电流链路自检：把采集、搬运、换算三段分开看。

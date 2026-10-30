@@ -15,6 +15,26 @@ public:
     uint16_t readFilteredRaw() override;
     float readFilteredAngle() override;
     bool updateFilteredSample() override;
+
+    // ===== 【高頻独立采样 + 拍内取平均】=====
+    // 背景：实测内部更新间隔约 13us（77kHz）。原来在 TMR4 中断里“喷发 4 次”（14.4us），
+    // 只能拿到约 1 个独立样本，降噪几乎为 0。
+    //
+    // 新方案：
+    //   sampleRawFast()      —— 由独立定时器（TMR5，13us）调用，只做 SPI 读 + 存环形缓冲，
+    //                           不做非线性校准查表（省 1.56us/次）
+    //   takeRawAverage()     —— 由 TMR4（50us）调用，把这段时间累积的所有样本环绕安全地平均，
+    //                           返回一个值给 updateFilteredSample()；不碰 SPI，只要 ~0.5us
+    //   updateFilteredSample(uint16_t raw) —— 只做滤波，不再读 SPI
+    //
+    // 效果：50us 内 3.8 个独立样本 → 降噪上限 √3.8 ≈ 1.95 倍（原方案 1.05 倍），
+    //       CPU 占用相当，但 TMR4 中断时长从 14.4us 降到 ~0.5us。
+    static constexpr uint32_t kRawRingSize = 8U;  // 8 x 13us = 104us > 50us 控制周期
+    void sampleRawFast();
+    uint16_t takeRawAverage();
+    bool updateFilteredSample(uint16_t raw);
+    // 环形缓冲溢出次数（说明控制环取数太慢，正常应恒为 0）
+    uint32_t rawRingOverflowCount() const { return raw_ring_overflow_; }
     bool magneticFieldHigh() const override;
     bool magneticFieldLow() const override;
     uint16_t lastRawFrame() const;
@@ -63,5 +83,11 @@ private:
     volatile uint32_t read_count_;
     volatile uint32_t all_ones_count_;
     volatile uint32_t all_zeros_count_;
+
+    // 高频采样环形缓冲（TMR5 写、TMR4 读）
+    volatile uint16_t raw_ring_[kRawRingSize];
+    volatile uint32_t raw_ring_head_ = 0U;      // 累计写入数（取模即下标）
+    volatile uint32_t raw_ring_tail_ = 0U;      // 累计读取数
+    volatile uint32_t raw_ring_overflow_ = 0U;
 };
 #endif

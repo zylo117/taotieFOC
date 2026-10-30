@@ -168,11 +168,16 @@ float Kth7823Encoder::readFilteredAngle()
 */
 bool Kth7823Encoder::updateFilteredSample()
 {
+    // 兼容旧的单次采样接口：自己读一次 raw 再走滤波（腿板不动，只是转发）
+    return updateFilteredSample(readRaw());
+}
+
+bool Kth7823Encoder::updateFilteredSample(uint16_t raw)
+{
     // 窗口切换请求由控制任务登记，重配必须在这里（采样中断）做：
-    // 31.25kHz 采样中断随时在改 delta_win_/sum_delta_，在任务里直接重配会把数据撕掉。
+    // 采样中断随时在改 delta_win_/sum_delta_，在任务里直接重配会把数据撕掉。
     applyPendingFilterWindow();
 
-    const uint16_t raw = readRaw();
     if (raw == 0xFFFFU)
     {
         // SPI通信错误：丢弃样本，滤波器保持上一次有效输出，上层用allOnesCount判断故障
@@ -326,6 +331,81 @@ bool Kth7823Encoder::updateFilteredSample()
 #endif
 
     return true;
+}
+
+void Kth7823Encoder::sampleRawFast()
+{
+    // 只做 SPI 读 + 存环形缓冲，不做非线性校准查表（省 ~1.56us/次）。
+    // 由独立定时器（TMR5，13us）调用，对应编码器内部更新间隔。
+    last_tx_frame_ = 0x0000U;
+    encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, false);
+    const uint16_t raw = encoder_common::encoder_spi2_rw16(last_tx_frame_);
+    encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, true);
+
+    const uint32_t next = raw_ring_head_ + 1U;
+    if ((next - raw_ring_tail_) > kRawRingSize)
+    {
+        // 控制环太久没取数（正常不会发生）：丢弃最旧的，只计次数
+        ++raw_ring_overflow_;
+        ++raw_ring_tail_;
+    }
+    raw_ring_[raw_ring_head_ % kRawRingSize] = raw;
+    raw_ring_head_ = next;
+
+    read_count_++;
+    if (raw == 0xFFFFU)
+    {
+        ++all_ones_count_;
+    }
+    else if (raw == 0x0000U)
+    {
+        ++all_zeros_count_;
+    }
+}
+
+uint16_t Kth7823Encoder::takeRawAverage()
+{
+    // 把上次取数之后累积的所有样本环绕安全地平均。
+    //
+    // 关键：raw 是 0~65535 的环绕角度，直接算算术平均会在跨零点时算到对面半圈去。
+    // 做法和滤波器里的 delta 逻辑一致：以第一个样本为基准，算环绕差值后平均，再加回基准。
+    const uint32_t available = raw_ring_head_ - raw_ring_tail_;
+    if (available == 0U)
+    {
+        // 定时器还没采到新样本（首拍或 TMR5 未启动）：返回上一次的有效值
+        return last_frame_raw_;
+    }
+
+    const uint16_t count = static_cast<uint16_t>(available > kRawRingSize ? kRawRingSize : available);
+    const uint32_t first_index = (raw_ring_head_ - count) % kRawRingSize;
+    const int32_t base = static_cast<int32_t>(raw_ring_[first_index]);
+
+    int32_t sum_delta = 0;
+    for (uint16_t i = 0U; i < count; ++i)
+    {
+        const int32_t sample = static_cast<int32_t>(raw_ring_[(first_index + i) % kRawRingSize]);
+        int32_t delta = sample - base;
+        while (delta > 32768)
+        {
+            delta -= 65536;
+        }
+        while (delta < -32768)
+        {
+            delta += 65536;
+        }
+        sum_delta += delta;
+    }
+
+    const auto averaged = static_cast<uint16_t>(
+        (base + sum_delta / static_cast<int32_t>(count)) & 0xFFFF);
+
+    // 消费掉：对齐到当前写指针（溢出的部分已在 sampleRawFast 里计过数）
+    raw_ring_tail_ = raw_ring_head_;
+
+    // 平均后统一做一次非线性校准（原来每读一次都查表，现在一拍只查一次）
+    const uint16_t corrected = isNonlinearCalValid() ? getCorrectedRaw(averaged) : averaged;
+    last_frame_raw_ = corrected;
+    return corrected;
 }
 
 void Kth7823Encoder::setFilterWindowSize(uint16_t window_size)
