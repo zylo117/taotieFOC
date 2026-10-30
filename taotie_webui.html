@@ -3777,6 +3777,31 @@
             if (state.waveHistory.length > 2000) {
                 state.waveHistory = state.waveHistory.slice(-2000);
             }
+
+            // 【运动结束检测】用「即时转速」判断，不用 0x11F。
+            // 不用 0x11F 的原因：它是双向寄存器（写=启动/停止命令，读=运动状态），
+            // 网页里有 7 处 writeRegister(0x11F, 0)，一旦被刷成 0 就会误判“运动结束”，
+            // 表现为“波形走一段就停住但电机还在转”。
+            // 而 0x120（即时转速）是纯只读遥测，不参与任何命令，可靠得多。
+            //
+            // 判据：
+            //   转速 > 20 RPM         -> 确认运动开始（编码器静止噪声约 ±2RPM，20 足够区分）
+            //   连续 25 帧（约 1 秒）都 <= 20 RPM -> 确认停稳，再留 WAVE_POST_ROLL_MS 尾迹后冻结
+            const speedAbs = Math.abs(sample.rpm);
+            if (speedAbs > 20) {
+                state.waveMotionObserved = true;
+                state.waveZeroStreak = 0;
+            } else if (state.waveMotionObserved && state.waveStopFreezeTimer === null) {
+                state.waveZeroStreak = (state.waveZeroStreak || 0) + 1;
+                if (state.waveZeroStreak >= 25) {
+                    // 停稳了：补一个末点、记下停止时刻（画一条虚线），再留一段尾迹后冻结
+                    state.waveStoppedAt = now;
+                    state.waveStopFreezeTimer = window.setTimeout(() => {
+                        state.waveStopFreezeTimer = null;
+                        stopWaveCapture();
+                    }, WAVE_POST_ROLL_MS);
+                }
+            }
         }
 
         function startWaveCapture() {
