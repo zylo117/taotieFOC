@@ -291,6 +291,14 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
     }
 
     load_angle_fit_saved_ = load_angle_.loadFromFlash();
+    // 【诊断】负载角表到底有没有标定过：
+    //   fitted=0 -> 从未标定（或 Flash 里没有有效表）-> 负载角前馈和 0x151 遥测恒为 0
+    //   fitted=1 -> 已加载，看 coeff/intercept/exp 是否合理
+    printf("[LOAD_ANGLE] fitted=%d coeff=%.6f intercept=%.4f exp=%.4f\r\n",
+           load_angle_.isFitted() ? 1 : 0,
+           static_cast<double>(load_angle_.powerCoefficient()),
+           static_cast<double>(load_angle_.interceptDeg()),
+           static_cast<double>(load_angle_.exponent()));
 
     if (driver_ != nullptr)
     {
@@ -848,6 +856,20 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // encoder_speed_rpm_ = measured_rpm;
     }
 
+    // 【负载角前馈】实时计算，供遥测（0x151）、网页「误差不计负载角」和下面的补偿段共用。
+    // 必须每拍都算：补偿段只在 closed_loop_compensation_enabled_ 为真时执行，
+    // 如果把计算放在那里，用户不勾闭环补偿时网页的负载角就永远是 0。
+    // 代价：每拍一次 powf（约 100 周期 = 0.4us），且只有标定过负载角表才执行。
+    motion_load_angle_deg_ = 0.0f;
+    if (load_angle_.isFitted())
+    {
+        const float load_speed_abs = fast_abs(encoder_speed_rpm_);
+        const auto load_speed_u16 = static_cast<uint16_t>(
+            load_speed_abs > 65535.0f ? 65535.0f : load_speed_abs);
+        motion_load_angle_deg_ =
+            static_cast<float>(load_angle_.getLoadAngleMilliDegrees(load_speed_u16)) / 1000.0f;
+    }
+
     if (closed_loop_angle_mode_enabled_)
     {
         // 角度模式已搬到 MotionPlanner（阶段 A）。
@@ -878,17 +900,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         //   motion_follow_error_deg_ = 实际 - 命令 → 落后时为负数
         //   getLoadAngleMilliDegrees() 返回正值（落后多少度）
         //   所以稳态时 follow_error + load_angle ≈ 0，effective_error 就是残差。
-        float load_angle_deg = 0.0f;
-        if (load_angle_.isFitted())
-        {
-            const float speed_abs = fast_abs(encoder_speed_rpm_);
-            const auto speed_rpm_u16 = static_cast<uint16_t>(
-                speed_abs > 65535.0f ? 65535.0f : speed_abs);
-            load_angle_deg =
-                static_cast<float>(load_angle_.getLoadAngleMilliDegrees(speed_rpm_u16)) / 1000.0f;
-        }
-        // 供遥测（0x151）和网页“波形不计负载角”使用；未标定时保持 0
-        motion_load_angle_deg_ = load_angle_deg;
+        // 负载角已在上面每拍算好（motion_load_angle_deg_），这里直接取用；
+        // 符号：motion_follow_error_deg_ = 实际 - 命令（落后时为负），
+        //       motion_load_angle_deg_ 为正值（落后多少度）。
+        const float load_angle_deg = motion_load_angle_deg_;
         const float effective_error_deg = motion_follow_error_deg_ + load_angle_deg;
 
         // 残差死区：负载角模型不可能完全准（拟合误差 + 机械差异），

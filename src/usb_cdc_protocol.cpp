@@ -386,7 +386,11 @@ void UsbCdcProtocolBridge::sendTelemetry()
         TMC2209_EXT_PARAM_EXT_FOLLOW_EMITTED_STEPS,
         TMC2209_EXT_PARAM_EXT_FOLLOW_BACKLOG,
         TMC2209_EXT_PARAM_EXT_FOLLOW_DROPPED,
-        TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS
+        TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS,
+        // 实时负载角（0x151）：网页「实时负载角」和「误差不计负载角」都靠它。
+        // 注意：这里是必须加的 —— telemetry_reporter 已经把值写进 custom_parameters_，
+        // 但 sendTelemetry 只轮询这张表里的寄存器，不加就永远发不到上位机。
+        TMC2209_EXT_PARAM_LOAD_ANGLE_MDEG
     };
     static uint16_t telemetry_index = 0U;
 
