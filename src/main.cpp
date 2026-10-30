@@ -90,6 +90,13 @@ static volatile uint16_t s_allan_index = 0U;
 //       非线性校准查表从“每读一次”改成“一拍一次”，省 1.56us/次。
 //
 // 13us 对应 ARR：TMR5 计数时钟 = 250MHz / 2 = 125MHz，13us x 125MHz = 1625 → ARR = 1624
+//
+// 【已停用】实测结论：TMR5 将降噪从 1.05 提到 1.95 倍，但 0.15° 抖动是低频漂移，
+// 实测毫无改善；而 3.6us / 13us = 28% 的 CPU 被中断吃掉（FreeRTOS 的 runtime counter
+// 会把中断时间算给被中断的任务），导致电机一动就 100%。
+// 现已改回 TMR4 里每拍读 1 次（3.6us / 50us = 7.2%），比原来的喷发 4 次（29%）还省。
+// 保留这段代码是为了以后想重新启用时不用重写（把下面调用和 TMR5 ISR 放出来就行）。
+#if 0
 static void encoder_sampler_timer_init(void)
 {
     constexpr uint32_t kEncoderSampleIntervalUs = 13U;
@@ -108,6 +115,7 @@ static void encoder_sampler_timer_init(void)
     tmr_counter_value_set(TMR5, 0U);
     tmr_counter_enable(TMR5, TRUE);
 }
+#endif  // TMR5 高频采样已停用（详见上面的说明）
 
 static void control_timer_init(void)
 {
@@ -178,6 +186,7 @@ extern "C" void USBFS_L_CAN1_RX0_IRQHandler(void)
     usbd_irq_handler(&g_usb_core);
 }
 
+#if 0  // TMR5 高频采样已停用
 extern "C" void TMR5_GLOBAL_IRQHandler(void)
 {
     if (tmr_interrupt_flag_get(TMR5, TMR_OVF_FLAG) != RESET)
@@ -191,6 +200,7 @@ extern "C" void TMR5_GLOBAL_IRQHandler(void)
         }
     }
 }
+#endif
 
 extern "C" void TMR4_GLOBAL_IRQHandler(void)
 {
@@ -199,14 +209,15 @@ extern "C" void TMR4_GLOBAL_IRQHandler(void)
         BaseType_t higher_priority_task_woken = pdFALSE;
         tmr_flag_clear(TMR4, TMR_OVF_FLAG);
 
-        // 【取平均后只滤波，不碰 SPI】
-        // 这一段累积的所有样本（50us / 13us ≈ 3.8 个）由 takeRawAverage 环绕安全地平均，
-        // 非线性校准也只在平均后查一次表。
+        // 【每拍读 1 次】
+        // 实测编码器内部更新间隔约 13us，一拍（50us）内本就只有 ~3.8 个独立样本，
+        // 而 4 次喷发只跨 14.4us（约 1.1 个独立样本），降噪增益 ≈ 1.05，纯属浪费 CPU。
+        // 单次读取（3.61us）占 50us 周期的 7.2%，比喷发 4 次的 29% 省 22%。
         //
         // 编码器更新率诊断期间跳过：那个诊断会独占 SPI2。
         if (!g_encoder_rate_test_active)
         {
-            const uint16_t raw = g_encoder.takeRawAverage();
+            const uint16_t raw = g_encoder.readRaw();
             g_encoder.updateFilteredSample(raw);
 
             // Allan 诊断采样：每拍存一个原始值（50us 间隔）
@@ -329,9 +340,8 @@ int main(void)
     pulse_capture_init();
     g_usb_bridge.init(&g_controller, &g_usb_core);
     control_timer_init();
-    // 编码器高频采样时基（TMR5，13us）——必须在内核启动前开，
-    // 否则 TMR4 第一拍取平均时会因为环形缓冲为空而回退到 last_frame_raw_。
-    encoder_sampler_timer_init();
+    // TMR5 高频采样已停用（实测降噪无效、CPU 代价 28%），改回 TMR4 每拍读 1 次。
+    // encoder_sampler_timer_init();
     get_hw_time_ns();
 
     taskENTER_CRITICAL();
@@ -402,6 +412,12 @@ void led5_task_function(void* pvParameters)
     }
 }
 
+// rampUpdate 单次最长耗时（DWT 周期数）。用于定位“规划运动中 CPU 100%”到底花在哪：
+// 100% 意味着单拍 ≥ 50us，但不知道是 DDA、fill、DMA 重配还是别的。
+// 这里只记录最大值，不打印（打印本身会干扰测量），由 [PUL] 行带出来。
+static volatile uint32_t g_ramp_max_cycles = 0U;
+static volatile uint32_t g_ramp_overrun_count = 0U;
+
 void control_task_function(void* pvParameters)
 {
     (void)pvParameters;
@@ -412,7 +428,18 @@ void control_task_function(void* pvParameters)
 
         // 读取真实硬件纳秒时间戳，传给rampUpdate
         uint64_t now_ns = get_hw_time_ns();
+        const uint32_t ramp_start_cycles = DWT->CYCCNT;
         g_controller.rampUpdate(now_ns);
+        const uint32_t ramp_cycles = DWT->CYCCNT - ramp_start_cycles;
+        if (ramp_cycles > g_ramp_max_cycles)
+        {
+            g_ramp_max_cycles = ramp_cycles;
+        }
+        // 超过 50us（12500 周期 @250MHz）= 错过下一个控制拍
+        if (ramp_cycles > 12500U)
+        {
+            ++g_ramp_overrun_count;
+        }
     }
 }
 
@@ -526,6 +553,17 @@ void telemetry_task_function(void* pvParameters)
                    pul_level, static_cast<unsigned long>(pul_high_pct), dir_level, dma_pending,
                    pulse_buf_overflow_flag ? 1U : 0U,
                    static_cast<unsigned long>(pulse_capture_get_dropped_on_wrap()));
+            // rampUpdate 耗时剖析：max=单次最长(us) over=超 50us 的拍数
+            // 判读：max 远小于 50us 但 control% 还是 100% -> 占用率统计口径有问题
+            //       max 接近或超过 50us -> 真超时，再看是规划模式（emit/DMA）还是外部跟随
+            {
+                const float cycles_per_us_ramp = static_cast<float>(system_core_clock) / 1000000.0f;
+                printf("[RAMP] max=%.1fus over=%lu\r\n",
+                       static_cast<double>(static_cast<float>(g_ramp_max_cycles) / cycles_per_us_ramp),
+                       static_cast<unsigned long>(g_ramp_overrun_count));
+                g_ramp_max_cycles = 0U;
+                g_ramp_overrun_count = 0U;
+            }
             // 绕圈丢包现场：evt=绕圈次数 pend=当时未消费量 rd/wr=当时指针 cyc=当时 DWT 计数
             // 判读：pend 接近 2048 -> 真停摆；pend 很小且 wr-rd 对不上 -> 指针读错
             if (g_wrap_event_count != 0U)

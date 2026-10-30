@@ -871,14 +871,15 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const float position_reference_rps = position_pid_.update(-motion_follow_error_deg_ / 360.0f, dt);
         const float measured_motion_rps = encoder_speed_rpm_ / 60.0f;
         // 总期望速度 = 基础速度 + 位置环修正量
-        static const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
+        // 【修复 BUG 1】原来是 static const，只初始化一次：
+        // 改细分（32→64→128）后补偿量的换算比例就永远停在第一次那个值上。
+        const uint32_t micro_steps_per_round = getStepsPerRound();
         const float base_speed_rps = current_step_speed_ / static_cast<float>(micro_steps_per_round);
         const float total_ref_rps = base_speed_rps + position_reference_rps;
         const float velocity_error_rps = total_ref_rps - measured_motion_rps;
         const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt);
         const float max_rps = motion_max_rpm_ / 60.0f;
 
-        const float target_direction = (-motion_follow_error_deg_) >= 0.0f ? 1.0f : -1.0f;
 #ifdef CLAMP_FOC_SPEED
         const float unconstrained_rps = fast_clamp(velocity_correction_rps,
                                                                -max_rps,
@@ -893,8 +894,6 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
                                              previous_rps - max_delta_rps,
                                              previous_rps + max_delta_rps);
 #else
-        const float limited_correction_step_s = velocity_correction_rps * static_cast<float>(motion_direction_) *
-                                        static_cast<float>(micro_steps_per_round);
 #endif
 
         // if (now_ns % 1000 == 0)
@@ -925,19 +924,23 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // const float directed_rps =  velocity_correction_rps * target_direction < 0.0f
         //     ? 0.0f
         //     : velocity_correction_rps;
-        const float directed_rps = (position_reference_rps + velocity_correction_rps) * target_direction;
-        const float accel_limit_rps2 = angle_accel_rpm_s_ / 60.0f;
-        const float previous_rps = motion_speed_rpm_ / 60.0f;
-        const float max_delta_rps = accel_limit_rps2 * dt;
-        // const float desired_rps = fast_clamp(directed_rps,
-        //                                      previous_rps - max_delta_rps,
-        //                                      previous_rps + max_delta_rps);
+        // 【修复 BUG 2】位置环的贡献已经体现在 total_ref_rps 里，速度环输出是
+        // “相对这个参考的修正量”。原来最后又把 position_reference_rps 加了一遍，
+        // 等于位置环增益被放大一倍 —— 这就是“稍微调大一点 Kp 就无限超调”的来源。
+        //
+        // 【修复 BUG 3】去掉了 target_direction 乘法。position_reference_rps 和
+        // velocity_correction_rps 本身都带符号（误差为正就输出为正），再乘一个 ±1
+        // 会让结果永远为正 —— 只能加速不能减速，误差反向时更会失控。
+        const float compensated_rps = position_reference_rps + velocity_correction_rps;
 
-        compensated_rps_ = directed_rps;
+        // 【修复 BUG 4】必须限幅。原来 compensated_rps_ = directed_rps 没有任何上限，
+        // PID 一冲高就是每窗几十上百步，电机脉冲太多直接停摆。
+        // max_rps 已在上面算好，限到“电机最高转速”之内，再叠一层加速度限制。
+        const float limited_rps = fast_clamp(compensated_rps, -max_rps, max_rps);
+        const float max_delta_rps = (angle_accel_rpm_s_ / 60.0f) * dt;
+        const float previous_rps = compensated_rps_;
+        compensated_rps_ = fast_clamp(limited_rps, previous_rps - max_delta_rps, previous_rps + max_delta_rps);
     }
-
-    const bool alternating_motion = motion_mode_ == MOTION_MODE_ALTERNATING_FORWARD ||
-                                    motion_mode_ == MOTION_MODE_ALTERNATING_REVERSE;
 
     // 剩余部分（转速反算 + DDA 累加器 + 脉冲出口）已整体搬到 MotionPlanner（阶段 C）。
     // 返回 true = 出口拒绍（窗口连头尾 guard 都放不下）：本窗不发，时间戳已由内部前移，

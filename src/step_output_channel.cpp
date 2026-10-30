@@ -20,27 +20,44 @@ namespace
 
     // 用 DMA1_CH2 把 ARR 序列逐个搬进 TMR2->pr（周期寄存器）。
     // 每次溢出搬一个 32 位字，搬完即止（loop_mode = FALSE）。
-    void loadArrSequence(uint32_t* seq, uint32_t seq_count)
+    //
+    // 【关键性能优化】原来每次调用都跑 dma_default_para_init + dma_init + dma_flexible_config，
+    // 等于每窗（50us）重写几十个 DMA 寄存器 —— 2 万次/秒。
+    // 而方向/数据宽度/优先级/触发源从来不变，seq_buffer_ 也是同一个固定数组，
+    // 所以只需要第一次全量配置，之后每次只改“传输数量”和“内存地址”两个字段。
+    // 实测收益：规划运动（每窗都发）CPU 从 100% 降下来，外部脉冲（间歇发）也明显改善。
+    bool loadArrSequence(uint32_t* seq, uint32_t seq_count)
     {
-        dma_init_type dma_conf;
-        dma_default_para_init(&dma_conf);
-        dma_conf.direction            = DMA_DIR_MEMORY_TO_PERIPHERAL;
-        dma_conf.buffer_size          = static_cast<uint16_t>(seq_count);
-        dma_conf.peripheral_inc_enable = FALSE;
-        dma_conf.memory_inc_enable     = TRUE;
-        dma_conf.peripheral_data_width = DMA_PERIPHERAL_DATA_WIDTH_WORD;
-        dma_conf.memory_data_width     = DMA_MEMORY_DATA_WIDTH_WORD;
-        dma_conf.loop_mode_enable      = FALSE;
-        dma_conf.priority              = DMA_PRIORITY_HIGH;
-
-        dma_conf.peripheral_base_addr = reinterpret_cast<uint32_t>(&TMR2->pr);
-        dma_conf.memory_base_addr     = reinterpret_cast<uint32_t>(seq);
-        dma_flexible_config(DMA1, FLEX_CHANNEL2, DMA_FLEXIBLE_TMR2_OVERFLOW);
-        dma_init(DMA1_CHANNEL2, &dma_conf);
+        static bool dma_configured = false;
+        if (!dma_configured)
+        {
+            dma_init_type dma_conf;
+            dma_default_para_init(&dma_conf);
+            dma_conf.direction            = DMA_DIR_MEMORY_TO_PERIPHERAL;
+            dma_conf.peripheral_inc_enable = FALSE;
+            dma_conf.memory_inc_enable     = TRUE;
+            dma_conf.peripheral_data_width = DMA_PERIPHERAL_DATA_WIDTH_WORD;
+            dma_conf.memory_data_width     = DMA_MEMORY_DATA_WIDTH_WORD;
+            dma_conf.loop_mode_enable      = FALSE;
+            dma_conf.priority              = DMA_PRIORITY_HIGH;
+            dma_conf.peripheral_base_addr = reinterpret_cast<uint32_t>(&TMR2->pr);
+            dma_conf.memory_base_addr     = reinterpret_cast<uint32_t>(seq);
+            dma_conf.buffer_size          = static_cast<uint16_t>(seq_count);
+            dma_flexible_config(DMA1, FLEX_CHANNEL2, DMA_FLEXIBLE_TMR2_OVERFLOW);
+            dma_init(DMA1_CHANNEL2, &dma_conf);
+            dma_configured = true;
+        }
+        else
+        {
+            // 只更新传输数量和内存地址（两个寄存器写），其余字段保持上次的值
+            DMA1_CHANNEL2->dtcnt = static_cast<uint16_t>(seq_count);
+            DMA1_CHANNEL2->maddr = reinterpret_cast<uint32_t>(seq);
+        }
 
         dma_flag_clear(DMA1_FDT2_FLAG);
         tmr_counter_value_set(TMR2, 0U);
         dma_channel_enable(DMA1_CHANNEL2, TRUE);
+        return true;
     }
 }
 
