@@ -227,6 +227,16 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
 
         const uint32_t speed_spr = c.getStepsPerRound();
         const float new_max_step_s = c.motion_max_rpm_ * static_cast<float>(speed_spr) / 60.0f;
+
+        // 【运行时改加速度】motion_accel_step_s2_ 同样只在 startMotion 算一次。
+        // 阶段 2 的急刹测试需要把加速度临时放大 M 倍（0x11C = 原值 x M）
+        // 来测“急启动 / 急刹”下的跟随误差，必须能在线改。
+        // 注意：它同时影响提速和降速两侧的斜率，这是预期行为。
+        const float new_accel_step_s2 = c.motion_accel_rpm_s_ * static_cast<float>(speed_spr) / 60.0f;
+        if (new_accel_step_s2 > 0.0f && fast_abs(new_accel_step_s2 - c.motion_accel_step_s2_) > 1.0f)
+        {
+            c.motion_accel_step_s2_ = new_accel_step_s2;
+        }
         if (new_max_step_s > 0.0f)
         {
             // 【目标变了】更新上限。提速靠下面的 ACCEL 分支自己追，不在这里处理。

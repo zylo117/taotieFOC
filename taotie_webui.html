@@ -1413,6 +1413,7 @@
         <div class="load-angle-equation" id="loadAngleEquation">固件拟合函数：--</div>
     </dialog>
 
+    <script src="web/js/constants.js"></script>
     <script>
         const logArea = document.getElementById('logArea');
         const connBadge = document.getElementById('connBadge');
@@ -1535,81 +1536,6 @@
             ENCM_CTRL: 0x72
         };
 
-        const CUSTOM_REGS = {
-            MICROSTEPS: 0x100,
-            INTERPOLATION: 0x101,
-            RUN_CURRENT_A: 0x102,
-            HOLD_CURRENT_A: 0x103,
-            HOLD_ENABLED: 0x104,
-            SILENT_MODE: 0x105,
-            SENSE_RESISTOR: 0x106,
-            CLOSED_LOOP_ENABLE: 0x107
-            , FAULT_STATUS: 0x108
-            , ENCODER_FAULT: 0x109
-            , MAGNETIC_FAULT: 0x10A
-            , OUTPUT_STOP: 0x10B
-            , PHASE_A_CURRENT_MA: 0x10C
-            , PHASE_B_CURRENT_MA: 0x10D
-            , POSITION_LOOP_HZ: 0x10E
-            , VELOCITY_LOOP_HZ: 0x10F
-            , CURRENT_LOOP_HZ: 0x110
-            , LAST_FAULT: 0x111
-            , TARGET_POSITION: 0x112
-            , ACTUAL_POSITION: 0x113
-            , FOLLOW_ERROR: 0x114
-            , ENCODER_RAW: 0x115
-            , ENCODER_ANGLE_MDEG: 0x116
-            , MAGNETIC_HIGH: 0x117
-            , MAGNETIC_LOW: 0x118
-            , ENCODER_ZERO: 0x119
-            , TARGET_ANGLE_DEG: 0x128
-            , POSITION_KP: 0x129
-            , POSITION_KI: 0x12A
-            , POSITION_KD: 0x12B
-            , VELOCITY_KP: 0x12C
-            , VELOCITY_KI: 0x12D
-            , VELOCITY_KD: 0x12E
-            , ANGLE_MAX_RPM: 0x12F
-            , ANGLE_ACCEL_RPM_S: 0x130
-            , PID_TUNE_CONTROL: 0x131
-            , PID_TUNE_SCORE_MDEG: 0x132
-            , PID_TUNE_SAMPLE_COUNT: 0x133
-            , MOTION_SCHEDULED_STEPS: 0x134
-            , MOTION_COMMAND_SPEED_MRPM: 0x135
-            , SPEED_RPM: 0x120
-            , FOLLOW_ERROR_DEG: 0x121
-            , CALIBRATE_ENCODER: 0x136
-            , CALIBRATION_LOOKUP_RAW_TO_CORRECTED: 0x13A
-            , CALIBRATION_LOOKUP_CORRECTED_TO_RAW: 0x13B
-            , CALIBRATION_TABLE_DUMP: 0x139
-            , LOAD_ANGLE_UPLOAD_COUNT: 0x13C
-            , LOAD_ANGLE_POINT_INDEX: 0x13D
-            , LOAD_ANGLE_POINT_SPEED_RPM: 0x13E
-            , LOAD_ANGLE_POINT_MDEG: 0x13F
-            , LOAD_ANGLE_POINT_COMMIT: 0x140
-            , LOAD_ANGLE_FIT: 0x141
-            , LOAD_ANGLE_QUERY_SPEED_RPM: 0x142
-            , LOAD_ANGLE_QUERY_MDEG: 0x143
-            , LOAD_ANGLE_POINT_COUNT: 0x144
-            , LOAD_ANGLE_FIT_SLOPE: 0x145
-            , LOAD_ANGLE_FIT_INTERCEPT: 0x146
-            , LOAD_ANGLE_FIT_EXPONENT: 0x147
-            , ENCODER_FILTER_WINDOW: 0x148
-            , EXT_FOLLOW_ENABLE: 0x149
-            , EXT_FOLLOW_MAX_STEP_S: 0x14A
-            , EXT_FOLLOW_CMD_STEPS: 0x14B
-            , EXT_FOLLOW_EMITTED_STEPS: 0x14C
-            , EXT_FOLLOW_BACKLOG: 0x14D
-            , EXT_FOLLOW_DROPPED: 0x14E
-            , EXT_FOLLOW_RESET: 0x14F
-            , EXT_FOLLOW_WINDOW_REVERSALS: 0x150
-            , LOAD_ANGLE_MDEG: 0x151
-            , LOAD_ANGLE_FF_RATIO: 0x152
-            , CPU_USAGE_CENTIPERCENT: 0x137
-            , CONTROL_TASK_USAGE_CENTIPERCENT: 0x138
-            , MAX_RPM: 0x11B
-            , ACCEL_RPM_S: 0x11C
-        };
 
         const REGISTER_DESCRIPTIONS = new Map([
             [OFFICIAL_REGS.GCONF, ['0x0000', 'GCONF', 'TMC 全局配置 / 单线 UART 选择']],
@@ -1732,7 +1658,6 @@
         //   抖动范围有好几个 LSB → 随机噪声占主导，单次读数本身就不准，不能拿它当真值。
         const ENCODER_JITTER_WINDOW_MS = 4000;
         const ENCODER_JITTER_RESET_DEG = 0.2;   // 位移超过这个值就认为轴被挪动过，重新开窗
-        const ENCODER_LSB_DEG = 360 / 65536;    // 16 位磁编码器 1 LSB ≈ 0.0055°
 
         function resetEncoderJitterWindow() {
             state.encoderJitterSamples = [];
