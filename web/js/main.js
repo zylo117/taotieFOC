@@ -269,6 +269,14 @@
             // 点「启动」本身就是明确要让电机转的意图，所以先显式使能一次。
             await writeRegisterAndWaitAck(0x124, 1);   // MOTOR_ENABLE
 
+            // 【按界面勾选框下发补偿开关】不能不管：
+            // 角度模式（setTargetAngleDeg）会把 closed_loop_compensation_enabled_ 置 true，
+            // 规划运动如果不下发 0x107，就会继承这个 true -> 开环规划运动带着 PID 修正跑 -> 抖动。
+            // 也不能像以前那样强制发 0：那会让勾选了闭环的用户每次启动都被偷偷关掉。
+            // 正确做法：以界面勾选框为准，每次启动都显式下发。
+            await writeRegisterAndWaitAck(CUSTOM_REGS.CLOSED_LOOP_ENABLE,
+                document.getElementById('closedLoopEnableInput').checked ? 1 : 0);
+
             // 【必须等 ACK】这里原来全是 writeRegister（只等写进 USB 缓冲，不等固件确认），
             // 紧接着就发 0x11F 启动。看校准表之后 USB 缓冲被 dump 流量占着，
             // 写请求会丢——脉冲数没设上时，固件用上一次的值跑，

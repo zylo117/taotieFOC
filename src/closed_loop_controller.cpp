@@ -547,6 +547,18 @@ void ClosedLoopController::startMotion()
     // 置 true 并让 updateAngleMode 每拍接管速度输出。规划运动启动时如果不把它清掉，
     // updateAngleMode 和 updateTrapezoid 会同时改 current_step_speed_，互相争夺：
     // 实测表现为“开过一次角度模式后，开环规划运动严重抖动，必须重启硬件才恢复”。
+    // 【诊断】打印“进入 startMotion 那一瞬”的残留状态（必须在下面那行清零之前）。
+    // 目的：对比“重启后第一次启动”与“用过角度模式后启动”两组值，
+    // 直接看哪个成员在角度模式后变成了异常值——比反复猜快得多。
+    printf("[START] ang=%u cur=%.0f max=%.0f acc=%.0f stage=%u dma=%ld deliv=%ld\r\n",
+           static_cast<unsigned>(closed_loop_angle_mode_enabled_),
+           static_cast<double>(current_step_speed_),
+           static_cast<double>(motion_max_step_s_),
+           static_cast<double>(motion_accel_step_s2_),
+           static_cast<unsigned>(motion_ramp_stage_),
+           static_cast<long>(motion_dma_pending_signed),
+           static_cast<long>(motion_steps_delivered_signed));
+
     closed_loop_angle_mode_enabled_ = false;
 
     // 【必须停掉残留的 DMA 脉冲序列】step_output_.stop() 原来只在 stopMotion 里调，
