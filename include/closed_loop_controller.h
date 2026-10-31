@@ -74,6 +74,11 @@ struct LoopFrequencyStats
 // 在控制上，它采用“位置环 -> 速度参考 -> 速度环 -> 步进修正”的双环结构。
 class ClosedLoopController
 {
+    // 编码器校准正在逐步迁到 EncoderCalibrator（见 encoder_calibrator.h 的分阶段计划）。
+    // 迁移期间两个阶段共存：授权它直接读写 controller 的校准状态与运动参数备份，
+    // 避免为几个字段再加一层 setter/getter。全部搬完后这个 friend 声明可删。
+    friend class EncoderCalibrator;
+
 public:
     // STEP 脉宽的硬限制（ns）。没写明细分步距时，100ns 已经接近 TMC2209 的
     // 最小脉宽识别能力；再短就会被驱动器整步忽略。上限 20us 是给低速调试留的。

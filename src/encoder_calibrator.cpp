@@ -29,3 +29,36 @@ bool EncoderCalibrator::isIdle() const
 {
     return stage_ == STAGE_IDLE;
 }
+
+// 结束校准并恢复运动参数（对应原 finishEncoderCalibration）。
+// 阶段 2：已搬入。因为 calibrateEncoder（写备份值）还在 controller 里，
+// 这里直接读 owner_.calibration_saved_*，两边共用一份备份，不会出现两份状态不一致。
+void EncoderCalibrator::finish(bool save_table)
+{
+    ClosedLoopController& c = owner_;
+
+    stage_ = STAGE_SAVING;
+    c.closed_loop_angle_mode_enabled_ = false;
+    c.stopMotion();
+
+    bool saved = false;
+    if (save_table)
+    {
+        saved = c.encoder_ != nullptr && c.encoder_->saveCalibration();
+    }
+
+    // 恢复校准前备份的运动参数
+    c.motion_start_rpm_ = c.calibration_saved_start_rpm_;
+    c.motion_max_rpm_ = c.calibration_saved_max_rpm_;
+    c.motion_accel_rpm_s_ = c.calibration_saved_accel_rpm_s_;
+    c.motion_pulse_count_ = c.calibration_saved_pulse_count_;
+    c.motion_mode_ = c.calibration_saved_motion_mode_;
+    c.step_pulse_width_ns_ = c.calibration_saved_pulse_width_ns_;
+
+    // 【不恢复补偿开关】校准是开环操作；恢复成校准前的 true 会造成
+    // “界面已取消勾选、固件里补偿却开着”的不一致。由上位机下次启动显式下发 0x107。
+    c.closed_loop_compensation_enabled_ = false;
+
+    c.calibration_stage_ = ClosedLoopController::CALIBRATION_IDLE;
+    printf("[CALIBRATION] finished saved=%u\r\n", saved ? 1U : 0U);
+}
