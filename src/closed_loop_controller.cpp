@@ -493,6 +493,13 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
     motion_step_accumulator_ = 0.0f;
     compensated_motion_step_accumulator_ = 0.0f;
     compensated_rps_ = 0.0f;
+    // 【规划运动启动也要清 PID 状态】角度模式跑完一轮后，位置/速度环的积分和一阶低通
+    // 微分状态里都还留着旧值。规划运动开头几拍会带着这些残留输出一个方向错误的修正量，
+    // 叠加在刚起步的规划速度上，表现为起跑抽一下或前期抖动。
+    position_pid_.resetIntegral();
+    position_pid_.resetDeriv();
+    velocity_pid_.resetIntegral();
+    velocity_pid_.resetDeriv();
     motion_encoder_previous_raw_ = encoder_ != nullptr ? encoder_->readFilteredRaw() : encoder_filtered_raw_;
     motion_encoder_reference_valid_ = encoder_ != nullptr;
     if (driver_ != nullptr)
