@@ -265,16 +265,26 @@
             document.getElementById('stepPulseWidthNsInput').value = String(stepPulseWidthNs);
             document.getElementById('encoderFilterWindowInput').value = String(encoderFilterWindow);
 
-            await writeRegister(0x11A, startRpm);
-            await writeRegister(0x11B, maxRpm);
-            await writeRegister(0x11C, accelRpm);
-            await writeRegister(0x11D, pulseCount);
-            await writeRegister(0x11E, motionMode);
-            await writeRegister(0x123, stepPulseWidthNs);
-            await writeRegister(CUSTOM_REGS.ENCODER_FILTER_WINDOW, encoderFilterWindow);
-            await writeRegister(0x122, windowMs);
+            // 【开环运动强制关补偿】0x11F 只管启停，闭环补偿开关是 0x107。
+            // 如果上一次残留 0x107=1，这次“开环测试”会带着 PID 修正跑。
+            await writeRegisterAndWaitAck(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0);
+
+            // 【必须等 ACK】这里原来全是 writeRegister（只等写进 USB 缓冲，不等固件确认），
+            // 紧接着就发 0x11F 启动。看校准表之后 USB 缓冲被 dump 流量占着，
+            // 写请求会丢——脉冲数没设上时，固件用上一次的值跑，
+            // 表现为“脉冲少了 / 低速也丢步”，而且重启硬件无用（固件侧根本没收到）。
+            // 换成 writeRegisterAndWaitAck：每条都等固件的 0x82 应答，
+            // 不仅保证送达，还保证 0x11F 启动一定在参数全部生效之后才发出。
+            await writeRegisterAndWaitAck(0x11A, startRpm);
+            await writeRegisterAndWaitAck(0x11B, maxRpm);
+            await writeRegisterAndWaitAck(0x11C, accelRpm);
+            await writeRegisterAndWaitAck(0x11D, pulseCount);
+            await writeRegisterAndWaitAck(0x11E, motionMode);
+            await writeRegisterAndWaitAck(0x123, stepPulseWidthNs);
+            await writeRegisterAndWaitAck(CUSTOM_REGS.ENCODER_FILTER_WINDOW, encoderFilterWindow);
+            await writeRegisterAndWaitAck(0x122, windowMs);
             await writePidParameters();
-            await writeRegister(0x11F, 1);
+            await writeRegisterAndWaitAck(0x11F, 1);
             startWaveCapture();
             log(`[INFO] 脉冲运动：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms step=${stepPulseWidthNs}ns encFilter=${encoderFilterWindow}`);
         }
@@ -625,11 +635,16 @@
                 document.getElementById('waveWindowMsInput').value = String(windowValue);
             }
             if (frame.reg === CUSTOM_REGS.ENCODER_FILTER_WINDOW) {
-                // 固件回报的是“已经生效”的窗口（低速槽位每秒刷一次），
-                // 用户正在输入时不要去抢输入框
-                const input = document.getElementById('encoderFilterWindowInput');
-                if (document.activeElement !== input) {
-                    input.value = String(clamp(Number(frame.value) || 0, 0, 256));
+                // 【不再回写输入框】
+                // 这里原来把固件回报的 0x148 写回 encoderFilterWindowInput，
+                // 等于让“固件当前值”覆盖“用户设定值”。只要有一帧 value 不对
+                // （dump 流量混进来、字节错位等），输入框就被永久污染，
+                // 之后每次启动都发那个脏值——实测表现为“点开校准表后再跑就丢步”。
+                // 输入框归用户，固件到底生效了多少只放在只读显示里。
+                state.encoderFilterWindowActive = clamp(Number(frame.value) || 0, 0, 256);
+                const activeText = document.getElementById('encoderFilterWindowActive');
+                if (activeText) {
+                    activeText.textContent = `实际生效：${state.encoderFilterWindowActive} 样本`;
                 }
             }
             // 【波形采集不再依赖 0x11F 自动收尾】

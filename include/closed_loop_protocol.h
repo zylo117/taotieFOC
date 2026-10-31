@@ -147,7 +147,10 @@ enum Tmc2209CustomExtensionRegister
     // 负载角不只与速度有关，还取决于实际负载；本方案感知不到负载变化
     // （无法接入 TMC2209 电流环），表值偏高时前馈过度会让 PID 反向修正。
     // 降到 50~70 让前馈变保守，把偏差交给 PID（代价是响应变慢）。
-    TMC2209_EXT_PARAM_LOAD_ANGLE_FF_RATIO = 0x152U
+    TMC2209_EXT_PARAM_LOAD_ANGLE_FF_RATIO = 0x152U,
+
+    // R/W：诊断用——旁路磁编码器非线性校准表（0=正常查表，1=直接返回原始值）。
+    // 用途：做“查表 / 不查表”的 A/B 对比，判断某个角度误差是不是校准表引入的。
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。

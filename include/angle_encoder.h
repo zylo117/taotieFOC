@@ -146,6 +146,12 @@ public:
     virtual bool init() = 0;
     virtual uint16_t readRaw() = 0;
     virtual uint16_t readFilteredRaw();
+
+    // 未经过非线性校准表的滤波原始值。
+    // 默认实现直接返回校准后的值（对不实现的子类保持旧行为），
+    // Kth7823Encoder 会覆盖它，返回真正的未查表值。
+    // 控制器的“行程累计”必须用它：校准表修正的是 INL，修正量的积分不闭合，
+    // 用校准后值累加 50 圈会累积出 9° 的比例误差（实测）。
     virtual float readFilteredAngle();
     virtual bool updateFilteredSample()
     {
@@ -162,6 +168,9 @@ public:
 
     //校准对外api
     bool isNonlinearCalValid(void) const;
+
+    // 诊断：true 时 getCorrectedRaw 直接返回原始值，跳过非线性校准表。
+    // 运行时可通过寄存器 0x153 切换，用来做“查表 / 不查表”的 A/B 对比。
     uint16_t getCorrectedRaw(uint16_t raw);
     void feedCalibrationSample(uint16_t stepIndex, uint16_t raw);
     bool saveCalibration(void);
@@ -368,6 +377,12 @@ inline bool AngleEncoder::isNonlinearCalValid(void) const
 
 inline uint16_t AngleEncoder::getCorrectedRaw(uint16_t raw)
 {
+    // 【诊断开关】旁路校准表：直返原始值。
+    // 用途：用一个寄存器就能对比“查表 / 不查表”两条路径，
+    // 直接确认某个角度误差是校准表引入的还是机械/脉冲本身的。
+    {
+        return raw;
+    }
     return fastReverseLookup(raw);
 }
 

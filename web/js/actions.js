@@ -311,8 +311,10 @@
                 [CUSTOM_REGS.VELOCITY_KI, params.velKi, 3000],
                 [CUSTOM_REGS.VELOCITY_KD, params.velKd, 30000]
             ];
+            // 【必须等 ACK】原来用 writeRegister（不等确认），看校准表后 USB 缓冲
+            // 被 dump 流量占着时会丢写，导致 PID 没更新而用户毫无感知。
             for (const [register, gain, maxGain] of registers) {
-                await writeRegister(register, Math.round(clamp(gain, 0, maxGain) * 1000));
+                await writeRegisterAndWaitAck(register, Math.round(clamp(gain, 0, maxGain) * 1000));
             }
         }
 

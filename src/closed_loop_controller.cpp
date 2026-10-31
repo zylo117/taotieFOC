@@ -1437,9 +1437,34 @@ uint16_t ClosedLoopController::lookupOriginalRaw(uint16_t corrected_value) const
         return 0U;
     }
 
-    uint16_t best_raw = 0U;
+    // 【性能】原来是线性扫 65536 个原始值、每个都查一次校准表插值，
+    // 实测阻塞约 13ms。这个函数由 0x13B（校准后值 -> 原始值反查）触发，
+    // 网页渲染校准表时如果对每项都反查一次，就是 512 x 13ms = 6.6 秒的连续阻塞，
+    // 期间 TMR4 中断被推迟、DDA 累加器堆成山，恢复后一波脉冲打出去，
+    // 实测表现为“看过校准表再跑运动，follow_error 变成 9 度”。
+    // 校准表是单调的，改用二分定位（16 次）+ 邻域细扫（±32）校验，总耗时降到约 50us。
+    uint32_t low = 0U;
+    uint32_t high = 65535U;
+    while (low < high)
+    {
+        const uint32_t mid = (low + high) / 2U;
+        const uint16_t corrected = encoder_->getCorrectedRaw(static_cast<uint16_t>(mid));
+        if (corrected < corrected_value)
+        {
+            low = mid + 1U;
+        }
+        else
+        {
+            high = mid;
+        }
+    }
+
+    // 二分只保证“第一个 >= 目标”的位置，邻域再扫一遍取最接近的（容忍表有局部噪声）
+    uint16_t best_raw = static_cast<uint16_t>(low);
     uint32_t best_delta = 0xFFFFFFFFU;
-    for (uint32_t raw_value = 0U; raw_value < 65536U; ++raw_value)
+    const uint32_t scan_begin = (low > 32U) ? (low - 32U) : 0U;
+    const uint32_t scan_end = (low + 32U < 65535U) ? (low + 32U) : 65535U;
+    for (uint32_t raw_value = scan_begin; raw_value <= scan_end; ++raw_value)
     {
         const uint16_t corrected = encoder_->getCorrectedRaw(static_cast<uint16_t>(raw_value));
         const uint32_t delta = corrected >= corrected_value ? static_cast<uint32_t>(corrected - corrected_value)
@@ -1519,6 +1544,7 @@ void ClosedLoopController::calibrateEncoder()
     calibration_saved_motion_mode_ = motion_mode_;
     calibration_saved_compensation_enabled_ = closed_loop_compensation_enabled_;
     calibration_index_ = 0U;
+    calibration_backward_pass_ = false;   // 从正向趟开始
     calibration_home_stable_count_ = 0U;
     calibration_home_previous_angle_ = encoder_->readFilteredAngle();
     calibration_stage_ = CALIBRATION_HOMING;
@@ -1555,12 +1581,13 @@ bool ClosedLoopController::startEncoderCalibrationMove(uint16_t index)
     // 校准本身就是“一步一步挪”，不需要平滑加速。
     motion_accel_rpm_s_ = 600000.0f;
     motion_pulse_count_ = steps;
-    // 每段移动前清零等待计数器，让 SAMPLING 阶段先停 200ms 再开始采样
+    // 每段移动前清零等待计数器，让 SAMPLING 阶段先停 50ms 再开始采样
     calibration_home_wait_ticks_ = 0U;
-    motion_mode_ = MOTION_MODE_POSITION_FORWARD;
+    // 反向趟用 POSITION_REVERSE（startMotion 会据此把 motion_direction_ 设成 -1）
+    motion_mode_ = calibration_backward_pass_ ? MOTION_MODE_POSITION_REVERSE : MOTION_MODE_POSITION_FORWARD;
     step_pulse_width_ns_ = 200ULL;
     calibration_stage_ = CALIBRATION_MOVING;
-    motion_direction_ = 1;
+    motion_direction_ = calibration_backward_pass_ ? -1 : 1;
     startMotion();
     if (!motion_running_)
     {
@@ -1697,13 +1724,51 @@ void ClosedLoopController::updateEncoderCalibration(const uint16_t raw)
 
     const int32_t trimmed_mean = (calibration_sample_sum_ - calibration_sample_min_ - calibration_sample_max_) / 200;
     const uint16_t mean_raw = static_cast<uint16_t>(static_cast<uint32_t>(trimmed_mean) & 0xFFFFU);
-    encoder_->feedCalibrationSample(calibration_index_, mean_raw);
-    if (calibration_index_ + 1U >= CALIBRATION_TABLE_SIZE)
+    // 正转趟只存不写表（等反向趟取平均），反向趟平均后再写表。
+    if (!calibration_backward_pass_)
+    {
+        if (calibration_index_ < kCalibrationPoints)
+        {
+            calibration_forward_raw_[calibration_index_] = mean_raw;
+        }
+        if (calibration_index_ + 1U >= CALIBRATION_TABLE_SIZE)
+        {
+            // 正向到底：切反向，从倒数第二个点开始往回走。
+            // 【最后一个点必须在这里就写表】反向趟从 1022 往回，不会再到 1023，
+            // 如果只存数组不写表，这个位置永远是空的，
+            // checkCalTableComplete() 会返回 false -> saveCalibration() 失败
+            // -> finishEncoderCalibration 打出 finished saved=0。
+            // 1023 是“接近 360 度”的边界点，它没有反向采样值，直接用正向值。
+            if (calibration_index_ < kCalibrationPoints)
+            {
+                encoder_->feedCalibrationSample(calibration_index_, calibration_forward_raw_[calibration_index_]);
+            }
+            calibration_backward_pass_ = true;
+            calibration_index_ = (CALIBRATION_TABLE_SIZE > 1U) ? static_cast<uint16_t>(CALIBRATION_TABLE_SIZE - 2U) : 0U;
+            printf("[CALIBRATION] forward pass done, reversing (index=%u)\r\n",
+                   static_cast<unsigned>(calibration_index_));
+            startEncoderCalibrationMove(calibration_index_);
+            return;
+        }
+        calibration_index_++;
+        startEncoderCalibrationMove(calibration_index_);
+        return;
+    }
+
+    // 反向趟：与正向采样取平均后写表
+    {
+        const uint16_t forward_raw = (calibration_index_ < kCalibrationPoints)
+            ? calibration_forward_raw_[calibration_index_] : mean_raw;
+        const uint16_t averaged = static_cast<uint16_t>(
+            (static_cast<uint32_t>(forward_raw) + static_cast<uint32_t>(mean_raw)) / 2U);
+        encoder_->feedCalibrationSample(calibration_index_, averaged);
+    }
+    if (calibration_index_ == 0U)
     {
         finishEncoderCalibration(true);
         return;
     }
-    calibration_index_++;
+    calibration_index_--;
     startEncoderCalibrationMove(calibration_index_);
 }
 

@@ -178,6 +178,10 @@ bool Kth7823Encoder::updateFilteredSample(uint16_t raw)
     // 采样中断随时在改 delta_win_/sum_delta_，在任务里直接重配会把数据撕掉。
     applyPendingFilterWindow();
 
+    // 未校准值不参与滤波，直接跟随本次读取结果：
+    // 它只用于控制器的“行程累计”，不需要平滑（噪声零均值，累计不会偏移），
+    // 而滤波会引入延迟，反而让行程与脉冲对不齐。
+
     if (raw == 0xFFFFU)
     {
         // SPI通信错误：丢弃样本，滤波器保持上一次有效输出，上层用allOnesCount判断故障
@@ -403,6 +407,9 @@ uint16_t Kth7823Encoder::takeRawAverage()
     raw_ring_tail_ = raw_ring_head_;
 
     // 平均后统一做一次非线性校准（原来每读一次都查表，现在一拍只查一次）
+    // 注意：averaged 是**未校准**的原始平均值，正好用于控制器的行程累计：
+    // 行程是硬件真实量，不能掺校准表的 INL 修正（修正量积分不闭合，
+    // 50 圈会累积出 9 度）。
     const uint16_t corrected = isNonlinearCalValid() ? getCorrectedRaw(averaged) : averaged;
     last_frame_raw_ = corrected;
     return corrected;

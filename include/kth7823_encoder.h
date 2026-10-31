@@ -35,6 +35,11 @@ public:
     bool updateFilteredSample(uint16_t raw);
     // 环形缓冲溢出次数（说明控制环取数太慢，正常应恒为 0）
     uint32_t rawRingOverflowCount() const { return raw_ring_overflow_; }
+
+    // 未经过非线性校准表的滤波原始值。
+    // 用途：控制器的“行程累计”必须用它，不能用校准后的值——
+    // 校准表修正的是 INL（每点 ±0.35°），但修正量的积分不闭合，
+    // 若用校准后的值累加行程，50 圈会累积出 9° 的比例误差（实测）。
     bool magneticFieldHigh() const override;
     bool magneticFieldLow() const override;
     uint16_t lastRawFrame() const;

@@ -3,6 +3,11 @@
 // Load order: constants -> utils -> state -> protocol -> rx -> ui -> ...
 
         function log(message) {
+            // 【日志开关】控制台执行 __hideTxRx = true / false 可实时屏蔽参数收发。
+            // [TX]/[RX] 是每帧都打的，每秒几百行，会把真正有用的 [INFO]/[SETTLE] 冲掉。
+            if (window.__hideTxRx && (message.startsWith('[TX]') || message.startsWith('[RX]'))) {
+                return;
+            }
             const line = document.createElement('p');
             line.className = 'log-line';
             line.textContent = message;

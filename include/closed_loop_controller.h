@@ -437,6 +437,15 @@ private:
     };
     volatile EncoderCalibrationStage calibration_stage_;
     volatile uint16_t calibration_index_;
+
+    // 【正反转平均】校准采用两趟扫描：正向走 0→1023 只存不写表，
+    // 反向走 1023→0 时把两趟采样取平均再写表。
+    // 原因：负载角让转子正转时落后、反转时超前，编码器两趟读数会一低一高，
+    // 平均后正好把这块系统偏差抵消（实测 1200RPM 时约 1.5 度）。
+    // 代价：2KB 临时数组（1024 点 × uint16）。
+    static constexpr uint16_t kCalibrationPoints = 1024U;
+    uint16_t calibration_forward_raw_[kCalibrationPoints] = {};
+    bool calibration_backward_pass_ = false;
     volatile uint16_t calibration_sample_count_;
     volatile uint16_t calibration_sample_attempts_;
     volatile int32_t calibration_sample_min_;

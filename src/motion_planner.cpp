@@ -72,27 +72,6 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
         const float unconstrained_rps =
             fast_clamp(position_reference_rps + velocity_correction_rps, -max_rps, max_rps);
 
-        // 【限流诊断】角度模式只动一下就停，靠这行直接看数值：
-        //   pos/tgt/err = 当前角度 / 目标角度 / 差值
-        //   ref = 位置环输出 rps，lim = 限幅后 rps（被 angle_max_rpm_ 夹）
-        //   max = angle_max_rpm_/60，为 0 就说明 0x12F 没设上
-        //   spd = current_step_speed_（微步/s），为 0 就真的没驱动
-        {
-            static uint32_t angle_diag_count = 0U;
-            if (++angle_diag_count >= 10000U)   // 20kHz -> 每 0.5s 一行
-            {
-                angle_diag_count = 0U;
-                printf("[ANGLE] pos=%.2f tgt=%.2f err=%.2f ref=%.3f lim=%.3f max=%.2f spd=%.0f\r\n",
-                       static_cast<double>(c.motion_position_deg_),
-                       static_cast<double>(c.target_angle_deg_),
-                       static_cast<double>(desired_error_deg),
-                       static_cast<double>(position_reference_rps),
-                       static_cast<double>(unconstrained_rps),
-                       static_cast<double>(max_rps),
-                       static_cast<double>(c.current_step_speed_));
-            }
-        }
-
         const float target_direction = desired_error_deg >= 0.0f ? 1.0f : -1.0f;
         const float directed_rps = unconstrained_rps * target_direction < 0.0f ? 0.0f : unconstrained_rps;
         const float accel_limit_rps2 = c.angle_accel_rpm_s_ / 60.0f;

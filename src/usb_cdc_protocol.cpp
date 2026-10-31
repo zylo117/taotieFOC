@@ -349,8 +349,31 @@ void UsbCdcProtocolBridge::flushTxQueue()
 
 void UsbCdcProtocolBridge::sendTelemetry()
 {
-    if (udev_ == nullptr || controller_ == nullptr || calibration_dump_active_)
+    if (udev_ == nullptr || controller_ == nullptr)
     {
+        return;
+    }
+    // 【dump 期间也要发快帧】原来这里直接 return，导致校准表导出期间
+    // 0x120（转速）/0x121（误差）/0x11F（运动状态）全部停更，
+    // 网页的 state.motionSpeedRpm / motionFollowErrorDeg 冻结在 dump 前的最后一帧。
+    // 波形图会拿旧值反复画，表现为“误差不变 / 异常”，实际电机还在正常转。
+    // 现在只跳过慢帧轮询，快帧（转速/角度/误差/运动状态）继续发。
+    if (calibration_dump_active_)
+    {
+        const uint16_t fast_regs[] = {
+            TMC2209_EXT_PARAM_SPEED_RPM,
+            TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG,
+            0x121U,   // FOLLOW_ERROR_DEG（网页用的瞬时跟随误差，固件枚举里没有单独命名）
+            TMC2209_EXT_PARAM_MOTION_COMMAND
+        };
+        static uint8_t fast_index = 0U;
+        const uint16_t reg_to_send = fast_regs[fast_index];
+        fast_index = static_cast<uint8_t>((fast_index + 1U) % (sizeof(fast_regs) / sizeof(fast_regs[0])));
+        uint32_t value_to_send = 0U;
+        if (controller_->readParameter(reg_to_send, &value_to_send))
+        {
+            sendFrame(0x10U, reg_to_send, value_to_send);
+        }
         return;
     }
 
