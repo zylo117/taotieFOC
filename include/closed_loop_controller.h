@@ -11,6 +11,7 @@
 #include "load_angle.h"
 #include "loop_stats.h"
 #include "motion_planner.h"
+#include "encoder_calibrator.h"
 #include "pid_auto_tuner.h"
 #include "parameter_router.h"
 #include "step_output_channel.h"
@@ -372,6 +373,10 @@ private:
     // 控制器只保留这一个句柄；下面这几个 external_ 开头的成员属于采集侧，不属于跟随模块。
     ExternalPulseFollower external_pulse_follower_{*this};
     MotionPlanner motion_planner_{*this};
+    // 编码器校准模块（拆分中，见 encoder_calibrator.h 的六阶段计划）。
+    // 目前只有 finish() 与 startMove() 已搬入，主流程还在本类里；
+    // 等阶段 5 把四个 public 函数改成转发后就真正接管。
+    EncoderCalibrator calibrator_{*this};
     LoopStats loop_stats_;
     // TMR2+DMA 脉冲出口。规划和外部跟随共用这一份（两者在逻辑上互斥），
     // ARR 序列缓冲也只有它这一份。
