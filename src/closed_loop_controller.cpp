@@ -549,6 +549,22 @@ void ClosedLoopController::startMotion()
     // 实测表现为“开过一次角度模式后，开环规划运动严重抖动，必须重启硬件才恢复”。
     closed_loop_angle_mode_enabled_ = false;
 
+    // 【必须停掉残留的 DMA 脉冲序列】step_output_.stop() 原来只在 stopMotion 里调，
+    // 而实际使用中很容易“进了角度模式不点停止就直接切回规划运动”。
+    // 此时 TMR2/DMA 里还排着角度模式最后几拍的脉冲序列，规划运动一开始发新序列
+    // 就会和旧序列冲突 -> 实测表现为“用过角度模式后规划模式一直抖，重启才恢复”。
+    step_output_.stop();
+
+    // 【DMA 记账也必须归零】上一步只停了定时器，但：
+    //   motion_dma_pending_signed : 上一拍交给 TMR2/DMA 但还没并入“已发完”的脉冲数
+    //   motion_steps_delivered_signed : 已发完的累计值
+    // 两个不清的话，startMotion 后第一次 refreshEncoderFeedback 会把上次的待发步数
+    // 直接加进 motion_steps_delivered_signed —— 命令行程瞬间跳一大截，
+    // follow_error 从错误基准开始算，闭环补偿跟着抽。
+    motion_dma_pending_signed = 0;
+    motion_dma_pending_steps_ = 0U;
+    motion_steps_delivered_signed = 0;
+
     // 【参数兜底】下面会用 motion_max_rpm_ / motion_accel_rpm_s_ 重算 step 速度，
     // 这两个为 0 时会算出 0 -> 电机完全不动。上位机正常每次都发，
     // 但之前的 setTargetAngleDeg 已经有同样的兜底，两个入口保持一致。
