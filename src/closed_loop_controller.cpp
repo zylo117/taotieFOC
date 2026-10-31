@@ -549,6 +549,22 @@ void ClosedLoopController::startMotion()
     // 实测表现为“开过一次角度模式后，开环规划运动严重抖动，必须重启硬件才恢复”。
     closed_loop_angle_mode_enabled_ = false;
 
+    // 【参数兜底】下面会用 motion_max_rpm_ / motion_accel_rpm_s_ 重算 step 速度，
+    // 这两个为 0 时会算出 0 -> 电机完全不动。上位机正常每次都发，
+    // 但之前的 setTargetAngleDeg 已经有同样的兜底，两个入口保持一致。
+    if (motion_max_rpm_ <= 0.0f)
+    {
+        motion_max_rpm_ = 1200.0f;
+    }
+    if (motion_accel_rpm_s_ <= 0.0f)
+    {
+        motion_accel_rpm_s_ = 6000.0f;
+    }
+    if (motion_start_rpm_ <= 0.0f)
+    {
+        motion_start_rpm_ = motion_max_rpm_;
+    }
+
     // 【安全锁】用户主动失能后拒绝任何启动（含自动测试循环的 0x11F=1），
     // 必须重新收到 MOTOR_ENABLE 才能清除。见 parameter_router 里 MOTOR_DISABLE 分支。
     if (user_disabled_)
