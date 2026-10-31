@@ -562,9 +562,11 @@ void ClosedLoopController::startMotion()
     // 置 true 并让 updateAngleMode 每拍接管速度输出。规划运动启动时如果不把它清掉，
     // updateAngleMode 和 updateTrapezoid 会同时改 current_step_speed_，互相争夺：
     // 实测表现为“开过一次角度模式后，开环规划运动严重抖动，必须重启硬件才恢复”。
-    // 【诊断】打印“进入 startMotion 那一瞬”的残留状态（必须在下面那行清零之前）。
-    // 目的：对比“重启后第一次启动”与“用过角度模式后启动”两组值，
-    // 直接看哪个成员在角度模式后变成了异常值——比反复猜快得多。
+    // 【诊断，默认关闭】这行约 90 字节，115200 下阻塞约 8ms。
+    // 磁编码器校准每段移动都会调 startMotion，1024 段就是 8 秒多纯串口输出，
+    // 实测表现为“校准变得很慢”。需要排查残留状态时把下面宏打开（或临时取消注释）。
+    // #define DEBUG_MOTION_START_TRACE 1
+#ifdef DEBUG_MOTION_START_TRACE
     printf("[START] ang=%u cur=%.0f max=%.0f acc=%.0f stage=%u dma=%ld deliv=%ld\r\n",
            static_cast<unsigned>(closed_loop_angle_mode_enabled_),
            static_cast<double>(current_step_speed_),
@@ -573,6 +575,7 @@ void ClosedLoopController::startMotion()
            static_cast<unsigned>(motion_ramp_stage_),
            static_cast<long>(motion_dma_pending_signed),
            static_cast<long>(motion_steps_delivered_signed));
+#endif
 
     closed_loop_angle_mode_enabled_ = false;
 
@@ -751,7 +754,7 @@ void ClosedLoopController::startMotion()
             printf("v_peak_sq: %.6f\n", v_peak_sq);
             printf("v_peak: %.6f\n", v_peak);
         }
-        printf("total_req_steps: %lu\n", total_req_steps);
+// [DEBUG-OFF] printf("total_req_steps: %lu\n", total_req_steps);
     // [DEBUG-OFF] printf("accel_total_steps_: %lu\n", accel_total_steps_);
     // [DEBUG-OFF] printf("decel_total_steps_: %lu\n", decel_total_steps_);
     // [DEBUG-OFF] printf("cruise_total_steps_: %lu\n", cruise_total_steps_);
@@ -1723,7 +1726,13 @@ void ClosedLoopController::calibrateEncoder()
 
 bool ClosedLoopController::startEncoderCalibrationMove(uint16_t index)
 {
-    printf("[CALIBRATION] moving to index: %u from angle: %f\r\n", index, encoder_->readFilteredAngle());
+    // 【每 128 点才打一次进度】原来每段都打，带 %f 约 100 字节/段，
+    // 1024 段就是 100KB，115200 下约 10 秒纯串口输出，且每段阻塞约 10ms。
+    // 改成每 128 点一次（共 8 次），既能看进度又不拖时间。
+    if ((index % 128U) == 0U)
+    {
+        printf("[CALIBRATION] moving to index: %u from angle: %f\r\n", index, encoder_->readFilteredAngle());
+    }
     const uint32_t steps_per_round = getMicroStepsPerRound(driver_);
     const uint64_t table_size = CALIBRATION_TABLE_SIZE;
     const uint32_t first_step = static_cast<uint32_t>(
