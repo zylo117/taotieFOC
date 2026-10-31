@@ -292,11 +292,68 @@
         }
     }
 
+    // PID 面板与主界面 <-> 双向同步，改完即时写固件。
+    // 主界面 id：posKp/posKi/posKd/velKp/velKi/velKd
+    // 弹窗 id：  shockPosKp/...
+    const PID_FIELDS = [
+        ['shockPosKp', 'posKp'],
+        ['shockPosKi', 'posKi'],
+        ['shockPosKd', 'posKd'],
+        ['shockVelKp', 'velKp'],
+        ['shockVelKi', 'velKi'],
+        ['shockVelKd', 'velKd']
+    ];
+
+    // 主界面 -> 弹窗（打开弹窗时调用；也用于外部改动后回填）
+    function syncPidFromMain() {
+        for (const [shockId, mainId] of PID_FIELDS) {
+            const s = $(shockId);
+            const m = $(mainId);
+            if (s && m) s.value = m.value;
+        }
+    }
+
+    // 弹窗 -> 主界面 -> 固件（即时）
+    async function syncPidToMain(changedId) {
+        for (const [shockId, mainId] of PID_FIELDS) {
+            if (shockId === changedId) {
+                const s = $(shockId);
+                const m = $(mainId);
+                if (s && m) m.value = s.value;
+            }
+        }
+        if (typeof writePidParameters === 'function') {
+            try {
+                await writePidParameters();
+            } catch (error) {
+                log(`[PID] 写入失败：${error.message}`);
+            }
+        }
+    }
+
+    function bindShockPidPanel() {
+        for (const [shockId] of PID_FIELDS) {
+            const s = $(shockId);
+            if (!s) continue;
+            s.addEventListener('change', function () { void syncPidToMain(shockId); });
+        }
+        // 主界面改动后回填（弹窗开着时保持两边一致）
+        for (const [, mainId] of PID_FIELDS) {
+            const m = $(mainId);
+            if (!m) continue;
+            m.addEventListener('change', function () {
+                const dialog = $('shockDialog');
+                if (dialog && dialog.open) syncPidFromMain();
+            });
+        }
+    }
+
     function bindShockUi() {
         const openBtn = $('shockCalibrationBtn');
         const dialog = $('shockDialog');
         if (!openBtn || !dialog) return;
         openBtn.addEventListener('click', function () {
+            syncPidFromMain();
             if (!dialog.open) dialog.showModal();
         });
         const closeBtn = $('closeShockDialogBtn');
@@ -307,6 +364,7 @@
         }
         const startBtn = $('startShockCalibrationBtn');
         if (startBtn) startBtn.addEventListener('click', startShockCalibration);
+        bindShockPidPanel();
         const cancelBtn = $('cancelShockCalibrationBtn');
         if (cancelBtn) {
             cancelBtn.addEventListener('click', function () {

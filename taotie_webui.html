@@ -1441,6 +1441,20 @@
             <label><input id="shockTestOpenLoop" type="checkbox" checked> 测开环</label>
             <label><input id="shockTestClosedLoop" type="checkbox" checked> 测闭环</label>
         </div>
+        <!-- PID 面板：与主界面的 posKp/posKi/... 双向同步，改完即时写固件。
+             角度模式下固件会把 P 项自动缩小 1/100，I/D 不缩放，所以这里填的就是运动模式的值。 -->
+        <div class="load-angle-settings">
+            <label>位置环 Kp<input id="shockPosKp" type="number" min="0" max="30000" step="1" value="0"></label>
+            <label>位置环 Ki<input id="shockPosKi" type="number" min="0" max="3000" step="1" value="0"></label>
+            <label>位置环 Kd<input id="shockPosKd" type="number" min="0" max="30000" step="1" value="0"></label>
+            <label>速度环 Kp<input id="shockVelKp" type="number" min="0" max="30000" step="1" value="0"></label>
+            <label>速度环 Ki<input id="shockVelKi" type="number" min="0" max="3000" step="1" value="0"></label>
+            <label>速度环 Kd<input id="shockVelKd" type="number" min="0" max="30000" step="1" value="0"></label>
+        </div>
+        <div class="load-angle-legend">
+            <span><strong>调参顺序：</strong>① 先看开环基线（M=1）→ ② 只改位置环 P（RMS 变小且峰值不爆）→ ③ 加 Kd 压峰值（恢复时间不增）→ ④ 加 Ki 消稳态（一振荡就退回）。
+            每轮只改一个参数。峰值/稳态比 &gt;5 = Kd 不足；闭环/开环峰值比 &gt;0.9 = PID 几乎没起作用；闭环 RMS 反而变大 = Kd 在放大测速噪声。</span>
+        </div>
         <div class="load-angle-status">
             <span aria-live="polite" id="shockStatus">等待开始</span>
             <span id="shockProgress">0 / 0</span>
