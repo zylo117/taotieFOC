@@ -44,6 +44,29 @@ MotionPlanner::MotionPlanner(ClosedLoopController& owner) : owner_(owner)
 {
 }
 
+// ===========================================================================
+// 角度模式（位置伺服）：把转子驱动到 target_angle_deg_
+//
+// 每 50us 执行一次，完整数据流：
+//   误差(deg) = normalize(target - 当前位置)          // ±180
+//      ↓ position_pid_（P 项 ×0.01，I/D 原值）
+//   位置环输出 rps
+//      ↓ + base_speed（上一拍输出，提供“记忆”/积分作用）
+//   期望速度 rps
+//      ↓ - 实测速度（encoder_speed_rpm_/60）
+//   速度环（P 项同样 ×0.01）→ 修正量 rps
+//      ↓ 相加后 fast_clamp(±angle_max_rpm_/60)
+//   限幅后的 rps
+//      ↓ 方向钳位（与误差反向时置 0，位置伺服不允许倒转）
+//      ↓ 加速度限幅（angle_accel_rpm_s_）
+//   compensated_rps_ → 下一步由 emitSteps 转成脉冲
+//
+// 两个“看起来奇怪但必须保留”的设计：
+//   1) base_speed 用上一拍输出：没有它，小 P 根本推不动转子（实测极慢）；
+//      代价是它是正反馈，所以速度环 Ki 必须为 0，否则持续发散。
+//   2) P 项 ×0.01：角度模式 PID 输出就是全部速度，而运动模式里 PID 只做小修正，
+//      同样的 P 在角度模式等效放大很多，不缩就大幅摆动。
+// ===========================================================================
 void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
 {
     ClosedLoopController& c = owner_;
@@ -128,6 +151,23 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
     }
 }
 
+// ===========================================================================
+// 梯形规划（位置/速度模式）：从 current_step_speed_ 出发，按
+// ACCEL → CRUISE → DECEL → SETTLE 四阶段推进，返回 true 表示“本拍已处理，
+// emitSteps 不用再跑”（换向/沉降这类需要独占拍的情况）。
+//
+// 阶段转换条件：
+//   ACCEL   : speed < max_step_s -> 每拍 +accel*dt；到顶转 CRUISE
+//   CRUISE  : remaining <= steps_to_decel_ -> 转 DECEL
+//   DECEL   : speed > 0 -> 每拍 -accel*dt；到 0 且剩余 0 -> 转 SETTLE
+//   SETTLE  : 等编码器静止（或 200ms 超时）-> stopMotion()
+//
+// 两处容易改错的地方（都已踩过坑）：
+//   1) steps_to_decel_ 必须按“全程”算；换向后剩余行程是全新一程，必须重算，
+//      否则第二程第一拍就进 DECEL，表现为反向提前停住。
+//   2) 速度模式下运行时改 0x11B/0x11C/0x11E 时：提速回 ACCEL、降速必须每拍执行
+//      （一拍只降 accel*dt = 64 步/s，只降一次等于没降）；换向要先刹到 0 再翻 DIR。
+// ===========================================================================
 bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
 {
     ClosedLoopController& c = owner_;
@@ -344,6 +384,21 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
     return false;
 }
 
+// ===========================================================================
+// 把 accumulated 的步数（float，单位：步）变成实际脉冲序列。
+// 返回 false = 本拍没有脉冲需要发（不会触发任何硬件动作）。
+//
+// 累加器语义：
+//   motion_step_accumulator_            规划本身应该走的步数
+//   compensated_motion_step_accumulator_ 叠加了 PID 补偿后的总步数
+// 两者都按 speed × dt 累加，取 floor 得到整数步；取整后要把小数部分留在累加器里，
+// 否则低速时每拍不足 1 步会被反复丢弃，掉速很严重。
+//
+// 角度模式的特殊处理：每拍最多走 kMaxStepsPerTick 步。
+// 这个钳位同时是“防喷发”（大误差时一次吐几十步堵住 DMA）和“实际限速”：
+// 3 步/拍 x 20kHz = 60000 步/s，按 12800 步/圈约 281 RPM，
+// 界面上的“闭环最大速度”超过这个值也达不到。
+// ===========================================================================
 bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
 {
     ClosedLoopController& c = owner_;
