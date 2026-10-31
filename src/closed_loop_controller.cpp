@@ -851,6 +851,12 @@ float ClosedLoopController::refreshEncoderFeedback()
         // 用"已确认发完"的步数，而不是"已交给 DMA"的步数，命令位置才和真实脉冲同步
         motion_commanded_travel_deg_ = static_cast<float>(motion_steps_delivered_signed) * step_angle_deg;
 
+        // 【已知精度限制（长时运行才暴露）】motion_encoder_travel_raw_ 是 int64（可跑 147 年不溢出），
+        // 但这里转成 float 算角度：float 只有 24 位尾数，超过约 1.6e7 LSB（合 244 圈）后
+        // 分辨率就到不了 1 LSB，再往上（比如几百万圈）follow_error 会明显失真。
+        // 当前所有使用场景都是短时运动（几十秒、几千圈以内），精度损失 < 0.1°。
+        // 若将来要做“连续运行几天”的长时定位，需要把 travel_angle / commanded_travel_deg /
+        // follow_error 整条链改成 int64 毫度（或 double）——只在显示时转 float，不在此处局部改。
         auto motion_encoder_travel_angle_ = static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F;
         motion_follow_error_deg_ = normalize_signed_angle_error_deg(
             motion_encoder_travel_angle_ - motion_commanded_travel_deg_);  // 比如命令要走3度，结果才走了2度，那跟随误差就是-1度。实际-目标
