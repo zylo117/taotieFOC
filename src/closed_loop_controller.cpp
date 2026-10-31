@@ -1924,7 +1924,10 @@ void ClosedLoopController::finishEncoderCalibration(bool save_table)
     motion_pulse_count_ = calibration_saved_pulse_count_;
     motion_mode_ = calibration_saved_motion_mode_;
     step_pulse_width_ns_ = calibration_saved_pulse_width_ns_;
-    closed_loop_compensation_enabled_ = calibration_saved_compensation_enabled_;
+    // 【不再“恢复校准前的补偿开关”】校准本身是开环操作，结束后如果恢复成校准前的 true，
+    // 就会出现“界面上已取消勾选、固件里补偿却开着”的不一致（与角度模式残留同类问题）。
+    // 统一改为保持 false，由上位机下次启动时按勾选框显式下发 0x107。
+    closed_loop_compensation_enabled_ = false;
     calibration_stage_ = CALIBRATION_IDLE;
     printf("[CALIBRATION] finished saved=%u\r\n", saved ? 1U : 0U);
 }
