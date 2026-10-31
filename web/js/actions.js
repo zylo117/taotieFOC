@@ -30,6 +30,8 @@
                 state.connected = true;
                 // 新连接：允许 ensureMotionDefaultsForAngleControl 重新下发一次默认值
                 state.angleDefaultsApplied = false;
+                // 新连接：允许 PID 输入框从固件回填一次（之后输入框归用户，不再被固件值覆盖）
+                state.pidSyncedFromDevice = false;
                 state.reader = portObj.readable.getReader();
                 state.writer = portObj.writable.getWriter();
 
@@ -311,13 +313,18 @@
         }
 
         async function writePidParameters(params = getPidParameters()) {
+            // 【单位】输入框里填的是“实际增益”（默认 60.0 就是增益 60），
+            // 发送时乘 1000 变成固件口径。上限和固件 clampPidGain 保持一致：
+            //   比例/微分 实际 <= 30，积分 实际 <= 3
+            // 以前这里写的是 30000/3000（当成“已 ×1000 的口径”），
+            // 导致用户填 9000 也直接发 9,000,000，固件再钳到 30，看起来像“填 9000 变 30000”。
             const registers = [
-                [CUSTOM_REGS.POSITION_KP, params.posKp, 30000],
-                [CUSTOM_REGS.POSITION_KI, params.posKi, 3000],
-                [CUSTOM_REGS.POSITION_KD, params.posKd, 30000],
-                [CUSTOM_REGS.VELOCITY_KP, params.velKp, 30000],
-                [CUSTOM_REGS.VELOCITY_KI, params.velKi, 3000],
-                [CUSTOM_REGS.VELOCITY_KD, params.velKd, 30000]
+                [CUSTOM_REGS.POSITION_KP, params.posKp, 30],
+                [CUSTOM_REGS.POSITION_KI, params.posKi, 3],
+                [CUSTOM_REGS.POSITION_KD, params.posKd, 30],
+                [CUSTOM_REGS.VELOCITY_KP, params.velKp, 30],
+                [CUSTOM_REGS.VELOCITY_KI, params.velKi, 3],
+                [CUSTOM_REGS.VELOCITY_KD, params.velKd, 30]
             ];
             // 【必须等 ACK】原来用 writeRegister（不等确认），看校准表后 USB 缓冲
             // 被 dump 流量占着时会丢写，导致 PID 没更新而用户毫无感知。

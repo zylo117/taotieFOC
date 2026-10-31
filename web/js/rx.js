@@ -183,7 +183,20 @@
                 [CUSTOM_REGS.VELOCITY_KD, 'velKd']
             ]);
             if (pidInputByRegister.has(frame.reg)) {
-                document.getElementById(pidInputByRegister.get(frame.reg)).value = (frame.value / 1000).toFixed(3);
+                // 【只在首次连接时从固件回填】原来每收到一条读回包就往输入框写，
+                // 用户填了 9000 之后，固件回报的旧值（比如 21568 -> 21.57）会把输入框覆盖掉，
+                // 于是“写入 Flash”实际存的是旧值（实测 save ok 打出的 pid 21568/20000/60000 就是这个原因）。
+                // 现在只在刚连上、还没同步过时回填一次；之后输入框归用户，不再被固件值修改。
+                if (!state.pidSyncedFromDevice) {
+                    document.getElementById(pidInputByRegister.get(frame.reg)).value = (frame.value / 1000).toFixed(3);
+                    // 6 个 PID 依次回报，给 1.5 秒窗口全部回填完，然后关闭回填（输入框归用户）
+                    if (!state.pidSyncTimer) {
+                        state.pidSyncTimer = window.setTimeout(function () {
+                            state.pidSyncedFromDevice = true;
+                            state.pidSyncTimer = null;
+                        }, 1500);
+                    }
+                }
             }
             if (frame.reg === CUSTOM_REGS.MAGNETIC_HIGH) state.magneticHigh = frame.value !== 0;
             if (frame.reg === CUSTOM_REGS.MAGNETIC_LOW) state.magneticLow = frame.value !== 0;

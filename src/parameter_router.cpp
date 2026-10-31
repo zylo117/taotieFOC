@@ -1,6 +1,9 @@
-#include "parameter_router.h"
+﻿#include "parameter_router.h"
 
 #include "closed_loop_controller.h"
+#include "param_store.h"
+
+#include <cstdio>
 
 // 说明：下面这些分支里的成员访问都显式带上 owner_. 前缀。
 // 这不是啰嗦 —— 这张表里既有“只改一个标量”的简单项，也有“改参数顺手清 PID 积分”
@@ -9,12 +12,18 @@
 
 namespace
 {
-    // PID 增益上限：比例/微分 30、积分 3（上位机传的是放大 1000 倍的整数）。
+    // PID 增益上限：比例/微分 30、积分 3（固件内的实际值）。
+    //
+    // 【单位链】上位机发的是“实际增益 × 1000”的整数（输框 9.0 -> 发 9000），
+    // 所以这里除 1000 就得到实际增益。
+    // 注意：保存 Flash 时用的是“实际增益 × 1000”，对 kp 可达 30000，
+    // 所以 param_store 里的 PID 字段必须是 uint32_t（曾用 uint16_t，
+    // 导致 9000×1000 = 9,000,000 溢出成 21568，日志里 [PARAM] save ok (pid 21568/...)）。
     float clampPidGain(uint16_t reg, uint32_t raw_value)
     {
         const float max_gain = (reg == TMC2209_EXT_PARAM_POSITION_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KI)
-            ? 3000.0f
-            : 30000.0f;
+            ? 3.0f
+            : 30.0f;
         const float gain = static_cast<float>(raw_value) / 1000.0f;
         if (gain < 0.0f)
         {
@@ -30,6 +39,44 @@ ParameterRouter::ParameterRouter(ClosedLoopController& owner) : owner_(owner)
 
 bool ParameterRouter::write(uint16_t reg, uint32_t value)
 {
+    if (reg == TMC2209_EXT_PARAM_SAVE_PARAMS)
+    {
+        // 【写入会 stall Flash 总线几毫秒】运动中绝对不能做，否则会丢脉冲。
+        if (owner_.motion_running_ || owner_.closed_loop_angle_mode_enabled_)
+        {
+            printf("[PARAM] save rejected: motion is running\r\n");
+            owner_.param_save_ok_ = false;
+            return true;
+        }
+        if (value == 0U)
+        {
+            return true;   // 写 0 不做任何事
+        }
+
+        PersistedMotorParams params = {};
+        // PID 用上位机口径（×1000 的整数），与 param_store.h 注释一致
+        params.position_kp = static_cast<uint32_t>(owner_.position_pid_.kp * 1000.0f + 0.5f);
+        params.position_ki = static_cast<uint32_t>(owner_.position_pid_.ki * 1000.0f + 0.5f);
+        params.position_kd = static_cast<uint32_t>(owner_.position_pid_.kd * 1000.0f + 0.5f);
+        params.velocity_kp = static_cast<uint32_t>(owner_.velocity_pid_.kp * 1000.0f + 0.5f);
+        params.velocity_ki = static_cast<uint32_t>(owner_.velocity_pid_.ki * 1000.0f + 0.5f);
+        params.velocity_kd = static_cast<uint32_t>(owner_.velocity_pid_.kd * 1000.0f + 0.5f);
+        // 角度限速/加速度不存 Flash：它们属于“本次运行设定”，每次按现场需要在界面上调，
+        // 存进 Flash 反而会让一个旧值在重启后静默生效。结构体字段保留（置 0）用于兼容。
+        params.angle_max_rpm = 0U;
+        params.angle_accel_rpm_s = 0U;
+
+        owner_.param_save_ok_ = param_store_save(&params);
+        printf("[PARAM] save %s (pid %u/%u/%u %u/%u/%u)\r\n",
+               owner_.param_save_ok_ ? "ok" : "FAILED",
+               static_cast<unsigned>(params.position_kp),
+               static_cast<unsigned>(params.position_ki),
+               static_cast<unsigned>(params.position_kd),
+               static_cast<unsigned>(params.velocity_kp),
+               static_cast<unsigned>(params.velocity_ki),
+               static_cast<unsigned>(params.velocity_kd));
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FF_RATIO)
     {
         // 负载角前馈信任度：网页传百分数 0~100，内部存 0.0~1.0。
@@ -297,6 +344,27 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     if (value == nullptr)
     {
         return false;
+    }
+    if (reg == TMC2209_EXT_PARAM_SAVE_PARAMS)
+    {
+        *value = owner_.param_save_ok_ ? 1U : 0U;
+        return true;
+    }
+    // 【PID 回读必须实时取值】原来 PID 六项走的是 custom_parameters_ 缓存，
+    // 而 init() 从 Flash 恢复时只改了 position_pid_ / velocity_pid_，没同步那份缓存，
+    // 于是重启后网页读到的仍是旧值（0 或编译期默认），看起来“写入成功但重连没读出来”。
+    if (reg == TMC2209_EXT_PARAM_POSITION_KP || reg == TMC2209_EXT_PARAM_POSITION_KI ||
+        reg == TMC2209_EXT_PARAM_POSITION_KD || reg == TMC2209_EXT_PARAM_VELOCITY_KP ||
+        reg == TMC2209_EXT_PARAM_VELOCITY_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KD)
+    {
+        const PidController& pid = (reg == TMC2209_EXT_PARAM_POSITION_KP || reg == TMC2209_EXT_PARAM_POSITION_KI ||
+                                    reg == TMC2209_EXT_PARAM_POSITION_KD)
+            ? owner_.position_pid_ : owner_.velocity_pid_;
+        const float gain = (reg == TMC2209_EXT_PARAM_POSITION_KP || reg == TMC2209_EXT_PARAM_VELOCITY_KP) ? pid.kp
+                         : (reg == TMC2209_EXT_PARAM_POSITION_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KI) ? pid.ki
+                         : pid.kd;
+        *value = static_cast<uint32_t>(gain * 1000.0f + 0.5f);
+        return true;
     }
     if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FF_RATIO)
     {

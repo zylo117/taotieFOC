@@ -348,6 +348,70 @@
         }
     }
 
+    // 写入参数到 Flash（0x154）。固件会把当前 PID + 角度限速存进 0x0801E000，
+    // 下次上电时 init() 自动读回。运动中固件会拒绝（会 stall Flash 总线丢脉冲）。
+    async function saveParamsToFlash() {
+        if (!state.connected) {
+            setStatus('尚未连接串口');
+            return;
+        }
+        const btn = $('saveParamsBtn');
+        if (btn) btn.disabled = true;
+        try {
+            // 先把面板上的 PID 写进固件 RAM，再让它保存，避免存的是旧值
+            if (typeof writePidParameters === 'function') {
+                await writePidParameters();
+            }
+            await writeRegisterAndWaitAck(0x154, 1);
+            const result = await readRegisterValue(0x154);
+            if (Number(result) === 1) {
+                log('[PARAM] 参数已写入 Flash，下次上电自动恢复');
+                setStatus('参数已保存到 Flash');
+            } else {
+                log(`[PARAM] 保存失败（0x154 读回 ${result}），运动中会被拒绝，静止后再试`);
+                setStatus('保存失败：请确保电机静止');
+            }
+        } catch (error) {
+            log(`[PARAM] 写入异常：${error.message}`);
+            setStatus(`保存失败：${error.message}`);
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
+    // 主界面也有一个「写入 PID 参数到 Flash」按钮（与弹窗内那个共用同一套逻辑）。
+    // 弹窗未打开时也要能用，所以这里单独绑定，不依赖 bindShockUi 的弹窗存在性检查。
+    async function saveParamsFromMainPanel() {
+        if (!state.connected) {
+            const s = $('savePidToFlashStatus');
+            if (s) s.textContent = '尚未连接串口';
+            return;
+        }
+        const btn = $('savePidToFlashBtn');
+        const status = $('savePidToFlashStatus');
+        if (btn) btn.disabled = true;
+        if (status) status.textContent = '写入中...';
+        try {
+            if (typeof writePidParameters === 'function') {
+                await writePidParameters();
+            }
+            await writeRegisterAndWaitAck(0x154, 1);
+            const result = await readRegisterValue(0x154);
+            if (Number(result) === 1) {
+                log('[PARAM] PID 已写入 Flash，下次上电自动恢复');
+                if (status) status.textContent = '已保存，上电自动恢复';
+            } else {
+                log(`[PARAM] 保存失败（0x154 读回 ${result}），运动中会被拒绝，静止后再试`);
+                if (status) status.textContent = '保存失败：请确保电机静止';
+            }
+        } catch (error) {
+            log(`[PARAM] 写入异常：${error.message}`);
+            if (status) status.textContent = `保存失败：${error.message}`;
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    }
+
     function bindShockUi() {
         const openBtn = $('shockCalibrationBtn');
         const dialog = $('shockDialog');
@@ -366,6 +430,10 @@
         if (startBtn) startBtn.addEventListener('click', startShockCalibration);
         bindShockPidPanel();
         const cancelBtn = $('cancelShockCalibrationBtn');
+        const saveBtn = $('saveParamsBtn');
+        if (saveBtn) saveBtn.addEventListener('click', function () { void saveParamsToFlash(); });
+        const saveMainBtn = $('savePidToFlashBtn');
+        if (saveMainBtn) saveMainBtn.addEventListener('click', function () { void saveParamsFromMainPanel(); });
         if (cancelBtn) {
             cancelBtn.addEventListener('click', function () {
                 SHOCK.cancelled = true;

@@ -1,5 +1,6 @@
 #include "closed_loop_controller.h"
 #include "at32f403a_407_board.h"
+#include "param_store.h"
 #include "pulse_capture.h"
 #include "step_sequencer.h"
 
@@ -263,6 +264,45 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
 {
     driver_ = driver;
     encoder_ = encoder;
+
+    // 【上电恢复】从 Flash 读回上次保存的 PID 与角度限速。
+    // 固件原来完全没有参数持久化，掉电后 PID 全丢、回到编译期默认值；
+    // 现在只要用户点过一次「写入参数」，重启就能自动恢复。
+    {
+        PersistedMotorParams params = {};
+        if (param_store_load(&params))
+        {
+            position_pid_.kp = static_cast<float>(params.position_kp) / 1000.0f;
+            position_pid_.ki = static_cast<float>(params.position_ki) / 1000.0f;
+            position_pid_.kd = static_cast<float>(params.position_kd) / 1000.0f;
+            velocity_pid_.kp = static_cast<float>(params.velocity_kp) / 1000.0f;
+            velocity_pid_.ki = static_cast<float>(params.velocity_ki) / 1000.0f;
+            velocity_pid_.kd = static_cast<float>(params.velocity_kd) / 1000.0f;
+            // 【必须同步“基准值”】多处代码会在开关闭环/启动运动时调用
+            //   setGains(base_position_kp_, ...) / setGains(base_velocity_kp_, ...)
+            // 如果只改 PID 实例的系数而不改 base_*，那些调用会把刚从 Flash 读出的值
+            // 覆盖回编译期默认值 —— 表现就是“写入成功但重连读不到”。
+            base_position_kp_ = position_pid_.kp;
+            base_position_ki_ = position_pid_.ki;
+            base_position_kd_ = position_pid_.kd;
+            base_velocity_kp_ = velocity_pid_.kp;
+            base_velocity_ki_ = velocity_pid_.ki;
+            base_velocity_kd_ = velocity_pid_.kd;
+            // 角度限速/加速度不从 Flash 恢复：它们是“本次运行设定”，每次在界面上调，
+            // 存进 Flash 会让一个旧值在重启后静默生效。
+            printf("[PARAM] loaded from flash: pid %u/%u/%u %u/%u/%u\r\n",
+                   static_cast<unsigned>(params.position_kp),
+                   static_cast<unsigned>(params.position_ki),
+                   static_cast<unsigned>(params.position_kd),
+                   static_cast<unsigned>(params.velocity_kp),
+                   static_cast<unsigned>(params.velocity_ki),
+                   static_cast<unsigned>(params.velocity_kd));
+        }
+        else
+        {
+            printf("[PARAM] no saved params, using compile-time defaults\r\n");
+        }
+    }
 
     crm_periph_clock_enable(CRM_GPIOA_PERIPH_CLOCK, TRUE);
     crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);

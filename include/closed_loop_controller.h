@@ -337,6 +337,9 @@ private:
     volatile uint16_t encoder_filter_window_ = EncoderFilterConfig::kDefaultWindow;
     volatile uint16_t encoder_filter_window_active_ = EncoderFilterConfig::kDefaultWindow;
 
+    // 上次「保存参数到 Flash」的结果（0x154 读回用）
+    volatile bool param_save_ok_ = false;
+
     // 【安全锁】用户主动失能后置位，任何 startMotion / setTargetAngleDeg 都拒绝启动，
     // 必须收到显式的 MOTOR_ENABLE 才能清除。
     // 背景：失能只是 setEnable(false)，而 startMotion 里无条件 setEnable(true)，
