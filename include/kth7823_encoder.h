@@ -55,6 +55,13 @@ public:
         uint32_t events;       // 累计锁存过多少次（看发生频率；只增不清）
         uint16_t avg_raw;      // 环形平均后、查表前（未校准）
         uint16_t consumed;     // 本次平均实际用了几个 TMR5 样本
+        // 【真正关键的字段】SPI 刚刚返回的原始字，还没过校准表。
+        // avg_raw/consumed 在“TMR5 多样本平均”被停用后永远是 0（main.cpp:343-344），
+        // 而 in 已经是查表后的值 —— 没有 raw_word 就分不清：
+        //   是传感器真的返回了那个怪值（电气/时序/磁场），还是
+        //   传感器返回正常、被校准表映射成了那个怪值（表/接缝）。
+        uint16_t raw_word;     // getCorrectedRaw() 之前的 SPI 原始字
+        uint16_t reason;       // 1=输出跳变越线；2=原始值与查表值环形差过大
         uint16_t in_corrected; // 查表后送入滤波的本拍样本
         uint16_t base;         // angle_base_
         int32_t  delta;        // 本样本相对 base 的环绕差值
@@ -144,5 +151,10 @@ private:
     bool jump_prev_valid_ = false;
     uint16_t last_avg_raw_ = 0U;    // takeRawAverage 里的未校准平均值
     uint16_t last_avg_count_ = 0U;  // 本次平均用了几个样本
+    // SPI 刚返回、还没查表的原始字（readRaw 和 sampleRawFast 都会更新）
+    volatile uint16_t last_spi_word_ = 0U;
+    // 原始字与查表结果的环形差超过它就算“表把值改飞了”。
+    // 正常 INL 修正量约 ±0.35° = ±64 LSB，取 512 LSB（2.8°）留 8 倍余量。
+    static constexpr int32_t kTableSpreadLsb = 512;
 };
 #endif

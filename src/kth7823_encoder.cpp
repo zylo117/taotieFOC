@@ -121,6 +121,11 @@ uint16_t Kth7823Encoder::readRaw()
     encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, false);
     raw = encoder_common::encoder_spi2_rw16(last_tx_frame_);
     encoder_common::encoder_write_gpio(KTH7823_CS_PORT, KTH7823_CS_PIN, true);
+    // 记下“查表前”的原始字：下面的 0xFFFF/0x0000 计数和跳变锁存都要靠它分区。
+    // 【注意】原来的 all_ones/all_zeros 是在查表之后判的，它们统计的是“校准后的值”，
+    // 不是“SPI 返回的字”——转子停在 0° 附近时 corrected==0 是完全正常的，
+    // 不能拿它当“无应答”的证据。真正的电气证据要看 raw_word。
+    last_spi_word_ = raw;
     if (isNonlinearCalValid())
     {
         raw = getCorrectedRaw(raw);
@@ -545,6 +550,19 @@ void Kth7823Encoder::checkJumpLatch(uint16_t out_raw, uint16_t in_corrected,
                                     int32_t delta, int32_t evicted, int32_t span)
 {
     int32_t jump = 0;
+    // 第二个独立触发条件：原始字与查表结果的环形差。
+    // 正常 INL 修正量只有 ±0.35°（±64 LSB），超过 512 LSB（2.8°）就是表把值改飞了。
+    // 用环形差是为了在接缝处不误报：raw=0x0002 被表映到 0xFFFE 是正常的 -4 LSB。
+    int32_t spread = static_cast<int32_t>(last_spi_word_) - static_cast<int32_t>(in_corrected);
+    while (spread > 32768)
+    {
+        spread -= 65536;
+    }
+    while (spread < -32768)
+    {
+        spread += 65536;
+    }
+    const int32_t abs_spread = (spread < 0) ? -spread : spread;
     if (jump_prev_valid_)
     {
         jump = static_cast<int32_t>(out_raw) - static_cast<int32_t>(jump_prev_out_);
@@ -557,8 +575,10 @@ void Kth7823Encoder::checkJumpLatch(uint16_t out_raw, uint16_t in_corrected,
             jump += 65536;
         }
         const int32_t abs_jump = (jump < 0) ? -jump : jump;
-        if (abs_jump > kJumpLatchLsb)
+        if (abs_jump > kJumpLatchLsb || abs_spread > kTableSpreadLsb)
         {
+            // 1 = 输出跳变越线；2 = 表把值改飞（或两者同时，取跳变优先）。
+            const uint16_t reason = (abs_jump > kJumpLatchLsb) ? 1U : 2U;
             // 计数必须是“真实发生次数”：不管旧快照有没有被取走都要加，
             // 否则事件密集时会漏计，就估不出发生频率了。
             jump_events_++;
@@ -569,6 +589,8 @@ void Kth7823Encoder::checkJumpLatch(uint16_t out_raw, uint16_t in_corrected,
                 jump_.events = jump_events_;
                 jump_.avg_raw = last_avg_raw_;
                 jump_.consumed = last_avg_count_;
+                jump_.raw_word = last_spi_word_;
+                jump_.reason = reason;
                 jump_.in_corrected = in_corrected;
                 // base / sum_delta 只存在于“增量累加”这条路径（angle_encoder.h 顶部
                 // 可以切到极坐标 XY 滑动平均）。两边都编译得过，免得那个备选

@@ -733,9 +733,11 @@ void telemetry_task_function(void* pvParameters)
         // 限流：最多 200ms 一行；evt 是中断里的真实发生次数，不会因限流而漏计。
         //
         // 判读（先看哪一段在跳）：
-        //   avg 本身就是错的            -> 传感器/SPI 采样被污染（与滤波、与表无关）
-        //   avg 正常、in 差了 4~10 度   -> 校准表查表结果跳
-        //   avg/in 都正常、只有 out 跳 -> 滤波器跨拍状态（base/sum_delta/span）造的
+        //   rsn=2 或 spread 很大        -> 校准表把正常的 raw 映射成了怪值（表/接缝）
+        //   raw 本身就是错的（rsn=1）  -> 传感器/SPI 返回了坏字（电气或时序）
+        //   raw/in 都正常、只有 out 跳 -> 滤波器跨拍状态（base/sum_delta/span）造的
+        //   avg(xN) 在关掉 TMR5 后永远是无意义的 0(x0)，看 raw 不要看它
+        //   cal=0 表示当时表未生效（写 Flash 期间），那 spread 必然为 0
         //   consumed=1 表示那一拍只拿到一个样本，坏样本会完整透传（没有平均可稀释）
         //   win=0 表示当时根本没开滤波，那 out 跳与滤波器无关
         {
@@ -746,20 +748,36 @@ void telemetry_task_function(void* pvParameters)
             {
                 s_jump_last_print = xTaskGetTickCount();
                 const double lsb_deg = 360.0 / 65536.0;
-                printf("[JUMP] evt=%lu n=%lu jump=%.3fdeg out=%.3f prev=%.3f | "
-                       "avg=%u(%.3fdeg x%u) in=%u(%.3fdeg) | "
+                // raw_word 与查表结果的环形差：不归一的话 raw=5 vs in=64255 会算成
+                // -352.9°（其实是 +0.06°），看的人必定误判。两个操作数都在
+                // [0,65535]，所以一次加减就能折回 ±32768。
+                int32_t spread_lsb = static_cast<int32_t>(snap.raw_word) - static_cast<int32_t>(snap.in_corrected);
+                if (spread_lsb > 32768)
+                {
+                    spread_lsb -= 65536;
+                }
+                else if (spread_lsb < -32768)
+                {
+                    spread_lsb += 65536;
+                }
+                printf("[JUMP] evt=%lu n=%lu rsn=%u jump=%.3fdeg out=%.3f prev=%.3f | "
+                       "raw=%u(%.3fdeg) in=%u(%.3fdeg) spread=%.3fdeg cal=%u | avg=%u(x%u) | "
                        "base=%u delta=%ld sum=%ld evict=%ld span=%ld win=%u cnt=%u idx=%u | "
                        "ff=%lu 00=%lu ovf=%lu | run=%u spd=%.1f\r\n",
                        static_cast<unsigned long>(snap.events),
                        static_cast<unsigned long>(snap.seq),
+                       static_cast<unsigned>(snap.reason),
                        static_cast<double>(snap.jump) * lsb_deg,
                        static_cast<double>(snap.out) * lsb_deg,
                        static_cast<double>(snap.prev_out) * lsb_deg,
-                       static_cast<unsigned>(snap.avg_raw),
-                       static_cast<double>(snap.avg_raw) * lsb_deg,
-                       static_cast<unsigned>(snap.consumed),
+                       static_cast<unsigned>(snap.raw_word),
+                       static_cast<double>(snap.raw_word) * lsb_deg,
                        static_cast<unsigned>(snap.in_corrected),
                        static_cast<double>(snap.in_corrected) * lsb_deg,
+                       static_cast<double>(spread_lsb) * lsb_deg,
+                       g_encoder.isNonlinearCalValid() ? 1U : 0U,
+                       static_cast<unsigned>(snap.avg_raw),
+                       static_cast<unsigned>(snap.consumed),
                        static_cast<unsigned>(snap.base),
                        static_cast<long>(snap.delta),
                        static_cast<long>(snap.sum_delta),
