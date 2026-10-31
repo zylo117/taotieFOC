@@ -568,7 +568,7 @@ void ClosedLoopController::startMotion()
         const float v0 = motion_start_step_s_;
         const float vmax = motion_max_step_s_;
         const float a = motion_accel_step_s2_;
-        printf("v0: %.6f, vmax: %.6f, a: %.6f\n", v0, vmax, a);
+    // [DEBUG-OFF] printf("v0: %.6f, vmax: %.6f, a: %.6f\n", v0, vmax, a);
         const bool alternating_motion = motion_mode_ == MOTION_MODE_ALTERNATING_FORWARD ||
                         motion_mode_ == MOTION_MODE_ALTERNATING_REVERSE;
         motion_leg_pulse_count_ = alternating_motion ? (motion_pulse_count_ + 1U) / 2U : motion_pulse_count_;
@@ -576,8 +576,8 @@ void ClosedLoopController::startMotion()
 
         // 减速段：从vmax减速到0，加速度大小同样a
         decel_total_steps_ = static_cast<uint32_t>((vmax * vmax) / (2.0f * a));
-        printf("original accel_total_steps_: %lu\n", accel_total_steps_);
-        printf("original decel_total_steps_: %lu\n", decel_total_steps_);
+    // [DEBUG-OFF] printf("original accel_total_steps_: %lu\n", accel_total_steps_);
+    // [DEBUG-OFF] printf("original decel_total_steps_: %lu\n", decel_total_steps_);
 
         uint32_t total_req_steps = motion_leg_pulse_count_;
 
@@ -606,11 +606,11 @@ void ClosedLoopController::startMotion()
             printf("v_peak: %.6f\n", v_peak);
         }
         printf("total_req_steps: %lu\n", total_req_steps);
-        printf("accel_total_steps_: %lu\n", accel_total_steps_);
-        printf("decel_total_steps_: %lu\n", decel_total_steps_);
-        printf("cruise_total_steps_: %lu\n", cruise_total_steps_);
-        printf("positionPID: %f,%f,%f\n", position_pid_.kp, position_pid_.ki, position_pid_.kd);
-        printf("velocityPID: %f,%f,%f\n", velocity_pid_.kp, velocity_pid_.ki, velocity_pid_.kd);
+    // [DEBUG-OFF] printf("accel_total_steps_: %lu\n", accel_total_steps_);
+    // [DEBUG-OFF] printf("decel_total_steps_: %lu\n", decel_total_steps_);
+    // [DEBUG-OFF] printf("cruise_total_steps_: %lu\n", cruise_total_steps_);
+    // [DEBUG-OFF] printf("positionPID: %f,%f,%f\n", position_pid_.kp, position_pid_.ki, position_pid_.kd);
+    // [DEBUG-OFF] printf("velocityPID: %f,%f,%f\n", velocity_pid_.kp, velocity_pid_.ki, velocity_pid_.kd);
 
         // 关键标记：剩余步数 <= steps_to_decel_ 就进入减速阶段
         steps_to_decel_ = decel_total_steps_;
@@ -1481,8 +1481,36 @@ void ClosedLoopController::calibrateEncoder()
 
     encoder_->clearCalibration();  // 避免raw读成以前校准表的结果影响新校准
 
+    // 【必须独占输出通道】calibrateEncoder 靠 setTargetAngleDeg(0) 把电机拉到零点，
+    // 而 setTargetAngleDeg 的第一行就是“外部跟随开着就忽略”——
+    // 如果用户当时在“外部脉冲运动” tab（0x149=1），这里会静默返回：
+    //   closed_loop_angle_mode_enabled_ 没置位、motion_running_ 没置位 -> 电机不动，
+    //   而 HOMING 阶段只是“等编码器回到 0°”，它自己不会驱动电机，
+    //   于是 position_error 一直很大 -> stable_count 永远为 0 ->
+    //   else 分支又把 wait_ticks 清零 -> 永远不超时 -> 卡死（只打一句 homing to zero）。
+    // 所以这里先强制关掉外部跟随，之后再走角度模式。
+    if (external_pulse_follower_.isEnabled())
+    {
+        external_pulse_follower_.setEnabled(false);
+        external_pulse_follower_.setPrimePending(false);
+        printf("[CALIBRATION] external pulse follow disabled for calibration\r\n");
+    }
+
     step_pulse_width_ns_ = 200U;
     k_step_pulse_ticks = std::ceil(static_cast<float>(step_pulse_width_ns_) / static_cast<float>(stepper_common::target_tick_time));
+    // 【保证角度模式有限速可用】calibrateEncoder 最终靠 setTargetAngleDeg(0) 驱动电机回零，
+    // 而 MotionPlanner::updateAngleMode 里的 max_rps = angle_max_rpm_ / 60：
+    // 如果上位机从未设过 0x12F（angle_max_rpm_ 为 0），max_rps 就是 0，
+    // PID 输出会被 fast_clamp 全部钳成 0 -> 电机完全不动，
+    // 表现为“homing to zero 之后没任何动作”。加速度同理。
+    if (angle_max_rpm_ <= 0.0f)
+    {
+        angle_max_rpm_ = 1200.0f;
+    }
+    if (angle_accel_rpm_s_ <= 0.0f)
+    {
+        angle_accel_rpm_s_ = 6000.0f;
+    }
     calibration_saved_start_rpm_ = motion_start_rpm_;
     calibration_saved_max_rpm_ = motion_max_rpm_;
     calibration_saved_accel_rpm_s_ = motion_accel_rpm_s_;
@@ -1517,7 +1545,15 @@ bool ClosedLoopController::startEncoderCalibrationMove(uint16_t index)
 
     motion_start_rpm_ = 60.0f;
     motion_max_rpm_ = 60.0f;
-    motion_accel_rpm_s_ = 60.0f;
+    // 【加速度必须足够大】每个校准 index 只走 steps_per_round/1024 ≈ 12~13 步，
+    // 而 startMotion 会按梯形算减速点：decel_total_steps_ = vmax^2/(2a)。
+    // 实测教训：
+    //   60 RPM/s      -> decel = 6400 步 >> 13 步：第一拍就进 DECEL，一步不发
+    //   60000 RPM/s   -> decel = 6 步：吃掉半程（index 1021->1022 只走 0.05°）
+    // 直接拉到 600000 RPM/s → decel = 0.64 步，取整 0 → steps_to_decel_ = 0 →
+    // remaining <= 0 永不成立 → 全程 CRUISE，12 步完整匀速走完。
+    // 校准本身就是“一步一步挪”，不需要平滑加速。
+    motion_accel_rpm_s_ = 600000.0f;
     motion_pulse_count_ = steps;
     motion_mode_ = MOTION_MODE_POSITION_FORWARD;
     step_pulse_width_ns_ = 200ULL;
@@ -1538,9 +1574,15 @@ void ClosedLoopController::updateEncoderCalibration(const uint16_t raw)
     if (calibration_stage_ == CALIBRATION_HOMING)
     {
         calibration_home_wait_ticks_++;
+        // 【超时不能被清零】原来 else 分支里有一句 calibration_home_wait_ticks_ = 0，
+        // 本意是“还在动就重新计时”，但代价是：只要电机一直没到零点（比如根本没被驱动），
+        // 这个计数就永远涨不上去 -> 永远不超时 -> 整个校准卡在这里，
+        // 日志只停在 [CALIBRATION] homing to zero，既不成功也不报错。
+        // 现在只在“已经接近零点但还在微动”时才重置，否则让它自然累积到超时。
         if (calibration_home_wait_ticks_ >= 1000000U)
         {
-            printf("[CALIBRATION] homing timeout\r\n");
+            printf("[CALIBRATION] homing timeout (ticks=%lu)\r\n",
+                   static_cast<unsigned long>(calibration_home_wait_ticks_));
             finishEncoderCalibration(false);
             return;
         }
@@ -1558,7 +1600,6 @@ void ClosedLoopController::updateEncoderCalibration(const uint16_t raw)
         else
         {
             calibration_home_stable_count_ = 0U;
-            calibration_home_wait_ticks_ = 0U;
         }
         if (calibration_home_stable_count_ >= 100U)
         {
