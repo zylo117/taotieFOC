@@ -28,6 +28,8 @@
 
                 state.port = portObj;
                 state.connected = true;
+                // 新连接：允许 ensureMotionDefaultsForAngleControl 重新下发一次默认值
+                state.angleDefaultsApplied = false;
                 state.reader = portObj.readable.getReader();
                 state.writer = portObj.writable.getWriter();
 
@@ -148,6 +150,12 @@
 
         async function ensureMotionDefaultsForAngleControl() {
             if (!state.connected) return;
+            // 【只下发一次】这个名字叫 ensure，但原来没有任何缓存，
+            // 而 flushTargetAngleWrites 每次拖拨盘都调它 —— 拖一次就多发 6 条重复写，
+            // 60 次/秒的拖动等于每秒 420 帧（其中只有 60 帧是角度）→ USB 排队 → 角度传递慢。
+            // 缓存标记在连上新串口时清掉（见 connectSerial）。
+            if (state.angleDefaultsApplied) return;
+            state.angleDefaultsApplied = true;
             const startRpm = clamp(Math.round(Number(document.getElementById('startRpmSelect').value || 120)), 1, 12000);
             const maxRpm = clamp(Math.round(Number(document.getElementById('maxRpmSelect').value || 1200)), 1, 12000);
             const accelRpm = clamp(Math.round(Number(document.getElementById('accelRpmSelect').value || 6000)), 1, 12000);
