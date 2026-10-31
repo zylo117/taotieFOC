@@ -482,6 +482,17 @@ void ClosedLoopController::startMotion()
         return;
     }
 
+    // 【连续运行模式】速度模式 + pulseCount=0 表示“无限跑”：
+    // 负载角标定 / PID 扫速需要电机一直转，随时改 0x11B 改速度、改 0x11E 改方向，
+    // 不能每到一段就停机重启（那样每点都要重新从 0 加速，完全没法用）。
+    // 用 0xFFFFFFFF 会让 updateTrapezoid 里的“剩余步数”永远远大于减速点，
+    // 所以永远不进 DECEL，直到上位机主动改速度或停止。
+    if ((motion_mode_ == MOTION_MODE_VELOCITY_FORWARD || motion_mode_ == MOTION_MODE_VELOCITY_REVERSE) &&
+        motion_pulse_count_ == 0U)
+    {
+        motion_pulse_count_ = 0xFFFFFFFFU;
+    }
+
     if (motion_start_rpm_ <= 0.0f)
     {
         motion_start_rpm_ = 60.0f;

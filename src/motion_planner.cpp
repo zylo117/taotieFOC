@@ -188,6 +188,75 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
         return true;
     }
 
+    // ---------- 速度模式：运行时改目标转速 ----------
+    // 背景：motion_max_step_s_ 只在 startMotion() 里按 motion_max_rpm_ 算一次，
+    // 上位机后来改 0x11B 不会生效 —— 这就是“负载角校准只能一段一段测、
+    // 每点都要停机重启再加速”的根本原因。
+    // 这里补上运行时变速：检测到目标变了就重算，并调整阶段让现有加减速逻辑自然过渡。
+    // 只对速度模式（MOTION_MODE_VELOCITY_*）生效，位置模式不受影响。
+    if (c.motion_mode_ == ClosedLoopController::MOTION_MODE_VELOCITY_FORWARD ||
+        c.motion_mode_ == ClosedLoopController::MOTION_MODE_VELOCITY_REVERSE)
+    {
+        // 【运行时换向】上位机改 0x11E（正向<->反向）后，motion_direction_ 只在 startMotion
+        // 里设过，不会自动跟 —— 这里检测模式与当前方向的差异，先减速到 0 再换向。
+        // 直接反方向加速会让电机顿一下（电流冲击），先刹到 0 再反向才平滑。
+        const bool want_forward = (c.motion_mode_ == ClosedLoopController::MOTION_MODE_VELOCITY_FORWARD);
+        const bool is_forward = (c.motion_direction_ > 0);
+        if (want_forward != is_forward)
+        {
+            const float dt_ramp_dir = static_cast<float>(delta_ramp_ns) / 1.0e9f;
+            if (c.current_step_speed_ > 0.0f)
+            {
+                c.current_step_speed_ -= c.motion_accel_step_s2_ * dt_ramp_dir;
+                if (c.current_step_speed_ < 0.0f)
+                {
+                    c.current_step_speed_ = 0.0f;
+                }
+            }
+            if (c.current_step_speed_ <= 0.0f)
+            {
+                // 已经刹到 0，翻转方向；下一拍由 ACCEL 逻辑反向加速
+                c.motion_direction_ = want_forward ? 1 : -1;
+                c.motion_direction_change_pending_ = true;
+                c.motion_ramp_stage_ = ClosedLoopController::RAMP_STAGE_ACCEL;
+            }
+            // 换向期间不做后续变速，避免一拍内既要刹车又要改目标
+            c.motion_max_step_s_ = c.motion_max_rpm_ * static_cast<float>(c.getStepsPerRound()) / 60.0f;
+            return false;
+        }
+
+        const uint32_t speed_spr = c.getStepsPerRound();
+        const float new_max_step_s = c.motion_max_rpm_ * static_cast<float>(speed_spr) / 60.0f;
+        if (new_max_step_s > 0.0f)
+        {
+            // 【目标变了】更新上限。提速靠下面的 ACCEL 分支自己追，不在这里处理。
+            if (fast_abs(new_max_step_s - c.motion_max_step_s_) > 1.0f)
+            {
+                c.motion_max_step_s_ = new_max_step_s;
+                if (c.current_step_speed_ < new_max_step_s &&
+                    c.motion_ramp_stage_ != ClosedLoopController::RAMP_STAGE_ACCEL)
+                {
+                    c.motion_ramp_stage_ = ClosedLoopController::RAMP_STAGE_ACCEL;
+                }
+            }
+
+            // 【降速必须每拍都做】不能只在“目标变化那一拍”降一次：
+            // 250RPM -> 200RPM 差 10666 步/s，而一拍只降 accel x dt = 64 步/s，
+            // 只执行一次等于完全没减速 —— 表现为“负载角阶梯只能升不能降”。
+            // ACCEL 分支每拍都在加，降速也必须每拍都在减，两者对称。
+            if (c.current_step_speed_ > c.motion_max_step_s_ + 1.0f)
+            {
+                const float dt_slow = static_cast<float>(delta_ramp_ns) / 1.0e9f;
+                c.current_step_speed_ -= c.motion_accel_step_s2_ * dt_slow;
+                if (c.current_step_speed_ < c.motion_max_step_s_)
+                {
+                    c.current_step_speed_ = c.motion_max_step_s_;
+                }
+                c.motion_ramp_stage_ = ClosedLoopController::RAMP_STAGE_CRUISE;
+            }
+        }
+    }
+
     // ---------- 阶段推进：加速 / 匀速 / 减速 ----------
     // 剩余微步（往返模式下要算“当前这一程还剩多少”）
     const uint32_t remaining_total_steps = c.motion_pulse_count_ - c.motion_steps_emitted_;

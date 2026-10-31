@@ -18,7 +18,12 @@ public:
     // 负载角随转速的曲线是单调平滑的，16~32 个点拟合已经完全足够。
     // 改为 32 后：RAM 从 15KB 降到 0.5KB，fit() 降到约 50ms。
     // 兼容性：Flash 里旧数据若点数 > 32，loadFromFlash() 会当作无效处理（重新上传即可）。
-    static const uint16_t MAX_POINTS = 32U;
+    // 拟合点数上限。原值 32 是为了省 RAM（Point 8 字节/点 + received 1 字节）。
+    // 实测需求：0~3000 RPM、步进 50 = 61 个点，往返后 121 个点，
+    // 32 个明显不够（网页会直接报“单程速度点过多”）。
+    // 128 点代价：points_ 1024B + received_ 128B + flash 缓冲 768B = 约 1.9KB RAM，
+    // 对 229KB 的芯片完全可接受；拟合耗时会从 50ms 涨到约 200~300ms（只在启动时一次）。
+    static const uint16_t MAX_POINTS = 128U;
 
     LoadAngle();
 
