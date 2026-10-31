@@ -58,12 +58,11 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
     if (dt > 0.0f)
     {
         const float position_error_rev = desired_error_deg / 360.0f;
-        // 【角度模式只缩放 P 项】
-        // 运动模式里 PID 只做“小修正”（base_speed 占主导），而角度模式没有基础速度，
-        // PID 输出直接就是全部速度 —— 同样的 P 等于被放大了一百倍，实测疯狂左右摇摆。
-        // 所以对角度模式只把比例项缩小 100 倍；I 和 D 保持原值：
-        //   I 缩小 100 倍 -> 积分几乎失效 -> 稳态误差永远消不掉（太慢）
-        //   D 缩小 100 倍 -> 阻尼消失 -> 过冲严重
+        // 【角度模式 P 项 ×1/100】这是唯一的例外：
+        // 网页与固件用的是同一套 PID（不做任何口径倍率），但角度模式没有基础速度，
+        // PID 输出直接就是全部速度；而运动模式里 PID 只做“小修正”。
+        // 同样的 P 在角度模式里等效放大很多会导致左右摇摆，所以计算时把 P 缩到 1/100。
+        // I 和 D 不缩放：缩 I 会让稳态误差永远消不掉，缩 D 会丢阻尼而过冲。
         constexpr float kAnglePScale = 0.01f;
         // 根据误差角算出位置环的速度修正量
         const float position_reference_rps = c.position_pid_.update(position_error_rev, dt, kAnglePScale);
@@ -78,7 +77,7 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
         const float total_ref_rps = base_speed_rps + position_reference_rps;
         // 总期望速度和实际速度的速度差
         const float velocity_error_rps = total_ref_rps - (c.encoder_speed_rpm_ / 60.0f);
-        // 根据速度差算出速度环修正量（同样只缩放 P 项）
+        // 根据速度差算出速度环修正量（同样只缩 P 项）
         const float velocity_correction_rps = c.velocity_pid_.update(velocity_error_rps, dt, kAnglePScale);
 
         const float max_rps = c.angle_max_rpm_ / 60.0f;
