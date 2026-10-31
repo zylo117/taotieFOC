@@ -9,16 +9,17 @@
 //   阶段 1：类壳 + 状态成员 + 访问器                      已完成
 //   阶段 2：finish()（最短，依赖 saved_* 与 encoder_）    已完成
 //   阶段 3：startMove()（依赖 motion_* 与 getStepsPerRound）已完成
-//   阶段 4：update()（最长，HOMING/SAMPLING 两个状态机） 已完成（本次）
-//   阶段 5：start()，并把 controller 的 calibrateEncoder /
-//           updateEncoderCalibration / finishEncoderCalibration /
-//           startEncoderCalibrationMove 改成转发          待做（接管点）
-//   阶段 6：删掉 controller 里其余 calibration_* 成员      待做
-//           （calibration_stage_ 不能删，它是与 motion_planner 的握手）
+//   阶段 4：update()（最长，HOMING/SAMPLING 两个状态机） 已完成
+//   阶段 5：start() + controller 的四个函数改成转发      已完成（本次，已接线）
+//   阶段 6：删掉 controller 里其余 calibration_* 成员      已完成（本次）
+//           （calibration_stage_ 与 calibration_saved_* 必须留下：
+//            前者是与 motion_planner 的握手，后者是运动参数备份）
 //
 // 每阶段都可独立编译、独立刷机验证，出问题只回退一个提交。
-// 阶段 5 之前，本文件里的函数还没有被任何地方调用（controller 的原实现仍是唯一生效
-// 的一份），链接器会把它们 GC 掉，所以行为零变化。
+// 从阶段 5 起本文件已是唯一生效的实现。controller 里只留两个确实有外部调用者
+// 的转发：calibrateEncoder()（parameter_router 的 0x144）与
+// updateEncoderCalibration()（rampUpdate 每拍），调用点一行都没改；
+// finish() 与 startMove() 已成为本类私有方法，controller 侧的包装直接删了。
 // ===========================================================================
 
 namespace
@@ -59,9 +60,100 @@ uint8_t EncoderCalibrator::stage() const
     return static_cast<uint8_t>(owner_.calibration_stage_);
 }
 
+// 一小段校准位移走完时的握手：切 SAMPLING + 重置采样计数。
+// 原本这段逻辑直接写在 motion_planner.cpp 的 updateTrapezoid 里（它当时能直接
+// 写 controller 的 calibration_stage_ 与 5 个 calibration_sample_*）。
+// 采样计数搬进本类后，planner 改为调这个方法，避免两个模块各持一份计数。
+void EncoderCalibrator::beginSampling()
+{
+    owner_.calibration_stage_ = ClosedLoopController::CALIBRATION_SAMPLING;
+    sample_count_ = 0U;
+    sample_attempts_ = 0U;
+    sample_sum_ = 0;
+    sample_min_ = 0x7FFFFFFF;
+    sample_max_ = (-0x7FFFFFFF - 1);
+}
+
+// ===========================================================================
+// 启动一次双程校准（对应原 calibrateEncoder），由上位机写 0x144 触发。
+//
+// 做四件事，顺序不能换：
+//   ① 门禁：阶段必须 IDLE；driver/encoder 就绪；编码器与磁场无故障。
+//   ② clearCalibration 清掉旧表：否则 raw 读数会被旧表修正过，
+//      新校准采到的是“已修正”的值，等于在旧表上再叠一层。
+//   ③ 抢下输出通道：关掉外部脉冲跟随，保证角度模式能真正驱动电机。
+//   ④ 备份运动参数 + 初始化校准状态 + 切角度模式回零。
+// ===========================================================================
+void EncoderCalibrator::start()
+{
+    ClosedLoopController& c = owner_;
+
+    if (c.calibration_stage_ != ClosedLoopController::CALIBRATION_IDLE)
+    {
+        return;
+    }
+    if (c.driver_ == nullptr || c.encoder_ == nullptr
+        || c.fault_monitor_.encoderFaultActive() || c.fault_monitor_.magneticFaultActive())
+    {
+        printf("[CALIBRATION] start rejected: driver/encoder unavailable or fault active\r\n");
+        return;
+    }
+
+    c.encoder_->clearCalibration();  // 避免raw读成以前校准表的结果影响新校准
+
+    // 【必须独占输出通道】start() 靠 setTargetAngleDeg(0) 把电机拉到零点，
+    // 而 setTargetAngleDeg 的第一行就是“外部跟随开着就忽略”——
+    // 如果用户当时在“外部脉冲运动” tab（0x149=1），这里会静默返回：
+    //   closed_loop_angle_mode_enabled_ 没置位、motion_running_ 没置位 -> 电机不动，
+    //   而 HOMING 阶段只是“等编码器回到 0°”，它自己不会驱动电机，
+    //   于是 position_error 一直很大 -> stable_count 永远为 0 ->
+    //   曾表现为只打一句 homing to zero 就卡死（当时连超时都不报）。
+    // 所以这里先强制关掉外部跟随，之后再走角度模式。
+    if (c.external_pulse_follower_.isEnabled())
+    {
+        c.external_pulse_follower_.setEnabled(false);
+        c.external_pulse_follower_.setPrimePending(false);
+        printf("[CALIBRATION] external pulse follow disabled for calibration\r\n");
+    }
+
+    c.step_pulse_width_ns_ = 200U;
+    c.k_step_pulse_ticks = std::ceil(static_cast<float>(c.step_pulse_width_ns_)
+                                     / static_cast<float>(stepper_common::target_tick_time));
+    // 【保证角度模式有限速可用】本函数最终靠 setTargetAngleDeg(0) 驱动电机回零，
+    // 而 MotionPlanner::updateAngleMode 里的 max_rps = angle_max_rpm_ / 60：
+    // 如果上位机从未设过 0x12F（angle_max_rpm_ 为 0），max_rps 就是 0，
+    // PID 输出会被 fast_clamp 全部钳成 0 -> 电机完全不动，
+    // 表现为“homing to zero 之后没任何动作”。加速度同理。
+    if (c.angle_max_rpm_ <= 0.0f)
+    {
+        c.angle_max_rpm_ = 1200.0f;
+    }
+    if (c.angle_accel_rpm_s_ <= 0.0f)
+    {
+        c.angle_accel_rpm_s_ = 6000.0f;
+    }
+    // 备份当前运动参数，finish() 时恢复（两边共用 controller 这一份）
+    c.calibration_saved_start_rpm_ = c.motion_start_rpm_;
+    c.calibration_saved_max_rpm_ = c.motion_max_rpm_;
+    c.calibration_saved_accel_rpm_s_ = c.motion_accel_rpm_s_;
+    c.calibration_saved_pulse_count_ = c.motion_pulse_count_;
+    c.calibration_saved_pulse_width_ns_ = c.step_pulse_width_ns_;
+    c.calibration_saved_motion_mode_ = c.motion_mode_;
+    c.calibration_saved_compensation_enabled_ = c.closed_loop_compensation_enabled_;
+    // 校准专用状态（本类持有）。注意：和原实现一样不重置 home_wait_ticks_，
+    // HOMING 的超时计数会带上一次残留（最多 1000 拍 = 50ms），行为保持一致。
+    index_ = 0U;
+    backward_pass_ = false;   // 从正向趟开始
+    home_stable_count_ = 0U;
+    home_previous_angle_ = c.encoder_->readFilteredAngle();
+    c.calibration_stage_ = ClosedLoopController::CALIBRATION_HOMING;
+    c.setTargetAngleDeg(0.0f);
+    printf("[CALIBRATION] homing to zero\r\n");
+}
+
 // 结束校准并恢复运动参数（对应原 finishEncoderCalibration）。
-// 阶段 2：已搬入。因为 calibrateEncoder（写备份值）还在 controller 里，
-// 这里直接读 owner_.calibration_saved_*，两边共用一份备份，不会出现两份状态不一致。
+// 备份值由本类 start() 写进 controller 的 calibration_saved_*，这里读回来恢复；
+// 只存一份，不会出现两边不一致。
 void EncoderCalibrator::finish(bool save_table)
 {
     ClosedLoopController& c = owner_;
@@ -94,7 +186,7 @@ void EncoderCalibrator::finish(bool save_table)
 }
 
 // 把转子移动到第 index 个校准点（对应原 startEncoderCalibrationMove）。
-// 阶段 3：已搬入。每段只走 steps_per_round/CALIBRATION_TABLE_SIZE 步（64 细分下 12~13 步）。
+// 每段只走 steps_per_round/CALIBRATION_TABLE_SIZE 步（64 细分下 12~13 步）。
 bool EncoderCalibrator::startMove(uint16_t index)
 {
     ClosedLoopController& c = owner_;
@@ -214,12 +306,7 @@ void EncoderCalibrator::update(uint16_t raw)
         {
             c.closed_loop_angle_mode_enabled_ = false;
             c.stopMotion();
-            c.calibration_stage_ = ClosedLoopController::CALIBRATION_SAMPLING;
-            sample_count_ = 0U;
-            sample_attempts_ = 0U;
-            sample_sum_ = 0;
-            sample_min_ = 0x7FFFFFFF;
-            sample_max_ = (-0x7FFFFFFF - 1);
+            beginSampling();
             home_wait_ticks_ = 0U;   // 重新用作“采样前等待”计数器
             printf("[CALIBRATION] zero reached; sampling index=0\r\n");
         }

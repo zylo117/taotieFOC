@@ -260,8 +260,9 @@ private:
     // 外部跟随的脉冲重发通道，在 rampUpdate 里与 DDA 二选一执行
     void runExternalPulseFollow(uint64_t delta_ramp_ns);
     void updateEncoderCalibration(uint16_t raw);
-    void finishEncoderCalibration(bool save_table);
-    bool startEncoderCalibrationMove(uint16_t index);
+    // finishEncoderCalibration() / startEncoderCalibrationMove() 已删：
+    // 它们已搬成 EncoderCalibrator::finish()/startMove() 的私有方法，
+    // 且 controller 侧没有任何调用者（只有校准模块自己用）。
     StepperDriver* driver_;
     AngleEncoder* encoder_;
     ClosedLoopDriverProtocol* protocol_;
@@ -463,26 +464,17 @@ private:
         CALIBRATION_MOVING,
         CALIBRATION_SAVING
     };
+    // 【校准状态只剩两类】其余 calibration_* 成员（index_ / forward_raw_[1024] /
+    // backward_pass_ / sample_* / home_*）已全部搬进 EncoderCalibrator：
+    //   calibration_stage_ 必须留在本类 —— motion_planner.cpp 的 updateTrapezoid 靠它
+    //   把"本段校准位移走完"告知校准模块（改调 calibrator_.beginSampling()），
+    //   读表接口也用"是否 IDLE"做门禁。
+    //   saved_* 也留在本类 —— 它们是校准前后的运动参数备份，由
+    //   EncoderCalibrator::start() 写、finish() 读，两边共用一份。
+    // 原 2KB 的 calibration_forward_raw_ 删除后，RAM 相应下降。
     volatile EncoderCalibrationStage calibration_stage_;
-    volatile uint16_t calibration_index_;
 
-    // 【正反转平均】校准采用两趟扫描：正向走 0→1023 只存不写表，
-    // 反向走 1023→0 时把两趟采样取平均再写表。
-    // 原因：负载角让转子正转时落后、反转时超前，编码器两趟读数会一低一高，
-    // 平均后正好把这块系统偏差抵消（实测 1200RPM 时约 1.5 度）。
-    // 代价：2KB 临时数组（1024 点 × uint16）。
-    static constexpr uint16_t kCalibrationPoints = 1024U;
-    uint16_t calibration_forward_raw_[kCalibrationPoints] = {};
-    bool calibration_backward_pass_ = false;
-    volatile uint16_t calibration_sample_count_;
-    volatile uint16_t calibration_sample_attempts_;
-    volatile int32_t calibration_sample_min_;
-    volatile int32_t calibration_sample_max_;
-    volatile uint16_t calibration_sample_anchor_;
-    volatile int32_t calibration_sample_sum_;
-    volatile uint16_t calibration_home_stable_count_;
-    volatile uint32_t calibration_home_wait_ticks_;
-    float calibration_home_previous_angle_;
+    // 校准前的运动参数备份（见上面注释）
     float calibration_saved_start_rpm_;
     float calibration_saved_max_rpm_;
     float calibration_saved_accel_rpm_s_;

@@ -223,12 +223,9 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
             c.motion_step_accumulator_ = 0.0f;
             c.compensated_motion_step_accumulator_ = 0.0f;
             c.compensated_rps_ = 0.0f;
-            c.calibration_stage_ = ClosedLoopController::CALIBRATION_SAMPLING;
-            c.calibration_sample_count_ = 0U;
-            c.calibration_sample_attempts_ = 0U;
-            c.calibration_sample_sum_ = 0;
-            c.calibration_sample_min_ = 0x7FFFFFFF;
-            c.calibration_sample_max_ = (-0x7FFFFFFF - 1);
+            // 切到采样阶段并重置采样计数。这些计数现在属于 EncoderCalibrator，
+            // 不再直接写 controller 成员，改成显式调用握手方法（与校准器共用一份）。
+            c.calibrator_.beginSampling();
             c.syncProtocolTelemetry();
             return true;
         }

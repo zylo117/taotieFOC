@@ -16,6 +16,11 @@ class ClosedLoopController;
 //   MOVING   每段走 steps_per_round/CALIBRATION_TABLE_SIZE 步
 //   SAMPLING 停 50ms 等负载角稳定，再采 202 个样本去极值平均
 //   正向趟只存不写表；反过来反向趟把两趟平均后写入
+//
+// 【为什么要正反转平均】负载角让转子正转时落后、反转时超前，
+// 同一个机械位置两趟的编码器读数会一低一高，平均后正好把这块系统偏差
+// 抵消（实测 1200RPM 时约 1.5 度）。代价是 2KB 临时数组（1024 点 × uint16）
+// 与一倍时间；边界点 1023 没有反向采样值，直接用正向值写表。
 // ===========================================================================
 class EncoderCalibrator
 {
@@ -36,6 +41,10 @@ public:
 
     // 当前阶段，供遥测/调试查询。返回值与 ClosedLoopController::EncoderCalibrationStage 一致。
     uint8_t stage() const;
+
+    // 由 MotionPlanner 在一小段校准位移走完时调用：切到 SAMPLING 并重置采样计数。
+    // 采样计数已搬进本类，planner 不能再直接写，否则两个模块各持一份。
+    void beginSampling();
 
 private:
     void finish(bool save_table);

@@ -246,11 +246,11 @@ ClosedLoopController::ClosedLoopController()
     phase_a_current_a_(0.0f),
     phase_b_current_a_(0.0f), cpu_usage_centi_percent_(0U), control_task_usage_centi_percent_(0U),
     calibration_lookup_raw_value_(0U), calibration_lookup_corrected_value_(0U),
-    calibration_stage_(CALIBRATION_IDLE), calibration_index_(0U),
-    calibration_sample_count_(0U), calibration_sample_attempts_(0U),
-    calibration_sample_min_(0), calibration_sample_max_(0), calibration_sample_anchor_(0U),
-    calibration_sample_sum_(0), calibration_home_stable_count_(0U), calibration_home_wait_ticks_(0U),
-    calibration_home_previous_angle_(0.0f), calibration_saved_start_rpm_(0.0f),
+    // 校准专用状态（index_ / forward_raw_ / sample_* / home_*）已搬进
+    // EncoderCalibrator，它的成员都有类内默认值，不再在这里初始化；
+    // 本类只保留阶段（与 motion_planner 的握手）与运动参数备份。
+    calibration_stage_(CALIBRATION_IDLE),
+    calibration_saved_start_rpm_(0.0f),
     calibration_saved_max_rpm_(0.0f), calibration_saved_accel_rpm_s_(0.0f),
     calibration_saved_pulse_count_(0U), calibration_saved_pulse_width_ns_(0U),
     calibration_saved_motion_mode_(MOTION_MODE_POSITION_FORWARD),
@@ -1563,7 +1563,8 @@ uint32_t ClosedLoopController::getCurrentLoopHz() const
 bool ClosedLoopController::readCalibrationTablePair(uint8_t table, uint16_t pair_index,
                                                     uint32_t* packed_values) const
 {
-    if (encoder_ == nullptr || packed_values == nullptr || calibration_stage_ != CALIBRATION_IDLE)
+    // 校准进行中不能读表（否则会和写入抢 Flash）：问校准器而不是直接读裸状态。
+    if (encoder_ == nullptr || packed_values == nullptr || !calibrator_.isIdle())
     {
         return false;
     }
@@ -1656,7 +1657,7 @@ uint16_t ClosedLoopController::lookupOriginalRaw(uint16_t corrected_value) const
 
 bool ClosedLoopController::readCalibrationTableChecksum(uint32_t* checksum) const
 {
-    if (encoder_ == nullptr || checksum == nullptr || calibration_stage_ != CALIBRATION_IDLE)
+    if (encoder_ == nullptr || checksum == nullptr || !calibrator_.isIdle())
     {
         return false;
     }
@@ -1664,313 +1665,28 @@ bool ClosedLoopController::readCalibrationTableChecksum(uint32_t* checksum) cons
     return true;
 }
 
+// ===========================================================================
+// 编码器校准已迁到 EncoderCalibrator（见 encoder_calibrator.cpp），这里只留两个
+// “确实有外部调用者”的转发：
+//   calibrateEncoder()          ← parameter_router 处理 0x144 时调
+//   updateEncoderCalibration()  ← rampUpdate 每拍调
+// 原来的 finishEncoderCalibration() / startEncoderCalibrationMove() 已经搬进校准器
+// 并作为它的私有方法，controller 侧不再有任何调用者，所以这两个包装直接删除
+// （而不是把校准器的私有方法提成 public 来迁就没人调的包装）。
+//
+// 保留薄包装而不改调用点，是因为调用方分处两个模块、且都在关键路径上；
+// 包装层让它们一行都不用动，拆分的回归面只落在“实现搬对没有”这一件事上。
+//
+// 【阶段状态只有一份】calibration_stage_ 仍留在本类：
+//   motion_planner.cpp 的 updateTrapezoid 会在一小段校准位移走完时把它从 MOVING
+//   改成 SAMPLING（校准与规划之间唯一的握手），读表接口也用它做门禁。
+// ===========================================================================
 void ClosedLoopController::calibrateEncoder()
 {
-    if (calibration_stage_ != CALIBRATION_IDLE)
-    {
-        return;
-    }
-    if (driver_ == nullptr || encoder_ == nullptr || fault_monitor_.encoderFaultActive() || fault_monitor_.magneticFaultActive())
-    {
-        printf("[CALIBRATION] start rejected: driver/encoder unavailable or fault active\r\n");
-        return;
-    }
-
-    encoder_->clearCalibration();  // 避免raw读成以前校准表的结果影响新校准
-
-    // 【必须独占输出通道】calibrateEncoder 靠 setTargetAngleDeg(0) 把电机拉到零点，
-    // 而 setTargetAngleDeg 的第一行就是“外部跟随开着就忽略”——
-    // 如果用户当时在“外部脉冲运动” tab（0x149=1），这里会静默返回：
-    //   closed_loop_angle_mode_enabled_ 没置位、motion_running_ 没置位 -> 电机不动，
-    //   而 HOMING 阶段只是“等编码器回到 0°”，它自己不会驱动电机，
-    //   于是 position_error 一直很大 -> stable_count 永远为 0 ->
-    //   else 分支又把 wait_ticks 清零 -> 永远不超时 -> 卡死（只打一句 homing to zero）。
-    // 所以这里先强制关掉外部跟随，之后再走角度模式。
-    if (external_pulse_follower_.isEnabled())
-    {
-        external_pulse_follower_.setEnabled(false);
-        external_pulse_follower_.setPrimePending(false);
-        printf("[CALIBRATION] external pulse follow disabled for calibration\r\n");
-    }
-
-    step_pulse_width_ns_ = 200U;
-    k_step_pulse_ticks = std::ceil(static_cast<float>(step_pulse_width_ns_) / static_cast<float>(stepper_common::target_tick_time));
-    // 【保证角度模式有限速可用】calibrateEncoder 最终靠 setTargetAngleDeg(0) 驱动电机回零，
-    // 而 MotionPlanner::updateAngleMode 里的 max_rps = angle_max_rpm_ / 60：
-    // 如果上位机从未设过 0x12F（angle_max_rpm_ 为 0），max_rps 就是 0，
-    // PID 输出会被 fast_clamp 全部钳成 0 -> 电机完全不动，
-    // 表现为“homing to zero 之后没任何动作”。加速度同理。
-    if (angle_max_rpm_ <= 0.0f)
-    {
-        angle_max_rpm_ = 1200.0f;
-    }
-    if (angle_accel_rpm_s_ <= 0.0f)
-    {
-        angle_accel_rpm_s_ = 6000.0f;
-    }
-    calibration_saved_start_rpm_ = motion_start_rpm_;
-    calibration_saved_max_rpm_ = motion_max_rpm_;
-    calibration_saved_accel_rpm_s_ = motion_accel_rpm_s_;
-    calibration_saved_pulse_count_ = motion_pulse_count_;
-    calibration_saved_pulse_width_ns_ = step_pulse_width_ns_;
-    calibration_saved_motion_mode_ = motion_mode_;
-    calibration_saved_compensation_enabled_ = closed_loop_compensation_enabled_;
-    calibration_index_ = 0U;
-    calibration_backward_pass_ = false;   // 从正向趟开始
-    calibration_home_stable_count_ = 0U;
-    calibration_home_previous_angle_ = encoder_->readFilteredAngle();
-    calibration_stage_ = CALIBRATION_HOMING;
-    setTargetAngleDeg(0.0f);
-    printf("[CALIBRATION] homing to zero\r\n");
-}
-
-bool ClosedLoopController::startEncoderCalibrationMove(uint16_t index)
-{
-    // 【每 128 点才打一次进度】原来每段都打，带 %f 约 100 字节/段，
-    // 1024 段就是 100KB，115200 下约 10 秒纯串口输出，且每段阻塞约 10ms。
-    // 改成每 128 点一次（共 8 次），既能看进度又不拖时间。
-    if ((index % 128U) == 0U)
-    {
-        printf("[CALIBRATION] moving to index: %u from angle: %f\r\n", index, encoder_->readFilteredAngle());
-    }
-    const uint32_t steps_per_round = getMicroStepsPerRound(driver_);
-    const uint64_t table_size = CALIBRATION_TABLE_SIZE;
-    const uint32_t first_step = static_cast<uint32_t>(
-        (static_cast<uint64_t>(index) * steps_per_round + table_size / 2U) / table_size);
-    const uint32_t next_step = static_cast<uint32_t>(
-        (static_cast<uint64_t>(index + 1U) * steps_per_round + table_size / 2U) / table_size);
-    const uint32_t steps = next_step - first_step;
-    if (steps == 0U)
-    {
-        printf("[CALIBRATION] unsupported microstep resolution\r\n");
-        finishEncoderCalibration(false);
-        return false;
-    }
-
-    motion_start_rpm_ = 60.0f;
-    motion_max_rpm_ = 60.0f;
-    // 【加速度必须足够大】每个校准 index 只走 steps_per_round/1024 ≈ 12~13 步，
-    // 而 startMotion 会按梯形算减速点：decel_total_steps_ = vmax^2/(2a)。
-    // 实测教训：
-    //   60 RPM/s      -> decel = 6400 步 >> 13 步：第一拍就进 DECEL，一步不发
-    //   60000 RPM/s   -> decel = 6 步：吃掉半程（index 1021->1022 只走 0.05°）
-    // 直接拉到 600000 RPM/s → decel = 0.64 步，取整 0 → steps_to_decel_ = 0 →
-    // remaining <= 0 永不成立 → 全程 CRUISE，12 步完整匀速走完。
-    // 校准本身就是“一步一步挪”，不需要平滑加速。
-    motion_accel_rpm_s_ = 600000.0f;
-    motion_pulse_count_ = steps;
-    // 每段移动前清零等待计数器，让 SAMPLING 阶段先停 50ms 再开始采样
-    calibration_home_wait_ticks_ = 0U;
-    // 反向趟用 POSITION_REVERSE（startMotion 会据此把 motion_direction_ 设成 -1）
-    motion_mode_ = calibration_backward_pass_ ? MOTION_MODE_POSITION_REVERSE : MOTION_MODE_POSITION_FORWARD;
-    step_pulse_width_ns_ = 200ULL;
-    calibration_stage_ = CALIBRATION_MOVING;
-    motion_direction_ = calibration_backward_pass_ ? -1 : 1;
-    startMotion();
-    if (!motion_running_)
-    {
-        printf("[CALIBRATION] could not start move at index=%u\r\n", static_cast<unsigned>(index));
-        finishEncoderCalibration(false);
-        return false;
-    }
-    return true;
+    calibrator_.start();
 }
 
 void ClosedLoopController::updateEncoderCalibration(const uint16_t raw)
 {
-    if (calibration_stage_ == CALIBRATION_HOMING)
-    {
-        calibration_home_wait_ticks_++;
-        // 【超时不能被清零】原来 else 分支里有一句 calibration_home_wait_ticks_ = 0，
-        // 本意是“还在动就重新计时”，但代价是：只要电机一直没到零点（比如根本没被驱动），
-        // 这个计数就永远涨不上去 -> 永远不超时 -> 整个校准卡在这里，
-        // 日志只停在 [CALIBRATION] homing to zero，既不成功也不报错。
-        // 现在只在“已经接近零点但还在微动”时才重置，否则让它自然累积到超时。
-        if (calibration_home_wait_ticks_ >= 1000000U)
-        {
-            printf("[CALIBRATION] homing timeout (ticks=%lu)\r\n",
-                   static_cast<unsigned long>(calibration_home_wait_ticks_));
-            finishEncoderCalibration(false);
-            return;
-        }
-        const float position = encoder_->readFilteredAngle();
-        const float position_error = normalize_signed_angle_error_deg(-position);
-        const float position_delta = normalize_signed_delta_deg(position - calibration_home_previous_angle_);
-        calibration_home_previous_angle_ = position;
-        // 【判据放宽】position_error 会被归一到 ±180，所以从 350° 方向归零时
-        // 读到 359.99° 对应的误差是 +0.01°，原本就能通过。
-        // 真正卡住的是 position_delta <= 0.02f：KTH7823 静止抖动实测 0.15° 左右，
-        // 相邻两拍差值经常超过 0.02，稳定计数永远回到 0 —— 于是从 350° 归零会
-        // “停在 359.99° 附近但永远不认为到零”，校准永远不开始。
-        // 放宽到 0.20°（略高于噪声幅度），既不丢真实运动又能容忍抖动。
-        if (fast_abs(position_error) <= 0.25f && fast_abs(position_delta) <= 0.20f)
-        {
-            if (calibration_home_stable_count_ < 100U)
-            {
-                calibration_home_stable_count_++;
-            }
-        }
-        else
-        {
-            calibration_home_stable_count_ = 0U;
-        }
-        if (calibration_home_stable_count_ >= 100U)
-        {
-            closed_loop_angle_mode_enabled_ = false;
-            stopMotion();
-            calibration_stage_ = CALIBRATION_SAMPLING;
-            calibration_sample_count_ = 0U;
-            calibration_sample_attempts_ = 0U;
-            calibration_sample_sum_ = 0;
-            calibration_sample_min_ = 0x7FFFFFFF;
-            calibration_sample_max_ = (-0x7FFFFFFF - 1);
-            calibration_home_wait_ticks_ = 0U;   // 重新用作“采样前等待”计数器
-            printf("[CALIBRATION] zero reached; sampling index=0\r\n");
-        }
-        return;
-    }
-
-    if (calibration_stage_ != CALIBRATION_SAMPLING)
-    {
-        return;
-    }
-
-    // printf("[CALIBRATION] sample %3u, try: %u, raw=%5u\n", static_cast<unsigned>(calibration_sample_count_),
-    //        static_cast<unsigned>(calibration_sample_attempts_), static_cast<unsigned>(raw));
-    // 【每个位置先停一下再采样】运动刚停时转子还在找平衡（负载角），
-    // 立刻采样会把“还没停稳”的角度记进表里，造成系统性偏差。
-    // 复用 calibration_home_wait_ticks_ 当等待计数器（进 SAMPLING / 每段移动前已清零）：
-    // 等 1000 拍 = 50ms。不能等太久：1024 个点 × 50ms 已经是 51 秒，
-    // 200ms 会变成 3.4 分钟，完全没法用。
-    if (calibration_home_wait_ticks_ < 1000U)
-    {
-        calibration_home_wait_ticks_++;
-        // 同时把可能存在的运动状态收尾，避免停顿期间残留速度
-        current_step_speed_ = 0.0f;
-        return;
-    }
-
-    calibration_sample_attempts_++;
-    if (raw != 0xFFFFU)
-    {
-        int32_t unwrapped = static_cast<int32_t>(raw);
-        if (calibration_sample_count_ > 0U)
-        {
-            int32_t delta = static_cast<int32_t>(raw) - static_cast<int32_t>(calibration_sample_anchor_);
-            if (delta > 32767)
-            {
-                delta -= 65536;
-            }
-            else if (delta < -32768)
-            {
-                delta += 65536;
-            }
-            unwrapped = static_cast<int32_t>(calibration_sample_anchor_) + delta;
-        }
-        else
-        {
-            calibration_sample_anchor_ = raw;
-        }
-        calibration_sample_sum_ += unwrapped;
-        if (unwrapped < calibration_sample_min_)
-        {
-            calibration_sample_min_ = unwrapped;
-        }
-        if (unwrapped > calibration_sample_max_)
-        {
-            calibration_sample_max_ = unwrapped;
-        }
-        calibration_sample_count_++;
-    } else
-    {
-        printf("[CALIBRATION] invalid encoder sample: %d at index=%u, attempt=%u\r\n",
-            raw,
-            static_cast<unsigned>(calibration_index_),
-            static_cast<unsigned>(calibration_sample_attempts_));
-    }
-
-    if (calibration_sample_count_ < 202U)
-    {
-        if (calibration_sample_attempts_ >= 1000U)
-        {
-            printf("[CALIBRATION] insufficient encoder samples at index=%u\r\n",
-                   static_cast<unsigned>(calibration_index_));
-            finishEncoderCalibration(false);
-        }
-        return;
-    }
-
-    const int32_t trimmed_mean = (calibration_sample_sum_ - calibration_sample_min_ - calibration_sample_max_) / 200;
-    const uint16_t mean_raw = static_cast<uint16_t>(static_cast<uint32_t>(trimmed_mean) & 0xFFFFU);
-    // 正转趟只存不写表（等反向趟取平均），反向趟平均后再写表。
-    if (!calibration_backward_pass_)
-    {
-        if (calibration_index_ < kCalibrationPoints)
-        {
-            calibration_forward_raw_[calibration_index_] = mean_raw;
-        }
-        if (calibration_index_ + 1U >= CALIBRATION_TABLE_SIZE)
-        {
-            // 正向到底：切反向，从倒数第二个点开始往回走。
-            // 【最后一个点必须在这里就写表】反向趟从 1022 往回，不会再到 1023，
-            // 如果只存数组不写表，这个位置永远是空的，
-            // checkCalTableComplete() 会返回 false -> saveCalibration() 失败
-            // -> finishEncoderCalibration 打出 finished saved=0。
-            // 1023 是“接近 360 度”的边界点，它没有反向采样值，直接用正向值。
-            if (calibration_index_ < kCalibrationPoints)
-            {
-                encoder_->feedCalibrationSample(calibration_index_, calibration_forward_raw_[calibration_index_]);
-            }
-            calibration_backward_pass_ = true;
-            calibration_index_ = (CALIBRATION_TABLE_SIZE > 1U) ? static_cast<uint16_t>(CALIBRATION_TABLE_SIZE - 2U) : 0U;
-            printf("[CALIBRATION] forward pass done, reversing (index=%u)\r\n",
-                   static_cast<unsigned>(calibration_index_));
-            startEncoderCalibrationMove(calibration_index_);
-            return;
-        }
-        calibration_index_++;
-        startEncoderCalibrationMove(calibration_index_);
-        return;
-    }
-
-    // 反向趟：与正向采样取平均后写表
-    {
-        const uint16_t forward_raw = (calibration_index_ < kCalibrationPoints)
-            ? calibration_forward_raw_[calibration_index_] : mean_raw;
-        const uint16_t averaged = static_cast<uint16_t>(
-            (static_cast<uint32_t>(forward_raw) + static_cast<uint32_t>(mean_raw)) / 2U);
-        encoder_->feedCalibrationSample(calibration_index_, averaged);
-    }
-    if (calibration_index_ == 0U)
-    {
-        finishEncoderCalibration(true);
-        return;
-    }
-    calibration_index_--;
-    startEncoderCalibrationMove(calibration_index_);
-}
-
-void ClosedLoopController::finishEncoderCalibration(bool save_table)
-{
-    calibration_stage_ = CALIBRATION_SAVING;
-    closed_loop_angle_mode_enabled_ = false;
-    stopMotion();
-
-    bool saved = false;
-    if (save_table)
-    {
-        saved = encoder_ != nullptr && encoder_->saveCalibration();
-    }
-    motion_start_rpm_ = calibration_saved_start_rpm_;
-    motion_max_rpm_ = calibration_saved_max_rpm_;
-    motion_accel_rpm_s_ = calibration_saved_accel_rpm_s_;
-    motion_pulse_count_ = calibration_saved_pulse_count_;
-    motion_mode_ = calibration_saved_motion_mode_;
-    step_pulse_width_ns_ = calibration_saved_pulse_width_ns_;
-    // 【不再“恢复校准前的补偿开关”】校准本身是开环操作，结束后如果恢复成校准前的 true，
-    // 就会出现“界面上已取消勾选、固件里补偿却开着”的不一致（与角度模式残留同类问题）。
-    // 统一改为保持 false，由上位机下次启动时按勾选框显式下发 0x107。
-    closed_loop_compensation_enabled_ = false;
-    calibration_stage_ = CALIBRATION_IDLE;
-    printf("[CALIBRATION] finished saved=%u\r\n", saved ? 1U : 0U);
+    calibrator_.update(raw);
 }
