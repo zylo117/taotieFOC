@@ -726,6 +726,56 @@ void telemetry_task_function(void* pvParameters)
         //            static_cast<unsigned long>(g_encoder.allZerosCount()));
         //     last_log_tick = xTaskGetTickCount();
         // }
+
+        // ============ 角度跳变锁存输出（纯诊断，不改任何控制行为）============
+        // 编码器在中断里只锁存现场（十几条赋值，微秒量级），打印必须在任务上下文：
+        // 这一行约 340 字节 @115200 接近 29ms 阻塞，放进 50us 控制拍会掉 500 拍。
+        // 限流：最多 200ms 一行；evt 是中断里的真实发生次数，不会因限流而漏计。
+        //
+        // 判读（先看哪一段在跳）：
+        //   avg 本身就是错的            -> 传感器/SPI 采样被污染（与滤波、与表无关）
+        //   avg 正常、in 差了 4~10 度   -> 校准表查表结果跳
+        //   avg/in 都正常、只有 out 跳 -> 滤波器跨拍状态（base/sum_delta/span）造的
+        //   consumed=1 表示那一拍只拿到一个样本，坏样本会完整透传（没有平均可稀释）
+        //   win=0 表示当时根本没开滤波，那 out 跳与滤波器无关
+        {
+            static TickType_t s_jump_last_print = 0;
+            Kth7823Encoder::JumpSnapshot snap;
+            if (g_encoder.takeJumpSnapshot(&snap) &&
+                (xTaskGetTickCount() - s_jump_last_print) >= pdMS_TO_TICKS(200))
+            {
+                s_jump_last_print = xTaskGetTickCount();
+                const double lsb_deg = 360.0 / 65536.0;
+                printf("[JUMP] evt=%lu n=%lu jump=%.3fdeg out=%.3f prev=%.3f | "
+                       "avg=%u(%.3fdeg x%u) in=%u(%.3fdeg) | "
+                       "base=%u delta=%ld sum=%ld evict=%ld span=%ld win=%u cnt=%u idx=%u | "
+                       "ff=%lu 00=%lu ovf=%lu | run=%u spd=%.1f\r\n",
+                       static_cast<unsigned long>(snap.events),
+                       static_cast<unsigned long>(snap.seq),
+                       static_cast<double>(snap.jump) * lsb_deg,
+                       static_cast<double>(snap.out) * lsb_deg,
+                       static_cast<double>(snap.prev_out) * lsb_deg,
+                       static_cast<unsigned>(snap.avg_raw),
+                       static_cast<double>(snap.avg_raw) * lsb_deg,
+                       static_cast<unsigned>(snap.consumed),
+                       static_cast<unsigned>(snap.in_corrected),
+                       static_cast<double>(snap.in_corrected) * lsb_deg,
+                       static_cast<unsigned>(snap.base),
+                       static_cast<long>(snap.delta),
+                       static_cast<long>(snap.sum_delta),
+                       static_cast<long>(snap.evicted),
+                       static_cast<long>(snap.span),
+                       static_cast<unsigned>(snap.win),
+                       static_cast<unsigned>(snap.cnt),
+                       static_cast<unsigned>(snap.idx),
+                       static_cast<unsigned long>(snap.all_ones),
+                       static_cast<unsigned long>(snap.all_zeros),
+                       static_cast<unsigned long>(snap.ring_overflow),
+                       g_controller.isMotionRunning() ? 1U : 0U,
+                       static_cast<double>(g_controller.getMotionSpeedRpm()));
+            }
+        }
+
         vTaskDelay(5);
     }
 }

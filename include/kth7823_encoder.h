@@ -36,6 +36,42 @@ public:
     // 环形缓冲溢出次数（说明控制环取数太慢，正常应恒为 0）
     uint32_t rawRingOverflowCount() const { return raw_ring_overflow_; }
 
+    // ===========================================================================
+    // 【角度跳变锁存】纯测量，不参与任何控制行为。
+    //
+    // 为什么要它：0° 锁定时的反常负向跳动是偶发的（几分钟几次），上位机轮询
+    // 只能拿到“跳完之后”的结果，拿不到跳变那一拍的内部状态。而中断里不能
+    // printf（300 字节 @115200 约 26ms，会掉 500 个控制拍），所以只锁存现场，
+    // 由 Telemetry_task 在任务上下文把快照吐出来。
+    //
+    // 一次快照就能分清三个候选：
+    //   avg_raw 本身就跳  -> 传感器/SPI（跳变来自采样，与滤波无关）
+    //   avg_raw 不跳、in_corrected 跳 -> 校准表查表结果跳
+    //   两者都不跳、只有 out 跳    -> 滤波器自己的跨拍状态（base/sum/span）造的
+    // ===========================================================================
+    struct JumpSnapshot
+    {
+        uint32_t seq;          // 第几个样本（= read_count_）
+        uint32_t events;       // 累计锁存过多少次（看发生频率；只增不清）
+        uint16_t avg_raw;      // 环形平均后、查表前（未校准）
+        uint16_t consumed;     // 本次平均实际用了几个 TMR5 样本
+        uint16_t in_corrected; // 查表后送入滤波的本拍样本
+        uint16_t base;         // angle_base_
+        int32_t  delta;        // 本样本相对 base 的环绕差值
+        int32_t  sum_delta;    // 窗口内差值和
+        int32_t  evicted;      // 本拍被淘汰出窗口的旧差值
+        int32_t  span;         // window_span（延迟补偿的输入）
+        uint16_t win, cnt, idx;
+        uint16_t prev_out;     // 上一拍输出
+        uint16_t out;          // 本拍输出
+        int32_t  jump;         // 带符号跳变（LSB，负=向后）
+        uint32_t all_ones, all_zeros, ring_overflow;
+    };
+
+    // 有快照则拷走并清标志（返回 false = 没有新事件）。
+    // 返回 false 时 *out 不变；并发写坏的话用 seq 复查一次，宁可这轮不报。
+    bool takeJumpSnapshot(JumpSnapshot* out);
+
     // 未经过非线性校准表的滤波原始值。
     // 用途：控制器的“行程累计”必须用它，不能用校准后的值——
     // 校准表修正的是 INL（每点 ±0.35°），但修正量的积分不闭合，
@@ -94,5 +130,19 @@ private:
     volatile uint32_t raw_ring_head_ = 0U;      // 累计写入数（取模即下标）
     volatile uint32_t raw_ring_tail_ = 0U;      // 累计读取数
     volatile uint32_t raw_ring_overflow_ = 0U;
+
+    // ===== 跳变锁存（见 JumpSnapshot 注释）=====
+    // 门限 366 LSB = 2.0°：静止时实测噪声约 0.15°（27 LSB），相差 13 倍，
+    // 不会把正常抖动误报成事件；而观测到的异常是 4~10°，必然越线。
+    static constexpr int32_t kJumpLatchLsb = 366;
+    void checkJumpLatch(uint16_t out_raw, uint16_t in_corrected,
+                        int32_t delta, int32_t evicted, int32_t span);
+    JumpSnapshot jump_;
+    volatile bool jump_latched_ = false;
+    volatile uint32_t jump_events_ = 0U;
+    uint16_t jump_prev_out_ = 0U;
+    bool jump_prev_valid_ = false;
+    uint16_t last_avg_raw_ = 0U;    // takeRawAverage 里的未校准平均值
+    uint16_t last_avg_count_ = 0U;  // 本次平均用了几个样本
 };
 #endif

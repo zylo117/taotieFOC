@@ -193,6 +193,9 @@ bool Kth7823Encoder::updateFilteredSample(uint16_t raw)
     {
         filtered_raw_ = last_frame_raw_;
         filtered_angle_deg_ = static_cast<float>(last_frame_raw_) * 360.0F / 65536.0F;
+        // 这一拍没有任何跨拍记忆，delta/evicted/span 全传 0：
+        // 如果异常在这个设置下仍然出现，就能直接排除滤波器。
+        checkJumpLatch(filtered_raw_, raw, 0, 0, 0);
         return true;
     }
 
@@ -292,6 +295,7 @@ bool Kth7823Encoder::updateFilteredSample(uint16_t raw)
     // 用首尾样本差估斜率（匀速时是精确的），把这段延迟提前补回去，
     // 这样跟随误差不再随“窗口大小 × 转速”凭空变大。
     float compensated_delta = avg_delta;
+    int32_t latch_span = 0;   // 仅供跳变锁存记录，不影响任何计算
 #if ENCODER_FILTER_LAG_COMPENSATION
     // 首尾样本跨度：静止或微动时这个值几乎全是量化噪声（0/±1 LSB），
     // 此时滞后本身就不到 1 LSB，补上去等于白送抖动，直接不补。
@@ -302,12 +306,17 @@ bool Kth7823Encoder::updateFilteredSample(uint16_t raw)
         // 乘 (window_size-1)/2 正好把“重心滞后”补回到最新样本的时刻（匀速时零滞后）。
         const float slope_per_sample = static_cast<float>(window_span) / static_cast<float>(window_size - 1);
         compensated_delta += 0.5F * static_cast<float>(window_size - 1) * slope_per_sample;
+        latch_span = window_span;
     }
 #endif
 
     //输出滤波后的uint16角度（环绕处理）
     const float out_raw_f = static_cast<float>(angle_base_) + compensated_delta;
     auto out_raw = static_cast<uint16_t>(static_cast<int32_t>(lroundf(out_raw_f)) & 0xFFFF);
+
+    // 【必须在“基准平移”之前锁存】快照要反映的是“产生这个输出的那拍状态”；
+    // 平移发生在后面，锁存到的是新基准，会看不到真正把输出拽歪的那个旧状态。
+    checkJumpLatch(out_raw, raw, delta, has_evicted ? evicted_delta : 0, latch_span);
 
     //==== 基准平移：只在差值漂得离基准太远时才整体平移一次 ====
     // 以前是每 N 帧就把基准重置成输出值，等于把窗口清空，群延迟因此每 N 帧
@@ -410,6 +419,9 @@ uint16_t Kth7823Encoder::takeRawAverage()
     // 注意：averaged 是**未校准**的原始平均值，正好用于控制器的行程累计：
     // 行程是硬件真实量，不能掺校准表的 INL 修正（修正量积分不闭合，
     // 50 圈会累积出 9 度）。
+    // 给跳变锁存续存“查表前”的值和本次实际用的样本数：这两个是分区的关键证据。
+    last_avg_raw_ = averaged;
+    last_avg_count_ = count;
     const uint16_t corrected = isNonlinearCalValid() ? getCorrectedRaw(averaged) : averaged;
     last_frame_raw_ = corrected;
     return corrected;
@@ -522,4 +534,94 @@ bool Kth7823Encoder::magneticFieldLow() const
 void Kth7823Encoder::setZero(float zero_angle)
 {
     zero_angle_ = zero_angle;
+}
+
+// ===========================================================================
+// 跳变锁存：只比较“本拍输出”与“上一拍输出”。
+// 【不在中断里打印】printf 300 字节 @115200 约 26ms，会掉 500 个 50us 控制拍；
+// 这里只做十几条赋值和一次比较，微秒量级。由 Telemetry_task 取快照。
+// ===========================================================================
+void Kth7823Encoder::checkJumpLatch(uint16_t out_raw, uint16_t in_corrected,
+                                    int32_t delta, int32_t evicted, int32_t span)
+{
+    int32_t jump = 0;
+    if (jump_prev_valid_)
+    {
+        jump = static_cast<int32_t>(out_raw) - static_cast<int32_t>(jump_prev_out_);
+        while (jump > 32768)
+        {
+            jump -= 65536;
+        }
+        while (jump < -32768)
+        {
+            jump += 65536;
+        }
+        const int32_t abs_jump = (jump < 0) ? -jump : jump;
+        if (abs_jump > kJumpLatchLsb)
+        {
+            // 计数必须是“真实发生次数”：不管旧快照有没有被取走都要加，
+            // 否则事件密集时会漏计，就估不出发生频率了。
+            jump_events_++;
+            if (!jump_latched_)
+            {
+                // 旧快照还没人取走就不覆盖（不丢失现场）。
+                jump_.seq = read_count_;
+                jump_.events = jump_events_;
+                jump_.avg_raw = last_avg_raw_;
+                jump_.consumed = last_avg_count_;
+                jump_.in_corrected = in_corrected;
+                // base / sum_delta 只存在于“增量累加”这条路径（angle_encoder.h 顶部
+                // 可以切到极坐标 XY 滑动平均）。两边都编译得过，免得那个备选
+                // 配置一打开就成编译错误。
+#ifndef USE_POLAR_COORDINATES_WRAP
+                jump_.base = angle_base_;
+                jump_.sum_delta = sum_delta_;
+#else
+                jump_.base = 0U;
+                jump_.sum_delta = 0;
+#endif
+                jump_.delta = delta;
+                jump_.evicted = evicted;
+                jump_.span = span;
+                jump_.win = filter_window_size_;
+                jump_.cnt = filter_count_;
+                jump_.idx = filter_index_;
+                jump_.prev_out = jump_prev_out_;
+                jump_.out = out_raw;
+                jump_.jump = jump;
+                jump_.all_ones = all_ones_count_;
+                jump_.all_zeros = all_zeros_count_;
+                jump_.ring_overflow = raw_ring_overflow_;
+                jump_latched_ = true;
+            }
+        }
+    }
+    else
+    {
+        jump_prev_valid_ = true;
+    }
+    jump_prev_out_ = out_raw;
+}
+
+bool Kth7823Encoder::takeJumpSnapshot(JumpSnapshot* out)
+{
+    if (out == nullptr || !jump_latched_)
+    {
+        return false;
+    }
+    // 拷贝期间可能又被写一次：用 seq 复查，不一致就这轮不报（下轮还有）。
+    // 【必须绕过优化】jump_ 不是 volatile，直接写 jump_.seq 会让编译器把两次读
+    // 合并成一次（或缓存在寄存器里），这个防撕裂检查就成了摆设。
+    // 所以第二次读走 volatile 别名，并用 __DMB() 禁止重排。
+    const uint32_t seq_before = jump_.seq;
+    *out = jump_;
+    __DMB();
+    const uint32_t seq_after = *reinterpret_cast<volatile uint32_t*>(&jump_.seq);
+    jump_latched_ = false;
+    if (seq_after != seq_before)
+    {
+        // 快照在拷贝过程中被写花过：宁可不报，也不给一个拼出来的假现场。
+        return false;
+    }
+    return true;
 }
