@@ -1555,6 +1555,8 @@ bool ClosedLoopController::startEncoderCalibrationMove(uint16_t index)
     // 校准本身就是“一步一步挪”，不需要平滑加速。
     motion_accel_rpm_s_ = 600000.0f;
     motion_pulse_count_ = steps;
+    // 每段移动前清零等待计数器，让 SAMPLING 阶段先停 200ms 再开始采样
+    calibration_home_wait_ticks_ = 0U;
     motion_mode_ = MOTION_MODE_POSITION_FORWARD;
     step_pulse_width_ns_ = 200ULL;
     calibration_stage_ = CALIBRATION_MOVING;
@@ -1590,7 +1592,13 @@ void ClosedLoopController::updateEncoderCalibration(const uint16_t raw)
         const float position_error = normalize_signed_angle_error_deg(-position);
         const float position_delta = normalize_signed_delta_deg(position - calibration_home_previous_angle_);
         calibration_home_previous_angle_ = position;
-        if (fast_abs(position_error) <= 0.25f && fast_abs(position_delta) <= 0.02f)
+        // 【判据放宽】position_error 会被归一到 ±180，所以从 350° 方向归零时
+        // 读到 359.99° 对应的误差是 +0.01°，原本就能通过。
+        // 真正卡住的是 position_delta <= 0.02f：KTH7823 静止抖动实测 0.15° 左右，
+        // 相邻两拍差值经常超过 0.02，稳定计数永远回到 0 —— 于是从 350° 归零会
+        // “停在 359.99° 附近但永远不认为到零”，校准永远不开始。
+        // 放宽到 0.20°（略高于噪声幅度），既不丢真实运动又能容忍抖动。
+        if (fast_abs(position_error) <= 0.25f && fast_abs(position_delta) <= 0.20f)
         {
             if (calibration_home_stable_count_ < 100U)
             {
@@ -1611,6 +1619,7 @@ void ClosedLoopController::updateEncoderCalibration(const uint16_t raw)
             calibration_sample_sum_ = 0;
             calibration_sample_min_ = 0x7FFFFFFF;
             calibration_sample_max_ = (-0x7FFFFFFF - 1);
+            calibration_home_wait_ticks_ = 0U;   // 重新用作“采样前等待”计数器
             printf("[CALIBRATION] zero reached; sampling index=0\r\n");
         }
         return;
@@ -1623,6 +1632,19 @@ void ClosedLoopController::updateEncoderCalibration(const uint16_t raw)
 
     // printf("[CALIBRATION] sample %3u, try: %u, raw=%5u\n", static_cast<unsigned>(calibration_sample_count_),
     //        static_cast<unsigned>(calibration_sample_attempts_), static_cast<unsigned>(raw));
+    // 【每个位置先停一下再采样】运动刚停时转子还在找平衡（负载角），
+    // 立刻采样会把“还没停稳”的角度记进表里，造成系统性偏差。
+    // 复用 calibration_home_wait_ticks_ 当等待计数器（进 SAMPLING / 每段移动前已清零）：
+    // 等 1000 拍 = 50ms。不能等太久：1024 个点 × 50ms 已经是 51 秒，
+    // 200ms 会变成 3.4 分钟，完全没法用。
+    if (calibration_home_wait_ticks_ < 1000U)
+    {
+        calibration_home_wait_ticks_++;
+        // 同时把可能存在的运动状态收尾，避免停顿期间残留速度
+        current_step_speed_ = 0.0f;
+        return;
+    }
+
     calibration_sample_attempts_++;
     if (raw != 0xFFFFU)
     {
