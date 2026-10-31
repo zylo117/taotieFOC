@@ -493,6 +493,19 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
     motion_step_accumulator_ = 0.0f;
     compensated_motion_step_accumulator_ = 0.0f;
     compensated_rps_ = 0.0f;
+    // 【同一个坑：其余共享状态也要在启动时归零】
+    // 上位机启动只用 0x11F=1，**不会先调 stopMotion**，所以上次运动/角度模式留下的：
+    //   current_step_speed_      → 起跑速度直接跳变（从旧速度接着跑）
+    //   motion_ramp_stage_       → 可能是 DONE/SETTLE，导致启动后不动
+    //   motion_commanded_travel_deg_ / motion_encoder_travel_raw_ → follow_error 从旧偏差异位开始
+    // 都必须在 startMotion 里自己清，不能指望 stopMotion 已经被调过。
+    current_step_speed_ = 0.0f;
+    motion_speed_rpm_ = 0.0f;
+    motion_ramp_stage_ = RAMP_STAGE_ACCEL;
+    motion_commanded_travel_deg_ = 0.0f;
+    motion_encoder_travel_raw_ = 0U;
+    motion_leg_reversed_ = false;
+    motion_direction_change_pending_ = false;
     // 【规划运动启动也要清 PID 状态】角度模式跑完一轮后，位置/速度环的积分和一阶低通
     // 微分状态里都还留着旧值。规划运动开头几拍会带着这些残留输出一个方向错误的修正量，
     // 叠加在刚起步的规划速度上，表现为起跑抽一下或前期抖动。
