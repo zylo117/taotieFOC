@@ -62,3 +62,60 @@ void EncoderCalibrator::finish(bool save_table)
     c.calibration_stage_ = ClosedLoopController::CALIBRATION_IDLE;
     printf("[CALIBRATION] finished saved=%u\r\n", saved ? 1U : 0U);
 }
+
+// 把转子移动到第 index 个校准点（对应原 startEncoderCalibrationMove）。
+// 阶段 3：已搬入。每段只走 steps_per_round/CALIBRATION_TABLE_SIZE 步（64 细分下 12~13 步）。
+bool EncoderCalibrator::startMove(uint16_t index)
+{
+    ClosedLoopController& c = owner_;
+
+    // 【每 128 点才打一次进度】原来每段都打，带 %f 约 100 字节/段，
+    // 1024 段就是 100KB，115200 下约 10 秒纯串口输出。
+    if ((index % 128U) == 0U)
+    {
+        printf("[CALIBRATION] moving to index: %u from angle: %f\r\n", index, c.encoder_->readFilteredAngle());
+    }
+
+    // 用 controller 的 public 方法，避免依赖 closed_loop_controller.cpp 里的内部函数
+    // getMicroStepsPerRound（它在那个 TU 里，头文件不暴露）。
+    const uint32_t steps_per_round = c.getStepsPerRound();
+    const uint64_t table_size = CALIBRATION_TABLE_SIZE;
+    const uint32_t first_step = static_cast<uint32_t>(
+        (static_cast<uint64_t>(index) * steps_per_round + table_size / 2U) / table_size);
+    const uint32_t next_step = static_cast<uint32_t>(
+        (static_cast<uint64_t>(index + 1U) * steps_per_round + table_size / 2U) / table_size);
+    const uint32_t steps = next_step - first_step;
+    if (steps == 0U)
+    {
+        printf("[CALIBRATION] unsupported microstep resolution\r\n");
+        finish(false);
+        return false;
+    }
+
+    c.motion_start_rpm_ = 60.0f;
+    c.motion_max_rpm_ = 60.0f;
+    // 【加速度必须足够大】每段只走 12~13 步，而 startMotion 按梯形算减速点
+    // decel_total_steps_ = vmax^2/(2a)：
+    //   60 RPM/s    -> 6400 步 >> 13 步：第一拍就进 DECEL，一步不发
+    //   60000 RPM/s -> 6 步：吃掉半程（实测整圈只走 200 度）
+    // 拉到 600000 RPM/s -> decel = 0.64 取整 0 -> steps_to_decel_ = 0 -> 全程 CRUISE。
+    c.motion_accel_rpm_s_ = 600000.0f;
+    c.motion_pulse_count_ = steps;
+    // 每段移动前清零等待计数器，让 SAMPLING 阶段先停 50ms 再采样
+    home_wait_ticks_ = 0U;
+    // 反向趟用 POSITION_REVERSE（startMotion 会据此把 motion_direction_ 设成 -1）
+    c.motion_mode_ = backward_pass_
+        ? ClosedLoopController::MOTION_MODE_POSITION_REVERSE
+        : ClosedLoopController::MOTION_MODE_POSITION_FORWARD;
+    c.step_pulse_width_ns_ = 200ULL;
+    c.calibration_stage_ = ClosedLoopController::CALIBRATION_MOVING;
+    c.motion_direction_ = backward_pass_ ? -1 : 1;
+    c.startMotion();
+    if (!c.motion_running_)
+    {
+        printf("[CALIBRATION] could not start move at index=%u\r\n", static_cast<unsigned>(index));
+        finish(false);
+        return false;
+    }
+    return true;
+}
