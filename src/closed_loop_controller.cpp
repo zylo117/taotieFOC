@@ -523,6 +523,12 @@ void ClosedLoopController::setMotionConfig(float start_rpm, float max_rpm, float
 
 void ClosedLoopController::startMotion()
 {
+    // 【必须退出角度模式】角度模式（setTargetAngleDeg）会把 closed_loop_angle_mode_enabled_
+    // 置 true 并让 updateAngleMode 每拍接管速度输出。规划运动启动时如果不把它清掉，
+    // updateAngleMode 和 updateTrapezoid 会同时改 current_step_speed_，互相争夺：
+    // 实测表现为“开过一次角度模式后，开环规划运动严重抖动，必须重启硬件才恢复”。
+    closed_loop_angle_mode_enabled_ = false;
+
     // 【安全锁】用户主动失能后拒绝任何启动（含自动测试循环的 0x11F=1），
     // 必须重新收到 MOTOR_ENABLE 才能清除。见 parameter_router 里 MOTOR_DISABLE 分支。
     if (user_disabled_)
@@ -1118,6 +1124,10 @@ void ClosedLoopController::stopMotion()
     printf("max_step_per_ramp: %lu\n", static_cast<unsigned long>(max_step_per_ramp));
     printf("motion stopping!!! motion_commanded_travel_deg_: %f, motion_encoder_travel_deg_: %f\n", motion_commanded_travel_deg_, static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F);
 #endif
+    // 【停止必须退出角度模式】否则 rampUpdate 仍会走 updateAngleMode，
+    // 用 PID 继续把电往 target_angle_deg_ 上拉 —— 表现为“点了停止电机还在自己转”、
+    // 而且之后再启动规划运动时两套逻辑抢 current_step_speed_，严重抖动。
+    closed_loop_angle_mode_enabled_ = false;
     motion_running_ = false;
     motion_first_run_ = false;
     motion_paused_ = false;
