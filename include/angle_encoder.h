@@ -377,13 +377,15 @@ inline bool AngleEncoder::isNonlinearCalValid(void) const
 
 inline uint16_t AngleEncoder::getCorrectedRaw(uint16_t raw)
 {
-    // 【诊断开关】旁路校准表：直返原始值。
-    // 用途：用一个寄存器就能对比“查表 / 不查表”两条路径，
-    // 直接确认某个角度误差是校准表引入的还是机械/脉冲本身的。
-    {
-        return raw;
-    }
+    // 【诊断宏】在 platformio.ini 的 build_flags 里加
+    //   -DDISABLE_ENCODER_CALIBRATION_TABLE
+    // 就能完全绕过非线性校准表（所有读取都返回原始值），
+    // 用来验证“周期性误差是不是表引入的”：同一份固件只改这一个开关就能 A/B 对比。
+#ifdef DISABLE_ENCODER_CALIBRATION_TABLE
+    return raw;
+#else
     return fastReverseLookup(raw);
+#endif
 }
 
 inline uint16_t AngleEncoder::calibrationMainValue(uint16_t index) const
