@@ -319,8 +319,12 @@ private:
     volatile int32_t motion_dma_pending_signed = 0;
     volatile uint32_t motion_dma_pending_steps_;
     volatile uint32_t motion_leg_pulse_count_;
-    volatile double motion_step_accumulator_;
-    volatile double compensated_motion_step_accumulator_;
+    // 【必须是 float，不能是 double】Cortex-M4 没有 FP64 硬件，double 的加减/floor 全是
+    // 软件模拟（每次 50~150 周期）。这两个累加器在 emitSteps 里每 50us 要参与 4~6 次运算，
+    // 按 20kHz 算约 4.8% CPU 纯花在 FP64 模拟上，而且库函数调用导致耗时抖动（50us 硬实时循环的隐患）。
+    // 精度校核：累积 640000 步（50 圈）时 float 尾数精度约 0.038 步，远小于 1 步，完全够用。
+    volatile float motion_step_accumulator_;
+    volatile float compensated_motion_step_accumulator_;
     volatile int8_t motion_direction_;
     volatile bool motion_leg_reversed_;
     volatile bool motion_direction_change_pending_;

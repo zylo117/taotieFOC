@@ -359,7 +359,10 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
     // 步进步数增量 = 瞬时速度(step/s) x 流逝时间(s)。
     // 即使任务被抢占延迟很久，delta_ramp_ns 记的是真实流逝时间，累加器会把该走的步数补上，
     // 调度抖动下也不会丢脉冲。
-    const double dt_step_s = static_cast<double>(delta_ramp_ns) / 1.0e9;
+    // 【用 float 不用 double】两个累加器已改成 float（见 header 注释）。
+    // dt 也必须用 float，否则 float += double * double 会把整个表达式提升成 FP64 运算，
+    // 白白回到软件模拟。
+    const float dt_step_s = static_cast<float>(delta_ramp_ns) * 1.0e-9f;
     c.motion_step_accumulator_ += fast_abs(c.current_step_speed_) * dt_step_s;
 
     const uint32_t micro_steps_per_round = c.getStepsPerRound();
@@ -390,13 +393,13 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
         return false;  // 本拍不需要发脉冲
     }
 
-    auto num_steps = static_cast<uint32_t>(floor(c.compensated_motion_step_accumulator_));
+    auto num_steps = static_cast<uint32_t>(std::floor(c.compensated_motion_step_accumulator_));
     if (num_steps > c.max_step_per_ramp)
     {
         c.max_step_per_ramp = num_steps;
     }
 
-    auto num_original_command_steps = static_cast<uint32_t>(floor(c.motion_step_accumulator_));
+    auto num_original_command_steps = static_cast<uint32_t>(std::floor(c.motion_step_accumulator_));
     if (!c.closed_loop_angle_mode_enabled_)
     {
         const uint32_t remaining_total_steps = c.motion_pulse_count_ - c.motion_steps_emitted_;
