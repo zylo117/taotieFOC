@@ -310,13 +310,18 @@ private:
     volatile bool motion_encoder_reference_valid_;
     volatile uint64_t motion_last_ramp_time_ns_;
     volatile uint64_t motion_steps_emitted_;
-    volatile int32_t motion_steps_emitted_signed;  // 指的是距离总运动位移脉冲数，有方向。等于是出发至今的带方向的累计脉冲数
+    // 【都用 int64 防长期运行溢出】
+    // 原来三个都是 int32：按 60000 步/s（281RPM 上限）算，约 9.9 小时就绕满，
+    // 一旦回绕，motion_commanded_travel_deg_ 和 follow_error 会瞬间跳 360 度级的大偏差。
+    // 改成 int64 后在这速率下可跑约 48 年。
+    // 这些变量只做 += / -= / 比较，不做乘法，所以 64 位运算开销可以忽略。
+    volatile int64_t motion_steps_emitted_signed;  // 距离总运动位移脉冲数，有方向；等于是出发至今的带方向累计脉冲数
     // 已经“真的发完”的带方向累计步数，跟随误差必须用它算命令位置。
     // 原因：motion_steps_emitted_signed 在窗口开头就把整窗步数加满了，但脉冲要 50us
     // 才发完（平滑模式），直接相减会让命令位置凭空领先一个窗口 ≈ 几十步 ≈ 0.3°。
-    volatile int32_t motion_steps_delivered_signed = 0;
+    volatile int64_t motion_steps_delivered_signed = 0;
     // 刚交给 TMR2/DMA、还没到下一拍确认的步数（下一个 rampUpdate 才并入 delivered）
-    volatile int32_t motion_dma_pending_signed = 0;
+    volatile int64_t motion_dma_pending_signed = 0;
     volatile uint32_t motion_dma_pending_steps_;
     volatile uint32_t motion_leg_pulse_count_;
     // 【必须是 float，不能是 double】Cortex-M4 没有 FP64 硬件，double 的加减/floor 全是
