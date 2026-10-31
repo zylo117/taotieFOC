@@ -541,6 +541,21 @@ void ClosedLoopController::setMotionConfig(float start_rpm, float max_rpm, float
     motion_mode_ = mode;
 }
 
+// ===========================================================================
+// 启动一次规划运动（由 0x11F=1 触发）。
+//
+// 做三件事，顺序不能换：
+//   ① 退出其它模式：强制 closed_loop_angle_mode_enabled_ = false，
+//      并 step_output_.stop() 停掉残留的 DMA 脉冲序列。
+//      角度模式会把该标志置 true 并让 updateAngleMode 每拍接管速度输出，
+//      不清就会和 updateTrapezoid 抢 current_step_speed_（实测严重抖动）。
+//   ② 状态归零：上位机启动只发 0x11F=1，不会先调 stopMotion，
+//      所以上次运动/角度模式留下的一切（速度、阶段、行程累计、待发 DMA、换向标志、
+//      PID 积分与微分）都必须在这里自己清，不能指望别处。
+//   ③ 参数兜底与重算：motion_* 为 0 时给默认值，再用它们重算
+//      motion_max_step_s_ / motion_accel_step_s2_ / k_step_pulse_ticks。
+//      这样即使上位机漏发参数，也不会出现“电机完全不动”。
+// ===========================================================================
 void ClosedLoopController::startMotion()
 {
     // 【必须退出角度模式】角度模式（setTargetAngleDeg）会把 closed_loop_angle_mode_enabled_
@@ -1175,6 +1190,19 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     syncProtocolTelemetry();
 }
 
+// ===========================================================================
+// 停止运动（由 0x11F=0 / 失能 / 校准结束 / 故障触发）。
+//
+// 两个必须保留的重置：
+//   ① closed_loop_angle_mode_enabled_ = false
+//      否则 rampUpdate 仍会走 updateAngleMode，用 PID 继续把电往 target_angle_deg_ 上拉，
+//      表现为“点了停止电机还在自己转”。
+//   ② current_step_speed_ / compensated_rps_ / motion_ramp_stage_
+//      这三个一旦残留，下次 startMotion 的起跑速度会从旧值接着跑，
+//      或因为阶段停在 DONE/SETTLE 而启动后不动。
+//
+// 注意：这里不断电流（setEnable 不动），只停脉冲；需要断电请用 MOTOR_DISABLE。
+// ===========================================================================
 void ClosedLoopController::stopMotion()
 {
     // 【调试打印，默认关闭】
