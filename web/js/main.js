@@ -265,10 +265,6 @@
             document.getElementById('stepPulseWidthNsInput').value = String(stepPulseWidthNs);
             document.getElementById('encoderFilterWindowInput').value = String(encoderFilterWindow);
 
-            // 【开环运动强制关补偿】0x11F 只管启停，闭环补偿开关是 0x107。
-            // 如果上一次残留 0x107=1，这次“开环测试”会带着 PID 修正跑。
-            await writeRegisterAndWaitAck(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0);
-
             // 【必须等 ACK】这里原来全是 writeRegister（只等写进 USB 缓冲，不等固件确认），
             // 紧接着就发 0x11F 启动。看校准表之后 USB 缓冲被 dump 流量占着，
             // 写请求会丢——脉冲数没设上时，固件用上一次的值跑，
