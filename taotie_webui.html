@@ -820,6 +820,7 @@
             <button id="readAllBtn">读取全部</button>
             <button id="calibrateEncoderBtn">磁编码器校准</button>
             <button id="loadAngleCalibrationBtn">负载角校准</button>
+            <button id="shockCalibrationBtn">急刹冲击标定</button>
             <button id="viewCalibrationTableBtn">查看校准表</button>
             <button class="warn" id="tuneBtn">自动整定</button>
             <span class="badge" id="cpuUsageBadge">CPU --%</span>
@@ -856,6 +857,12 @@
                             <div class="dial-label">当前位置</div>
                         </div>
                     </div>
+                    <p class="tiny" style="margin-top:8px;line-height:1.6;">
+                        <strong>角度模式的 PID：</strong>固件只把角度模式下的 <strong>P 项缩小 1/100</strong>，
+                        I 和 D <strong>保持不变</strong>（缩 I 会让稳态误差永远消不掉，缩 D 会丢阻尼而过冲）。
+                        所以只需维护一套按<strong>运动模式</strong>整定好的参数，切到角度模式时不用改；
+                        若仍偏硬，把 P 再降为一半即可。
+                    </p>
                 </div>
 
                 <div class="grid-2">
@@ -1413,6 +1420,42 @@
         <div class="load-angle-equation" id="loadAngleEquation">固件拟合函数：--</div>
     </dialog>
 
+    <!-- ================= 阶段 2：急刹冲击标定 =================
+         参数完全独立（不与规划运动共用），因为两者场景不同：
+         规划运动是连续定位，这里是一组离散的速度 × 加速度倍数冲击。 -->
+    <dialog class="load-angle-dialog" id="shockDialog">
+        <div class="load-angle-head">
+            <h2>急刹冲击标定</h2>
+            <button id="closeShockDialogBtn" type="button">关闭</button>
+        </div>
+        <div class="load-angle-actions">
+            <button class="primary" id="startShockCalibrationBtn" type="button">开始标定</button>
+            <button class="danger" id="cancelShockCalibrationBtn" type="button" disabled>停止</button>
+        </div>
+        <div class="load-angle-settings">
+            <label>速度点 (RPM，逗号分隔)<input id="shockSpeedList" type="text" value="300, 600, 1200"></label>
+            <label>加速度倍数 M (逗号分隔)<input id="shockAccelMultipliers" type="text" value="1, 2, 4, 8"></label>
+            <label>加速度基准 (RPM/s)<input id="shockBaseAccelRpmS" type="number" min="1" max="12000" step="1" value="6000"></label>
+            <label>每段圈数<input id="shockTurnsPerSegment" type="number" min="1" max="50" step="1" value="2"></label>
+            <label>速度容差 (%)<input id="shockTolerancePct" type="number" min="1" max="50" step="1" value="12"></label>
+            <label><input id="shockTestOpenLoop" type="checkbox" checked> 测开环</label>
+            <label><input id="shockTestClosedLoop" type="checkbox" checked> 测闭环</label>
+        </div>
+        <div class="load-angle-status">
+            <span aria-live="polite" id="shockStatus">等待开始</span>
+            <span id="shockProgress">0 / 0</span>
+        </div>
+        <div class="load-angle-legend">
+            <span>峰值 = 冲击段最大 |跟随误差|；恢复时间 = 从峰值回落到稳态×1.2 的时间；稳态 RMS = 匀速段均方根</span>
+        </div>
+        <table class="shock-result-table" id="shockResultTable">
+            <thead>
+                <tr><th>速度</th><th>M</th><th>模式</th><th>峰值 (°)</th><th>恢复 (ms)</th><th>稳态 RMS (°)</th></tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </dialog>
+
     <script src="web/js/constants.js"></script>
     <script src="web/js/utils.js"></script>
     <script src="web/js/state.js"></script>
@@ -1423,6 +1466,7 @@
     <script src="web/js/loadangle.js"></script>
     <script src="web/js/pidtune.js"></script>
     <script src="web/js/enccal.js"></script>
+    <script src="web/js/shock.js"></script>
     <script src="web/js/actions.js"></script>
     <script src="web/js/main.js"></script>
 </body>

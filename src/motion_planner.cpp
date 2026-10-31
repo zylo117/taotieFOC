@@ -58,20 +58,39 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
     if (dt > 0.0f)
     {
         const float position_error_rev = desired_error_deg / 360.0f;
+        // 【角度模式只缩放 P 项】
+        // 运动模式里 PID 只做“小修正”（base_speed 占主导），而角度模式没有基础速度，
+        // PID 输出直接就是全部速度 —— 同样的 P 等于被放大了一百倍，实测疯狂左右摇摆。
+        // 所以对角度模式只把比例项缩小 100 倍；I 和 D 保持原值：
+        //   I 缩小 100 倍 -> 积分几乎失效 -> 稳态误差永远消不掉（太慢）
+        //   D 缩小 100 倍 -> 阻尼消失 -> 过冲严重
+        constexpr float kAnglePScale = 0.01f;
         // 根据误差角算出位置环的速度修正量
-        const float position_reference_rps = c.position_pid_.update(position_error_rev, dt);
-        const float base_speed_rps = c.current_step_speed_ / static_cast<float>(c.getStepsPerRound());
+        const float position_reference_rps = c.position_pid_.update(position_error_rev, dt, kAnglePScale);
+        // 【不能把输出当输入】原来这里写的是 base_speed_rps = current_step_speed_ / spr，
+        // 而 current_step_speed_ 就是上一拍本函数的输出 -> 正反馈：
+        //   输出↑ -> base_speed↑ -> total_ref↑ -> velocity_error↑ -> 输出↑ -> ...
+        // P 项增益小时还能勉强稳定，一旦加上 I 项就会持续发散
+        // （实测速度环 I=1 就表现为跟随误差不断增大）。
+        // 角度模式是纯位置伺服（目标静止），没有“基础速度”这个概念，应为 0。
+        constexpr float base_speed_rps = 0.0f;
         // 总期望速度 = 基础速度 + 位置环修正量
         const float total_ref_rps = base_speed_rps + position_reference_rps;
         // 总期望速度和实际速度的速度差
         const float velocity_error_rps = total_ref_rps - (c.encoder_speed_rpm_ / 60.0f);
-        // 根据速度差算出速度环修正量
-        const float velocity_correction_rps = c.velocity_pid_.update(velocity_error_rps, dt);
+        // 根据速度差算出速度环修正量（同样只缩放 P 项）
+        const float velocity_correction_rps = c.velocity_pid_.update(velocity_error_rps, dt, kAnglePScale);
 
         const float max_rps = c.angle_max_rpm_ / 60.0f;
         const float unconstrained_rps =
             fast_clamp(position_reference_rps + velocity_correction_rps, -max_rps, max_rps);
 
+        // 【方向钳位：位置伺服不能反向输出】
+        // 恢复原逻辑并说明为什么它是对的：
+        //   PID 输出与误差方向相反时，说明 P 项已经被 D 项压到底了，
+        //   此时正确的做法是“不再加速”，而不是“反向走”。
+        //   允许负输出会让位置伺服真的倒转 -> 越转越远 -> 乱转。
+        // （之前一度把它改成 unrestricted，那是错的，已回退。）
         const float target_direction = desired_error_deg >= 0.0f ? 1.0f : -1.0f;
         const float directed_rps = unconstrained_rps * target_direction < 0.0f ? 0.0f : unconstrained_rps;
         const float accel_limit_rps2 = c.angle_accel_rpm_s_ / 60.0f;
@@ -128,6 +147,11 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
         c.motion_step_accumulator_ = 0.0f;
         c.compensated_motion_step_accumulator_ = 0.0f;
         c.compensated_rps_ = 0.0f;
+        // 【换向必须清 PID 积分】同运行时换向分支：不清积分会让反向被旧积分抵消。
+        c.position_pid_.resetIntegral();
+        c.position_pid_.resetDeriv();
+        c.velocity_pid_.resetIntegral();
+        c.velocity_pid_.resetDeriv();
         // 【换向必须重算减速点】steps_to_decel_ 是在 startMotion 里按“全程”算的，
         // 换向后剩余行程是全新的另一程。不重算的话：如果第一程快跑完时 steps_to_decel_
         // 已经把剩余脉冲数吃进去，换向后 remaining_steps 仍然 <= steps_to_decel_
@@ -219,6 +243,15 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
                 c.motion_direction_ = want_forward ? 1 : -1;
                 c.motion_direction_change_pending_ = true;
                 c.motion_ramp_stage_ = ClosedLoopController::RAMP_STAGE_ACCEL;
+                // 【换向必须清 PID 积分与微分】否则：换向前 PID 在正向累积的积分项会继续推正向，
+                // 而 motion_direction_ 已翻成 -1，两者相互抵消 -> 反向爬不起来。
+                // 微分项同理：error 在换向瞬间突变 100°，(Δerror)/dt 直接到百万量级，
+                // 虽然会被 clamp 削顶，但 filtered_derivative 里的残留会让换向后头几拍
+                // 输出一个方向错误且巨大的力（实测峰值 177°）。
+                c.position_pid_.resetIntegral();
+                c.position_pid_.resetDeriv();
+                c.velocity_pid_.resetIntegral();
+                c.velocity_pid_.resetDeriv();
             }
             // 换向期间不做后续变速，避免一拍内既要刹车又要改目标
             c.motion_max_step_s_ = c.motion_max_rpm_ * static_cast<float>(c.getStepsPerRound()) / 60.0f;
@@ -333,11 +366,15 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
     c.compensated_motion_step_accumulator_ +=
         fast_abs(c.current_step_speed_ + compensated_step_speed) * dt_step_s;
 
-    // 角度模式：每拍最多走 1 步，避免大误差时一次吐出几十步
-    if (c.closed_loop_angle_mode_enabled_ && c.motion_step_accumulator_ > 1.0)
+    // 角度模式：每拍最多走 kMaxStepsPerTick 步。
+    // 原来钳到 1 步/拍等于硬限速 20000 步/s：按 12800 步/圈就是 93 RPM，
+    // 所以界面上设“闭环最大速度 1200RPM”根本达不到。
+    // 现在提到 3 步/拍（60000 步/s ≈ 280 RPM），仍在 50us 窗口内。
+    constexpr float kMaxStepsPerTick = 3.0f;
+    if (c.closed_loop_angle_mode_enabled_ && c.motion_step_accumulator_ > kMaxStepsPerTick)
     {
-        c.motion_step_accumulator_ = 1.0;
-        c.compensated_motion_step_accumulator_ = 1.0;
+        c.motion_step_accumulator_ = kMaxStepsPerTick;
+        c.compensated_motion_step_accumulator_ = kMaxStepsPerTick;
         c.compensated_rps_ = 0.0;
     }
 

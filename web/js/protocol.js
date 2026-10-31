@@ -32,8 +32,12 @@
             if (!state.connected || !state.writer) {
                 throw new Error('串口未连接，无法读取寄存器');
             }
-            if (retries !== 0) {
-                log(`[WARN] READ 0x${reg.toString(16).padStart(4, '0')} 需要严格串行，忽略重试参数并按单次等待处理`);
+            // 这个函数是严格串行的（同一寄存器不允许重叠读），retries 参数实际上不起作用。
+            // 默认值 retries=2 会让每个调用都打一条 WARN，高频读（如 0x134 数圈）时刷屏
+            // 把真正的 [冲击] 日志冲掉。改成只在 retries 显式传非零值时提示一次。
+            if (retries !== 0 && !readRegisterValue._warned) {
+                readRegisterValue._warned = true;
+                log('[INFO] READ 为严格串行模式，retries 参数已忽略（本条只提示一次）');
             }
             return await new Promise((resolve, reject) => {
                 const waiters = state.registerReadWaiters.get(reg) || [];

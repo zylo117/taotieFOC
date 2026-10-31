@@ -409,9 +409,21 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
         return;
     }
 
+    // 【角度模式限幅必须自己非零】updateAngleMode 里 max_rps = angle_max_rpm_/60，
+    // 加速度限幅用 angle_accel_rpm_s_。这两个为 0 时 PID 输出会被全部钳成 0，
+    // 表现为“设了目标角度但电机不动/极慢”。
+    // 原来只兜底了 motion_*（位置模式用），没兜底 angle_*（角度模式实际用）。
+    if (angle_max_rpm_ <= 0.0f)
+    {
+        angle_max_rpm_ = 1200.0f;
+    }
+    if (angle_accel_rpm_s_ <= 0.0f)
+    {
+        angle_accel_rpm_s_ = 6000.0f;
+    }
     if (motion_max_rpm_ <= 0.0f)
     {
-        motion_max_rpm_ = angle_max_rpm_ > 0.0f ? angle_max_rpm_ : 1200.0f;
+        motion_max_rpm_ = angle_max_rpm_;
     }
     if (motion_accel_rpm_s_ <= 0.0f)
     {
@@ -475,6 +487,14 @@ void ClosedLoopController::setMotionConfig(float start_rpm, float max_rpm, float
 
 void ClosedLoopController::startMotion()
 {
+    // 【安全锁】用户主动失能后拒绝任何启动（含自动测试循环的 0x11F=1），
+    // 必须重新收到 MOTOR_ENABLE 才能清除。见 parameter_router 里 MOTOR_DISABLE 分支。
+    if (user_disabled_)
+    {
+        printf("[SAFETY] startMotion rejected: motor disabled by user\r\n");
+        return;
+    }
+
     // 跟随模式下不接受规划运动：命令位置完全由外部脉冲决定，两套逻辑同时跑必然打架
     if (external_pulse_follower_.isEnabled())
     {
@@ -546,6 +566,11 @@ void ClosedLoopController::startMotion()
 
     if (driver_ != nullptr && !fault_monitor_.encoderFaultActive() && !fault_monitor_.magneticFaultActive())
     {
+        if (user_disabled_)
+        {
+            printf("[SAFETY] setTargetAngleDeg rejected: motor disabled by user\r\n");
+            return;
+        }
         driver_->setEnable(true);
         driver_->setDirection(motion_direction_ > 0);
         const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);

@@ -24,14 +24,14 @@ void PidController::setGains(float kp_value, float ki_value, float kd_value)
 // - I 项用于消除稳态误差
 // - D 项用于抑制超调和提高阻尼
 // 但在电机闭环中，积分项和微分项不能无限大，否则会导致振荡，因此要做限幅。
-float PidController::update(float error, float dt)
+float PidController::update(float error, float dt, float p_scale)
 {
     // 时间差非法（首拍 / 调度异常）：只给比例项，不碰积分和微分状态。
     // 旧实现里 dt=0 时 derivative 保持 0、但 integral 仍然累加一个 0，
     // 看上去无害，可一旦外界传入极小的 dt（比如 1ns）就会把 derivative 推到 inf。
     if (dt <= 0.0f)
     {
-        return kp * error;
+        return kp * p_scale * error;
     }
 
     // ---- 微分项：先算原始斜率，再做一阶低通 ----
@@ -42,7 +42,7 @@ float PidController::update(float error, float dt)
     filtered_derivative = PID_DERIVATIVE_LPF * filtered_derivative +
                           (1.0f - PID_DERIVATIVE_LPF) * raw_derivative;
 
-    const float p_term = kp * error;
+    const float p_term = kp * p_scale * error;
     const float d_term = kd * filtered_derivative;
 
     // ---- 条件积分（anti-windup）----

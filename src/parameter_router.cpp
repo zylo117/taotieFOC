@@ -248,6 +248,8 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
     }
     if (reg == TMC2209_EXT_PARAM_MOTOR_ENABLE)
     {
+        // 显式使能：清除安全锁，允许启动
+        owner_.user_disabled_ = false;
         owner_.stopMotion();
         if (owner_.driver_ != nullptr)
         {
@@ -257,6 +259,11 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
     }
     if (reg == TMC2209_EXT_PARAM_MOTOR_DISABLE)
     {
+        // 【安全锁】记住“用户主动失能”：之后任何 0x11F=1 / setTargetAngleDeg 都会拒绝，
+        // 必须重新收到 MOTOR_ENABLE 才能再动。
+        // 否则自动测试循环里的下一条 0x11F=1 会通过 startMotion 的 setEnable(true)
+        // 把电流重新打开——表现为“已失能但电机自己转起来”。
+        owner_.user_disabled_ = true;
         owner_.closed_loop_angle_mode_enabled_ = false;
         owner_.stopMotion();
         if (owner_.driver_ != nullptr)

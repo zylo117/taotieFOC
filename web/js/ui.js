@@ -3,9 +3,11 @@
 // Load order: constants -> utils -> state -> protocol -> rx -> ui -> ...
 
         function log(message) {
-            // 【日志开关】控制台执行 __hideTxRx = true / false 可实时屏蔽参数收发。
-            // [TX]/[RX] 是每帧都打的，每秒几百行，会把真正有用的 [INFO]/[SETTLE] 冲掉。
-            if (window.__hideTxRx && (message.startsWith('[TX]') || message.startsWith('[RX]'))) {
+            // 【默认屏蔽参数收发】[TX]/[RX] 是每帧都打的，每秒几百行，会把 [INFO]/[SETTLE]/[冲击]
+            // 这些真正有用的日志冲掉。默认隐藏，需要看通信细节时在控制台执行：
+            //   __hideTxRx = false   显示
+            //   __hideTxRx = true    再屏蔽
+            if (window.__hideTxRx !== false && (message.startsWith('[TX]') || message.startsWith('[RX]'))) {
                 return;
             }
             const line = document.createElement('p');

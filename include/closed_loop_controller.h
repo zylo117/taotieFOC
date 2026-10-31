@@ -336,6 +336,12 @@ private:
     // （ramp_loop_idx % 20000 == 0，20kHz 下约 1s 一次）做，避免运动中途改滤波把跟随误差抖出台阶。
     volatile uint16_t encoder_filter_window_ = EncoderFilterConfig::kDefaultWindow;
     volatile uint16_t encoder_filter_window_active_ = EncoderFilterConfig::kDefaultWindow;
+
+    // 【安全锁】用户主动失能后置位，任何 startMotion / setTargetAngleDeg 都拒绝启动，
+    // 必须收到显式的 MOTOR_ENABLE 才能清除。
+    // 背景：失能只是 setEnable(false)，而 startMotion 里无条件 setEnable(true)，
+    // 于是自动测试循环的下一条 0x11F=1 又把电流打开——表现为“已失能但自己转起来”。
+    volatile bool user_disabled_ = false;
     volatile bool magnetic_field_high_;
     volatile bool magnetic_field_low_;
     volatile uint32_t last_process_time_us_;

@@ -204,7 +204,7 @@
             if (isTelemetry && frame.reg === CUSTOM_REGS.MAGNETIC_LOW) {
                 const now = performance.now();
                 if (!state.lastEncoderLogAt || now - state.lastEncoderLogAt >= 500) {
-                    log(`[KTH7823] raw=0x${state.encoderRaw.toString(16).padStart(4, '0').toUpperCase()} angle=${state.encoderAngleDeg.toFixed(3)}° MGH=${state.magneticHigh ? 1 : 0} MGL=${state.magneticLow ? 1 : 0}`);
+                    // log(`[KTH7823] raw=0x${state.encoderRaw.toString(16).padStart(4, '0').toUpperCase()} angle=${state.encoderAngleDeg.toFixed(3)}° MGH=${state.magneticHigh ? 1 : 0} MGL=${state.magneticLow ? 1 : 0}`);
                     state.lastEncoderLogAt = now;
                 }
             }

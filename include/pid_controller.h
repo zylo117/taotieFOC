@@ -28,7 +28,12 @@ public:
 
     // 计算当前误差下的控制输出。
     // error：当前误差，dt：控制周期时间
-    float update(float error, float dt);
+    // p_scale 只缩放比例项，不影响积分和微分。
+    // 用途：角度模式下没有基础速度，PID 输出直接就是全部速度，同样增益等于被放大百倍，
+    // 必须把 P 缩小（实测 1/100）。但 I 和 D 不能一起缩：
+    //   I 缩小 100 倍 -> 积分几乎失效 -> 稳态误差永远消不掉
+    //   D 缩小 100 倍 -> 阻尼消失 -> 过冲严重
+    float update(float error, float dt, float p_scale = 1.0f);
 
     // 清零积分项，防止误差长期累积导致超调。
     void resetIntegral();
