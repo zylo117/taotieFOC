@@ -58,21 +58,23 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
     if (dt > 0.0f)
     {
         const float position_error_rev = desired_error_deg / 360.0f;
-        // 【角度模式 P 项 ×1/100】这是唯一的例外：
-        // 网页与固件用的是同一套 PID（不做任何口径倍率），但角度模式没有基础速度，
-        // PID 输出直接就是全部速度；而运动模式里 PID 只做“小修正”。
-        // 同样的 P 在角度模式里等效放大很多会导致左右摇摆，所以计算时把 P 缩到 1/100。
-        // I 和 D 不缩放：缩 I 会让稳态误差永远消不掉，缩 D 会丢阻尼而过冲。
+        // 【唯一样例：角度模式的 P 项 ×1/100】
+        // 网页与固件用的是同一套 PID（没有任何口径倍率），但角度模式下
+        // P 的等效增益比运动模式大得多（运动模式 PID 只做小修正），所以这里把 P 缩到 1/100。
+        // 只缩 P：缩 I 会让稳态误差永远消不掉，缩 D 会丢阻尼而过冲。
         constexpr float kAnglePScale = 0.01f;
         // 根据误差角算出位置环的速度修正量
         const float position_reference_rps = c.position_pid_.update(position_error_rev, dt, kAnglePScale);
-        // 【不能把输出当输入】原来这里写的是 base_speed_rps = current_step_speed_ / spr，
-        // 而 current_step_speed_ 就是上一拍本函数的输出 -> 正反馈：
-        //   输出↑ -> base_speed↑ -> total_ref↑ -> velocity_error↑ -> 输出↑ -> ...
-        // P 项增益小时还能勉强稳定，一旦加上 I 项就会持续发散
-        // （实测速度环 I=1 就表现为跟随误差不断增大）。
-        // 角度模式是纯位置伺服（目标静止），没有“基础速度”这个概念，应为 0。
-        constexpr float base_speed_rps = 0.0f;
+        // 【恢复 base_speed：角度模式需要“记忆”】
+        // 一度改成 0（纯位置伺服）后实测：
+        //   - 极慢：误差 4 度 -> P=9 -> 只输出 0.1rps，几乎不动
+        //   - 抖动：PID 输出直接就是全部速度，速度环的小噪声被完整放大
+        // 原来的写法把上一拍输出作为基础速度，相当于给位置环一个积分器，
+        // 小 P 也能逐渐把速度“滚”起来，这是这个结构能用的关键。
+        //
+        // 代价（已知且可接受）：它是个正反馈，所以速度环不能靠 I 项去消除稳态误差，
+        // 否则会持续发散（实测 I=1 就发散）。速度环只当阻尼用。
+        const float base_speed_rps = c.current_step_speed_ / static_cast<float>(c.getStepsPerRound());
         // 总期望速度 = 基础速度 + 位置环修正量
         const float total_ref_rps = base_speed_rps + position_reference_rps;
         // 总期望速度和实际速度的速度差

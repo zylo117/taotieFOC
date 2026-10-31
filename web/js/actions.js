@@ -34,6 +34,36 @@
                 state.pidSyncedFromDevice = false;
                 state.reader = portObj.readable.getReader();
                 state.writer = portObj.writable.getWriter();
+                // 【连上就主动读一次 PID 回填】不能只靠遥测：
+                //   - readRegisterValue 的 0x81 回包只 resolve 等待器，不会去写输入框
+                //   - 遥测回填又有 1.5 秒窗口限制
+                // 结果就是“保存成功、重启加载成功，但页面上一片默认值”。
+                // 这里直接用 0x81 路径读一次，拿到值自己写输入框。
+                void (async function pullPidFromDeviceOnce() {
+                    // 等 readLoop 起来再发读请求（刚设好 reader 时还没开始收帧）
+                    await new Promise((resolve) => window.setTimeout(resolve, 600));
+                    const pidRegs = [
+                        [CUSTOM_REGS.POSITION_KP, 'posKp'],
+                        [CUSTOM_REGS.POSITION_KI, 'posKi'],
+                        [CUSTOM_REGS.POSITION_KD, 'posKd'],
+                        [CUSTOM_REGS.VELOCITY_KP, 'velKp'],
+                        [CUSTOM_REGS.VELOCITY_KI, 'velKi'],
+                        [CUSTOM_REGS.VELOCITY_KD, 'velKd']
+                    ];
+                    for (const [reg, id] of pidRegs) {
+                        try {
+                            const raw = await readRegisterValue(reg);
+                            if (!Number.isFinite(raw)) continue;
+                            const el = document.getElementById(id);
+                            if (el) el.value = (Number(raw) / 1000).toFixed(3);
+                        } catch (e) {
+                            log(`[PID] 读取 0x${reg.toString(16)} 失败：${e.message}`);
+                        }
+                    }
+                    // 读完就把回填窗口关掉，之后输入框归用户
+                    state.pidSyncedFromDevice = true;
+                    log('[PID] 已从固件读取当前 PID');
+                })();
 
                 setConnBadge('已连接', true);
                 protoBadge.textContent = 'TMC 兼容';
@@ -319,12 +349,12 @@
             // 以前这里写的是 30000/3000（当成“已 ×1000 的口径”），
             // 导致用户填 9000 也直接发 9,000,000，固件再钳到 30，看起来像“填 9000 变 30000”。
             const registers = [
-                [CUSTOM_REGS.POSITION_KP, params.posKp, 30],
-                [CUSTOM_REGS.POSITION_KI, params.posKi, 3],
-                [CUSTOM_REGS.POSITION_KD, params.posKd, 30],
-                [CUSTOM_REGS.VELOCITY_KP, params.velKp, 30],
-                [CUSTOM_REGS.VELOCITY_KI, params.velKi, 3],
-                [CUSTOM_REGS.VELOCITY_KD, params.velKd, 30]
+                [CUSTOM_REGS.POSITION_KP, params.posKp, 30000],
+                [CUSTOM_REGS.POSITION_KI, params.posKi, 3000],
+                [CUSTOM_REGS.POSITION_KD, params.posKd, 30000],
+                [CUSTOM_REGS.VELOCITY_KP, params.velKp, 30000],
+                [CUSTOM_REGS.VELOCITY_KI, params.velKi, 3000],
+                [CUSTOM_REGS.VELOCITY_KD, params.velKd, 30000]
             ];
             // 【必须等 ACK】原来用 writeRegister（不等确认），看校准表后 USB 缓冲
             // 被 dump 流量占着时会丢写，导致 PID 没更新而用户毫无感知。

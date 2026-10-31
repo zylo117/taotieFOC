@@ -1,4 +1,4 @@
-﻿#include "parameter_router.h"
+#include "parameter_router.h"
 
 #include "closed_loop_controller.h"
 #include "param_store.h"
@@ -12,18 +12,17 @@
 
 namespace
 {
-    // PID 增益上限：比例/微分 30、积分 3（固件内的实际值）。
+    // PID 增益上限（网页口径，即“实际增益 × 1000”的口径下直接填的数）。
     //
-    // 【单位链】上位机发的是“实际增益 × 1000”的整数（输框 9.0 -> 发 9000），
-    // 所以这里除 1000 就得到实际增益。
-    // 注意：保存 Flash 时用的是“实际增益 × 1000”，对 kp 可达 30000，
-    // 所以 param_store 里的 PID 字段必须是 uint32_t（曾用 uint16_t，
-    // 导致 9000×1000 = 9,000,000 溢出成 21568，日志里 [PARAM] save ok (pid 21568/...)）。
+    // 【上限曾一度设成 30/3，是个错误】用户原来用的 60/20/60 会被静默钳成 30/3/30，
+    // 于是加 D 想压震荡却永远加不上去（被钳在 30），表现为“加了 D 反而更震荡”。
+    // 现在恢复 30000/3000（即实际增益 30 / 3？不：这里除 1000 后就是实际增益，
+    // 所以上限实际是 30000 / 3000），配合 param_store 的 uint32_t 字段不会溢出。
     float clampPidGain(uint16_t reg, uint32_t raw_value)
     {
         const float max_gain = (reg == TMC2209_EXT_PARAM_POSITION_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KI)
-            ? 3.0f
-            : 30.0f;
+            ? 3000.0f
+            : 30000.0f;
         const float gain = static_cast<float>(raw_value) / 1000.0f;
         if (gain < 0.0f)
         {
@@ -67,14 +66,16 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         params.angle_accel_rpm_s = 0U;
 
         owner_.param_save_ok_ = param_store_save(&params);
-        printf("[PARAM] save %s (pid %u/%u/%u %u/%u/%u)\r\n",
+        // 日志按“网页上的值”打印：存储里放大 1000 倍只为保留小数，
+        // 直接打 60000 会让人误以为有个倍率在捣鬼。
+        printf("[PARAM] save %s (pid %.3f/%.3f/%.3f %.3f/%.3f/%.3f)\r\n",
                owner_.param_save_ok_ ? "ok" : "FAILED",
-               static_cast<unsigned>(params.position_kp),
-               static_cast<unsigned>(params.position_ki),
-               static_cast<unsigned>(params.position_kd),
-               static_cast<unsigned>(params.velocity_kp),
-               static_cast<unsigned>(params.velocity_ki),
-               static_cast<unsigned>(params.velocity_kd));
+               params.position_kp / 1000.0f,
+               params.position_ki / 1000.0f,
+               params.position_kd / 1000.0f,
+               params.velocity_kp / 1000.0f,
+               params.velocity_ki / 1000.0f,
+               params.velocity_kd / 1000.0f);
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FF_RATIO)

@@ -290,13 +290,9 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
             base_velocity_kd_ = velocity_pid_.kd;
             // 角度限速/加速度不从 Flash 恢复：它们是“本次运行设定”，每次在界面上调，
             // 存进 Flash 会让一个旧值在重启后静默生效。
-            printf("[PARAM] loaded from flash: pid %u/%u/%u %u/%u/%u\r\n",
-                   static_cast<unsigned>(params.position_kp),
-                   static_cast<unsigned>(params.position_ki),
-                   static_cast<unsigned>(params.position_kd),
-                   static_cast<unsigned>(params.velocity_kp),
-                   static_cast<unsigned>(params.velocity_ki),
-                   static_cast<unsigned>(params.velocity_kd));
+            printf("[PARAM] loaded from flash: pid %.3f/%.3f/%.3f %.3f/%.3f/%.3f\r\n",
+                   position_pid_.kp, position_pid_.ki, position_pid_.kd,
+                   velocity_pid_.kp, velocity_pid_.ki, velocity_pid_.kd);
         }
         else
         {
