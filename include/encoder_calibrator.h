@@ -30,28 +30,24 @@ public:
     // raw 是最新的编码器原始值（未查表），0xFFFF 表示本次读数无效。
     void update(uint16_t raw);
 
-    // 当前是否空闲（可接受新的校准请求）。
+    // 当前是否空闲（可接受新的校准请求）。真正生效（阶段 5 接线）后可替代
+    // 各处直接读 controller->calibration_stage_ 的判断。
     bool isIdle() const;
 
-    // 当前阶段，供遥测/调试查询。
-    uint8_t stage() const { return static_cast<uint8_t>(stage_); }
+    // 当前阶段，供遥测/调试查询。返回值与 ClosedLoopController::EncoderCalibrationStage 一致。
+    uint8_t stage() const;
 
 private:
-    enum Stage
-    {
-        STAGE_IDLE = 0,
-        STAGE_HOMING,
-        STAGE_MOVING,
-        STAGE_SAMPLING,
-        STAGE_SAVING
-    };
-
     void finish(bool save_table);
     bool startMove(uint16_t index);
 
     ClosedLoopController& owner_;
 
-    volatile Stage stage_ = STAGE_IDLE;
+    // 【阶段状态不复制在这里】唯一真源是 owner_.calibration_stage_：
+    //   motion_planner.cpp 的 updateTrapezoid 会在一小段步数走完时把它从 MOVING 改成 SAMPLING，
+    //   readCalibrationTablePair / readCalibrationTableChecksum 也用"是否 IDLE"做门禁。
+    // 本类再存一份 stage_ 就会有两份状态，接线后必然出现"一边改了另一边不知道"。
+    // 因此本类只持有校准专用、外部不会碰的状态（下面这些）。
     volatile uint16_t index_ = 0U;
 
     // 正向趟的采样值（反向趟取平均时用）。2KB：1024 点 x uint16。
