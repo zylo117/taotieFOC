@@ -182,6 +182,8 @@ void EncoderCalibrator::start()
     seg_diff_max_at_ = 0U;
     seg_over_ = 0U;
     seg_under_ = 0U;
+    seg_counted_diff_sum_ = 0;
+    seg_emit_vs_count_sum_ = 0;
     seg_diff_sum_ = 0U;
     for (uint32_t i = 0U; i < 7U; ++i)
     {
@@ -802,6 +804,16 @@ void EncoderCalibrator::closeSegment()
         seg_under_++;
     }
 
+    // 三分解：把“命令→记账→实发”中间那一环也记下来。motion_steps_emitted_ 在
+    // startMotion() 里被清零，而本段结束后没人再动它（下一段才重清），所以此刻它
+    // 就是本段的记账值。
+    {
+        const int32_t counted_now = static_cast<int32_t>(owner_.motion_steps_emitted_);
+        const int32_t emitted_this = static_cast<int32_t>(emitted_now - seg_pulse_base_);
+        seg_counted_diff_sum_ += counted_now - static_cast<int32_t>(seg_commanded_);
+        seg_emit_vs_count_sum_ += emitted_this - counted_now;
+    }
+
     // 直方图：≤-2 / -1 / 0 / +1 / +2 / +3..5 / ≥+6
     uint32_t bucket;
     if (diff <= -2)
@@ -868,4 +880,8 @@ void EncoderCalibrator::reportSegments() const
            static_cast<unsigned long>(seg_hist_[5]),
            static_cast<unsigned long>(seg_hist_[6]),
            avg_ticks);
+    // 命令→记账→实发 的三段分解：哪一段不为 0，问题就在哪一环
+    printf("[CAL] seg chain: (counted-commanded)=%ld (emitted-counted)=%ld\r\n",
+           static_cast<long>(seg_counted_diff_sum_),
+           static_cast<long>(seg_emit_vs_count_sum_));
 }

@@ -118,6 +118,12 @@ private:
     uint32_t seg_diff_max_at_ = 0U;   // 最大超差发生在第几段
     uint32_t seg_over_ = 0U;          // diff > 0 的段数
     uint32_t seg_under_ = 0U;         // diff < 0 的段数
+    // 【命令 → 记账 → 实发】三分解：上一批数据说明段是“跑到 51 步才停”，
+    // 而不是“停了以后多吐脉冲”，所以必须把中间那一环（motion_steps_emitted_）也纳入：
+    //   seg_counted_diff_sum_ = Σ(记账 - 命令)   —— 不为 0 说明段结束条件本身跑多了/少了
+    //   seg_emit_vs_count_sum_ = Σ(实发 - 记账) —— 不为 0 说明发射与记账不等（钳位不对称）
+    int32_t seg_counted_diff_sum_ = 0;
+    int32_t seg_emit_vs_count_sum_ = 0;
     uint32_t seg_diff_sum_ = 0U;      // 正超差的总和（算平均用）
     // 直方图桶：≤-2 / -1 / 0 / +1 / +2 / +3..5 / ≥+6
     uint32_t seg_hist_[7] = {};
