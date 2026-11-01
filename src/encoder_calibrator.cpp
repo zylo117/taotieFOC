@@ -573,11 +573,13 @@ bool EncoderCalibrator::tablePlausible() const
            static_cast<unsigned>(mono_worst_index_),
            static_cast<long>(kStepToleranceLsb));
 
-    // 【分级】两类问题的性质完全不同，不能一刀切：
-    //   单调性超差 = 局部坏点（本次 index 1005 就是，|step-64| = 32632）。
-    //     它会把 180° 宽的 raw 区间压进 0.35°，是真灾难，而且不常见 → 硬拒保存。
-    //   闭合偏差 = 系统性进给误差（在校准运动方式修好之前每次都会有）。
-    //     如果因它拒绝保存，校准就直接不能用了 → 只报响亮的警告，仍然保存。
+    // 【两类问题全部硬拒】上一版把闭合偏差当成“系统性、可以容忍”只报警，错的。
+    // 道理：正向扫一圈的 raw 总推进不等于 65472 LSB 时，扫尾的 raw 区间会重新踏入
+    // 扫头用过的 raw 区间 —— 重叠宽度正好等于 |closure|。同一段 raw 被两段索引区间
+    // 同时认领，而 reverseLookup 从 i=0 往上扫、第一个匹配就返回 → 该段 raw 会被映射到
+    // 两个相差约 353° 的答案 → 快表里出现 352° 悬崖（实测在 4 个 LSB 内从 352.87° 跳到 0.005°）。
+    // 所以“闭合不为 0”不是精度问题，是表的定义性问题：双值表不可用。
+    bool ok = true;
     if (mono_bad_ != 0U)
     {
         printf("[CAL] REJECT: %u bad steps (worst |step-64|=%+ld LSB at index=%u, limit %ld)\r\n",
@@ -585,14 +587,17 @@ bool EncoderCalibrator::tablePlausible() const
                static_cast<long>(mono_worst_dev_),
                static_cast<unsigned>(mono_worst_index_),
                static_cast<long>(kStepToleranceLsb));
-        return false;
+        ok = false;
     }
     if (abs_closure > kClosureToleranceLsb)
     {
-        // 【日志统一用 ASCII】这一行原本写了中文，115200 下发出去是乱码，
-        // 反而拖累了判读（注释用中文、运行串用 ASCII）。英文版本同样说清因果。
-        printf("[CAL] WARN: actual travel != commanded (systematic). Table still saved. "
-               "Check: microsteps setting vs driver real MRES, and step loss during start/stop.\r\n");
+        printf("[CAL] REJECT: overlap=%ld LSB (%.3fdeg) - table is double-valued over that raw range, "
+               "fast table will contain a %.1fdeg cliff. Limit %ld LSB.\r\n",
+               static_cast<long>(closure),
+               static_cast<double>(closure) * lsb_deg,
+               static_cast<double>(360.0 - abs_closure * lsb_deg),
+               static_cast<long>(kClosureToleranceLsb));
+        ok = false;
     }
-    return true;
+    return ok;
 }
