@@ -245,6 +245,11 @@ bool AngleEncoder::createFastCal(bool yield_between_pages)
 	auto paintRange = [&](int32_t rangeBegin, int32_t rangeEnd)
 	{
 		int32_t seg = 0;
+		// 节点角度只在**段号前进**时重算（每段一次），不能放进下面逐 raw 的循环体：
+		// M4 没有硬件 64 位除法，nodeAngle 里的 (int64)i*65536/N 是软件例程，
+		// 在 65536 项里算两次就是≈ 13 万次除法（≈ 30ms 白送）。
+		int32_t angleStart = nodeAngle(seg);
+		int32_t angleEnd = nodeAngle(seg + 1);
 		for (int32_t rawPos = rangeBegin; rawPos < rangeEnd; ++rawPos)
 		{
 			// 扫描从 rawBase 起绕一圈：raw < rawBase 属于后半圈
@@ -259,10 +264,10 @@ bool AngleEncoder::createFastCal(bool yield_between_pages)
 			while (seg < nodeCount && q >= qBound[seg + 1])
 			{
 				++seg;
+				angleStart = nodeAngle(seg);
+				angleEnd = nodeAngle(seg + 1);   // seg=nodeCount-1 时正好 65536
 			}
 			const int32_t segLen = qBound[seg + 1] - qBound[seg];
-			const int32_t angleStart = nodeAngle(seg);
-			const int32_t angleEnd = nodeAngle(seg + 1);   // seg=nodeCount-1 时正好 65536
 			const int32_t angle = (segLen <= 0)
 				? angleEnd
 				: (angleStart +
