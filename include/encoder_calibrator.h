@@ -50,6 +50,35 @@ private:
     void finish(bool save_table);
     bool startMove(uint16_t index);
 
+    // ===== 采样节拍（集中在这里，避免“样本数”与“除数”两处不一致）=====
+    // 一个点要连采 kSamplesNeeded 个才取平均（去最大最小后除 kForMean），
+    // 每拍一个样本（50us）；kSettleTicks 是移动后的等待时间。
+    // 时长代价：每个点≈ kSettleTicks + kSamplesNeeded 个拍，× 2047 个点。
+    static constexpr uint32_t kSettleTicks = 1600U;      // 80ms（原 50ms）
+    static constexpr uint16_t kSamplesNeeded = 302U;     // 原 202，同位置多采样降抖动
+    static constexpr uint16_t kSamplesForMean = kSamplesNeeded - 2U;
+    static constexpr uint32_t kMaxAttempts = 2000U;      // 取不满样本则判失败
+
+    // ===== 表的完整性校验（不是“兼容性堆砌”，而是让“校准做坏了”不可能静默通过）=====
+    // 每格应推进 65536/1024 = 64 LSB；单点噪声就有 ±2 LSB，INL 与负载角残差
+    // 也在十几 LSB 量级，所以步进偏差给 4 倍空间（256 LSB = 1.4°）。
+    // 闭合偏差（整圈累加）则是硬错：命令 1023 段就是 1023×12.5 微步，
+    // 传感器应推进 1023×64 = 65472 LSB；实测那张表多推了 1393 LSB（+7.65°），
+    // 所以阀值取 1°（182 LSB）—— 既远小于实测坏值，又容得下正常残余。
+    static constexpr int32_t kStepToleranceLsb = 256;
+    static constexpr int32_t kClosureToleranceLsb = 182;
+
+    // 记录每一次写表：检查与上一格的步进是否接近 64，并存下首尾两格算闭合
+    void noteWrite(uint16_t index, uint16_t value);
+    bool tablePlausible() const;      // 打印诊断 + 给出结论（由 finish 决定是否保存）
+    bool write_prev_valid_ = false;
+    uint16_t write_prev_value_ = 0U;
+    uint16_t write_at_first_ = 0U;    // index 0 写进去的值
+    uint16_t write_at_last_ = 0U;     // index 1023 写进去的值
+    uint16_t mono_bad_ = 0U;          // 步进超偏的格子数
+    int32_t mono_worst_dev_ = 0;      // 最差的 |步进-64|
+    uint16_t mono_worst_index_ = 0U;
+
     ClosedLoopController& owner_;
 
     // 【阶段状态不复制在这里】唯一真源是 owner_.calibration_stage_：

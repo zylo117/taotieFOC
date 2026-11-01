@@ -142,6 +142,25 @@ void EncoderCalibrator::start()
     c.calibration_saved_compensation_enabled_ = c.closed_loop_compensation_enabled_;
     // 校准专用状态（本类持有）。注意：和原实现一样不重置 home_wait_ticks_，
     // HOMING 的超时计数会带上一次残留（最多 1000 拍 = 50ms），行为保持一致。
+    // 校验状态归零；顺带报一下“每段能不能整除”
+    write_prev_valid_ = false;
+    mono_bad_ = 0U;
+    mono_worst_dev_ = 0;
+    mono_worst_index_ = 0U;
+    write_at_first_ = 0U;
+    write_at_last_ = 0U;
+    const uint32_t spr_now = c.getStepsPerRound();
+    if ((spr_now % CALIBRATION_TABLE_SIZE) != 0U)
+    {
+        // 注意：段长交替（比如 12/13）**不累积错位** —— startMove 用的是边界公式
+        // first_step = round(index * spr / 1024)，转子精确落在 round(i*spr/1024)，
+        // 误差上界 0.5 微步。报出来只是为了让“每段不完全等长”透明可见；
+        // 想整除要把细分调到让 steps/round 成为 1024 的整数倍（128 细分→ 25600/1024=25）。
+        printf("[CALIBRATION] steps/round=%lu %% 1024 != 0, segments alternate %lu/%lu microsteps\r\n",
+               static_cast<unsigned long>(spr_now),
+               static_cast<unsigned long>(spr_now / CALIBRATION_TABLE_SIZE),
+               static_cast<unsigned long>(spr_now / CALIBRATION_TABLE_SIZE + 1U));
+    }
     index_ = 0U;
     backward_pass_ = false;   // 从正向趟开始
     home_stable_count_ = 0U;
@@ -164,6 +183,13 @@ void EncoderCalibrator::finish(bool save_table)
     c.stopMotion();
 
     bool saved = false;
+    // 【先校验再保存】表不可信就不写 Flash。这次一个坏点就能把整段角度搞乱，
+    // 而建完表原本一道检查都没有，问题才能藏这么久。
+    if (save_table && !tablePlausible())
+    {
+        printf("[CALIBRATION] table REJECTED, not saved (see [CAL] lines above)\r\n");
+        save_table = false;
+    }
     if (save_table)
     {
         saved = c.encoder_ != nullptr && c.encoder_->saveCalibration();
@@ -320,10 +346,10 @@ void EncoderCalibrator::update(uint16_t raw)
 
     // 【每个位置先停一下再采样】运动刚停时转子还在找平衡（负载角），
     // 立刻采样会把“还没停稳”的角度记进表里，造成系统性偏差。
-    // 复用 home_wait_ticks_ 当等待计数器（进 SAMPLING / 每段移动前已清零）：
-    // 等 1000 拍 = 50ms。不能等太久：1024 个点 × 50ms 已经是 51 秒，
-    // 200ms 会变成 3.4 分钟，完全没法用。
-    if (home_wait_ticks_ < 1000U)
+    // 复用 home_wait_ticks_ 当等待计数器（进 SAMPLING / 每段移动前已清零）。
+    // 时长代价：每点约 (kSettleTicks + kSamplesNeeded) 个拍 = 80+15 = 95ms，
+    // × 2047 个点 ≈ 3.3 分钟（原 50ms+10ms 约 2 分钟）。校准不是例行操作，慢一点可以接。
+    if (home_wait_ticks_ < kSettleTicks)
     {
         home_wait_ticks_++;
         // 同时把可能存在的运动状态收尾，避免停顿期间残留速度
@@ -370,9 +396,9 @@ void EncoderCalibrator::update(uint16_t raw)
             static_cast<unsigned>(sample_attempts_));
     }
 
-    if (sample_count_ < 202U)
+    if (sample_count_ < kSamplesNeeded)
     {
-        if (sample_attempts_ >= 1000U)
+        if (sample_attempts_ >= kMaxAttempts)
         {
             printf("[CALIBRATION] insufficient encoder samples at index=%u\r\n",
                    static_cast<unsigned>(index_));
@@ -381,7 +407,9 @@ void EncoderCalibrator::update(uint16_t raw)
         return;
     }
 
-    const int32_t trimmed_mean = (sample_sum_ - sample_min_ - sample_max_) / 200;
+    // 去极值平均：除数必须等于“样本数 - 2”，写两处数字迟早会不一致。
+    const int32_t trimmed_mean =
+        (sample_sum_ - sample_min_ - sample_max_) / static_cast<int32_t>(kSamplesForMean);
     const uint16_t mean_raw = static_cast<uint16_t>(static_cast<uint32_t>(trimmed_mean) & 0xFFFFU);
     // 正转趟只存不写表（等反向趟取平均），反向趟平均后再写表。
     if (!backward_pass_)
@@ -400,6 +428,7 @@ void EncoderCalibrator::update(uint16_t raw)
             // 1023 是“接近 360 度”的边界点，它没有反向采样值，直接用正向值。
             if (index_ < kPoints)
             {
+                noteWrite(index_, forward_raw_[index_]);
                 c.encoder_->feedCalibrationSample(index_, forward_raw_[index_]);
             }
             backward_pass_ = true;
@@ -438,6 +467,7 @@ void EncoderCalibrator::update(uint16_t raw)
         }
         const uint16_t averaged = static_cast<uint16_t>(
             (static_cast<int32_t>(forward_raw) + pass_delta / 2) & 0xFFFF);
+        noteWrite(index_, averaged);
         c.encoder_->feedCalibrationSample(index_, averaged);
     }
     if (index_ == 0U)
@@ -447,4 +477,114 @@ void EncoderCalibrator::update(uint16_t raw)
     }
     index_--;
     startMove(index_);
+}
+
+// ===========================================================================
+// 每写一格就检查与上一格的步进是否接近 64 LSB，并留下首尾两格算闭合。
+//
+// 两趟的写入方向相反（正向只在 1023 写一次，反向 1022→0），所以步进符号也会翻，
+// 这里取绝对值比较“每格推进量的大小”。
+// 拿实测那张坏表验算：1004→1005 的步进 = wrap(32778-65474) = -32696，
+// |32696 - 64| = 32632 ≫ 256 → 一抓一个准；而正常表的每格步进约 65~73，
+// 偏差只有几 LSB，不会误报。
+// ===========================================================================
+void EncoderCalibrator::noteWrite(uint16_t index, uint16_t value)
+{
+    constexpr int32_t kIdealStep = static_cast<int32_t>(CALIBRATION_STEPS / CALIBRATION_TABLE_SIZE);
+
+    if (write_prev_valid_)
+    {
+        int32_t step = static_cast<int32_t>(value) - static_cast<int32_t>(write_prev_value_);
+        while (step > 32768)
+        {
+            step -= 65536;
+        }
+        while (step < -32768)
+        {
+            step += 65536;
+        }
+        const int32_t magnitude = (step < 0) ? -step : step;
+        const int32_t dev = magnitude - kIdealStep;
+        const int32_t abs_dev = (dev < 0) ? -dev : dev;
+        const int32_t abs_worst = (mono_worst_dev_ < 0) ? -mono_worst_dev_ : mono_worst_dev_;
+        if (abs_dev > kStepToleranceLsb)
+        {
+            mono_bad_++;
+        }
+        if (abs_dev > abs_worst)
+        {
+            mono_worst_dev_ = dev;
+            mono_worst_index_ = index;
+        }
+    }
+    write_prev_valid_ = true;
+    write_prev_value_ = value;
+    if (index == 0U)
+    {
+        write_at_first_ = value;
+    }
+    if (index + 1U >= CALIBRATION_TABLE_SIZE)
+    {
+        write_at_last_ = value;
+    }
+}
+
+// ===========================================================================
+// 表的合理性判定：闭合偏差 + 逐格步进单调性。不通过则 finish() 不写 Flash。
+//
+// 闭合为什么是硬错：命令 1023 段共 1023×12.5 微步（不足一圈），传感器应推进
+// 1023×64 = 65472 LSB。多推/少推都说明“命令进给≠实际进给”。
+// 实测那张表的闭合偏差是 +1396 LSB（+7.67°），正好对应“正转多走了约 7°才换向”。
+// ===========================================================================
+bool EncoderCalibrator::tablePlausible() const
+{
+    constexpr int32_t kIdealStep = static_cast<int32_t>(CALIBRATION_STEPS / CALIBRATION_TABLE_SIZE);
+    const int32_t expect = static_cast<int32_t>(CALIBRATION_TABLE_SIZE - 1U) * kIdealStep;
+
+    int32_t closure = static_cast<int32_t>(write_at_last_) - static_cast<int32_t>(write_at_first_) - expect;
+    // 必须用 while 折返：跨接缝时这个值可能是 -129676 这种两圈外的数。
+    while (closure > 32768)
+    {
+        closure -= 65536;
+    }
+    while (closure < -32768)
+    {
+        closure += 65536;
+    }
+    const int32_t abs_closure = (closure < 0) ? -closure : closure;
+    const double lsb_deg = 360.0 / 65536.0;
+
+    printf("[CAL] closure=%+.3fdeg (%+ld LSB, limit %.1fdeg)  steps/round=%lu\r\n",
+           static_cast<double>(closure) * lsb_deg,
+           static_cast<long>(closure),
+           static_cast<double>(kClosureToleranceLsb) * lsb_deg,
+           static_cast<unsigned long>(owner_.getStepsPerRound()));
+    printf("[CAL] monotonic: %u bad steps, worst |step-64|=%+ld LSB at index=%u (limit %ld)\r\n",
+           static_cast<unsigned>(mono_bad_),
+           static_cast<long>(mono_worst_dev_),
+           static_cast<unsigned>(mono_worst_index_),
+           static_cast<long>(kStepToleranceLsb));
+
+    // 【分级】两类问题的性质完全不同，不能一刀切：
+    //   单调性超差 = 局部坏点（本次 index 1005 就是，|step-64| = 32632）。
+    //     它会把 180° 宽的 raw 区间压进 0.35°，是真灾难，而且不常见 → 硬拒保存。
+    //   闭合偏差 = 系统性进给误差（在校准运动方式修好之前每次都会有）。
+    //     如果因它拒绝保存，校准就直接不能用了 → 只报响亮的警告，仍然保存。
+    if (mono_bad_ != 0U)
+    {
+        printf("[CAL] REJECT: %u bad steps (worst |step-64|=%+ld LSB at index=%u, limit %ld)\r\n",
+               static_cast<unsigned>(mono_bad_),
+               static_cast<long>(mono_worst_dev_),
+               static_cast<unsigned>(mono_worst_index_),
+               static_cast<long>(kStepToleranceLsb));
+        return false;
+    }
+    if (abs_closure > kClosureToleranceLsb)
+    {
+        printf("[CAL] WARN: closure %.3fdeg exceeds %.1fdeg limit —— 命令进给与实际不等（系统性），"
+               "表仍会保存；这通常意味着校准运动本身有问题（起停过冲/丢步）\r\n",
+               static_cast<double>(closure) * lsb_deg,
+               static_cast<double>(kClosureToleranceLsb) * lsb_deg);
+    }
+    return true;
 }
