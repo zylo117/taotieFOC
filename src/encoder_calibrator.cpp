@@ -140,13 +140,12 @@ void EncoderCalibrator::start()
     c.calibration_saved_pulse_width_ns_ = c.step_pulse_width_ns_;
     c.calibration_saved_motion_mode_ = c.motion_mode_;
     c.calibration_saved_compensation_enabled_ = c.closed_loop_compensation_enabled_;
-    // 【校准期间必须关掉闭环补偿】校准是开环扫齿位：每一段的“真角”完全由脉冲数定义。
-    // 而 emitSteps 实际发的脉冲来自**补偿累加器**，段结束判据却用**原始累加器**的
-    // motion_steps_emitted_ 记账；只要补偿开着，PID 就会按一个被急停搞乱的 follow_error
-    // 往每段里掺额外脉冲（实测每段约 1.5 微步），且它带着 motion_direction_ 符号——
-    // 正/反两趟同向，双程平均抵不掉，全部体现在整圈推进上（+3.0%）。
-    // 这也解释了为何“连续走一整圈”分毫不差：那是一段长运动，没有 255 次掺脉冲的边界。
-    // 旧代码只在 finish() 里强制置 false，开始的时候没关 —— 这是漏洞。
+    // 【校准期间必须纯开环】这里的置 false 只是给校准后留个干净初值，**它本身不够**：
+    // 下面 setTargetAngleDeg(0) 归零会又把 closed_loop_compensation_enabled_ 置回 true
+    //（既有行为），而校准中已禁止主机写 0x107，结果它全程都是 true。
+    // 实测（仅靠这个置 false 时）：comp_rps_peak=0.5916 rps、emit bias windows=8091、
+    // 每段多发 ≈1.4 微步、整圈进给 +2.85%。真正的保证在 rampUpdate 的补偿段门禁里：
+    // calibration_stage_ != CALIBRATION_IDLE 时补偿段根本不运行。
     c.closed_loop_compensation_enabled_ = false;
     c.compensated_rps_ = 0.0f;
     // 校准专用状态（本类持有）。注意：和原实现一样不重置 home_wait_ticks_，
@@ -197,10 +196,10 @@ void EncoderCalibrator::start()
     if ((spr_now % CALIBRATION_TABLE_SIZE) != 0U)
     {
         // 注意：段长交替（比如 12/13）**不累积错位** —— startMove 用的是边界公式
-        // first_step = round(index * spr / 1024)，转子精确落在 round(i*spr/1024)，
+        // first_step = round(index * spr / N)，转子精确落在 round(i*spr/N)，
         // 误差上界 0.5 微步。报出来只是为了让“每段不完全等长”透明可见；
-        // 想整除要把细分调到让 steps/round 成为 1024 的整数倍（128 细分→ 25600/1024=25）。
-        printf("[CALIBRATION] steps/round=%lu %% 1024 != 0, segments alternate %lu/%lu microsteps\r\n",
+        // 想整除要把细分调到让 steps/round 成为整数倍（例如 128 细分→ 25600/1024=25）。
+        printf("[CALIBRATION] steps/round=%lu %% 点数 != 0, segments alternate %lu/%lu microsteps\r\n",
                static_cast<unsigned long>(spr_now),
                static_cast<unsigned long>(spr_now / CALIBRATION_TABLE_SIZE),
                static_cast<unsigned long>(spr_now / CALIBRATION_TABLE_SIZE + 1U));
@@ -286,7 +285,7 @@ void EncoderCalibrator::finish(bool save_table)
 }
 
 // 把转子移动到第 index 个校准点（对应原 startEncoderCalibrationMove）。
-// 每段只走 steps_per_round/CALIBRATION_TABLE_SIZE 步（64 细分下 12~13 步）。
+// 每段只走 steps_per_round/CALIBRATION_TABLE_SIZE 步（64 细分、256 点下整 50 微步）。
 bool EncoderCalibrator::startMove(uint16_t index)
 {
     ClosedLoopController& c = owner_;
@@ -320,11 +319,12 @@ bool EncoderCalibrator::startMove(uint16_t index)
 
     c.motion_start_rpm_ = 60.0f;
     c.motion_max_rpm_ = 60.0f;
-    // 【加速度必须足够大】每段只走 12~13 步，而 startMotion 按梯形算减速点
-    // decel_total_steps_ = vmax^2/(2a)：
-    //   60 RPM/s    -> 6400 步 >> 13 步：第一拍就进 DECEL，一步不发
-    //   60000 RPM/s -> 6 步：吃掉半程（实测整圈只走 200 度）
-    // 拉到 600000 RPM/s -> decel = 0.64 取整 0 -> steps_to_decel_ = 0 -> 全程 CRUISE。
+    // 【加速度必须足够大】每段只走一整格（256 点/64 细分下 50 微步），而 startMotion
+    // 按梯形算减速点 decel_total_steps_ = vmax^2/(2a)：
+    //   60 RPM/s    -> 6400 步 ≫ 50 步：第一拍就进 DECEL，一步不发
+    //   60000 RPM/s -> 6 步：吃掉一段的相当比例
+    // 拉到 600000 RPM/s -> decel 取整 0 -> steps_to_decel_ = 0 -> 全程 CRUISE。
+    // 注意：这里的“瞬间满速”不是 +2.85% 的原因（mode=0 实验已否掉越窗说）。
     c.motion_accel_rpm_s_ = 600000.0f;
     c.motion_pulse_count_ = steps;
     // 命令量累计（两趟都计）：与 step_pulses_emitted_ 的增量对账用

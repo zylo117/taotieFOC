@@ -1081,7 +1081,14 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         return;
     }
 
+    // 【校准期间绝不补偿】约束放在执行处，而不是只信开关：
+    // EncoderCalibrator::start() 里先把 closed_loop_compensation_enabled_ 置 false，
+    // 但紧接着 setTargetAngleDeg(0) 归零又会把它置回 true（既有行为）；而校准期间
+    // 已经禁止主机写 0x107，于是整个校准过程它都是 true。
+    // 实测后果：comp_rps_peak = 0.59 rps、每段多发 ≈1.4 微步、整圈进给 +2.85%。
+    // 校准的每一段“真角”完全由脉冲数定义，所以只要校准在跑，补偿就不运行。
     if (closed_loop_compensation_enabled_ && motion_running_ && !closed_loop_angle_mode_enabled_ &&
+        calibration_stage_ == CALIBRATION_IDLE &&
         encoder_ != nullptr && delta_ramp_ns > 0U && motion_max_step_s_ > 0.0f)
     {
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
