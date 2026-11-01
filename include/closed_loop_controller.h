@@ -331,6 +331,14 @@ private:
     // 用途：它和 motion_steps_emitted_（记账值）分开存在，才能查出“发的比记的多/少”
     // 这类不对称；现在主要用于校准期间的“命令脉冲 vs 实发脉冲”对账。
     volatile uint32_t step_pulses_emitted_ = 0U;
+    // 【校准专用观测】查“实发(num_steps, 取自补偿累加器) != 记账(num_original,
+    // 取自原始累加器)”到底出在哪：
+    //   calib_bias_windows_ > 0            -> 两个累加器真的分叉了
+    //   calib_comp_rps_peak_ > 0           -> 补偿在跑（说明“校准期间关闭环”没关住）
+    //   calib_comp_rps_peak_ == 0 且分叉    -> 是余数/钳位路径造成（递减不对称）
+    volatile uint32_t calib_bias_windows_ = 0U;
+    volatile int32_t calib_bias_sum_ = 0;
+    volatile float calib_comp_rps_peak_ = 0.0f;
     // 刚交给 TMR2/DMA、还没到下一拍确认的步数（下一个 rampUpdate 才并入 delivered）
     volatile int64_t motion_dma_pending_signed = 0;
     volatile uint32_t motion_dma_pending_steps_;

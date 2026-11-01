@@ -498,6 +498,26 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
         // 放在这个分支里而不是分支外，是因为归零那几步走角度模式：它们发的脉冲
         // 不属于任何“命令段长”，混进来会假报成“多发了脉冲”。
         c.step_pulses_emitted_ += num_steps;
+        // 校准期间的发射偏差观测：只在校准 MOVING 阶段统计，其余时候一次比较就跳过。
+        // 目的是分清：“实发≠记账”到底是补偿在跑（rps 峰值≠0），还是两个累加器的
+        // 余数/钳位路径分叉（rps 峰值==0 但仍分叉）。
+        if (c.calibration_stage_ == ClosedLoopController::CALIBRATION_MOVING)
+        {
+            if (num_steps != num_original_command_steps)
+            {
+                c.calib_bias_windows_++;
+                c.calib_bias_sum_ += static_cast<int32_t>(num_steps)
+                                   - static_cast<int32_t>(num_original_command_steps);
+            }
+            if (c.compensated_rps_ != 0.0f)
+            {
+                const float abs_rps = fast_abs(c.compensated_rps_);
+                if (abs_rps > c.calib_comp_rps_peak_)
+                {
+                    c.calib_comp_rps_peak_ = abs_rps;
+                }
+            }
+        }
         c.motion_steps_emitted_ += num_original_command_steps;
         c.motion_steps_emitted_signed += c.motion_direction_ * num_original_command_steps;
         // 本窗这批脉冲刚交给 DMA，要等下一拍确认真的发完，

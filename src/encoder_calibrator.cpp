@@ -184,6 +184,10 @@ void EncoderCalibrator::start()
     seg_under_ = 0U;
     seg_counted_diff_sum_ = 0;
     seg_emit_vs_count_sum_ = 0;
+    // 发射偏差观测归零（在 controller 里，由 emitSteps 在校准 MOVING 阶段填报）
+    c.calib_bias_windows_ = 0U;
+    c.calib_bias_sum_ = 0;
+    c.calib_comp_rps_peak_ = 0.0f;
     seg_diff_sum_ = 0U;
     for (uint32_t i = 0U; i < 7U; ++i)
     {
@@ -245,6 +249,14 @@ void EncoderCalibrator::finish(bool save_table)
     // 最后一段（反向趟回到 index 0 那一步）在这里结账，然后报分布
     closeSegment();
     reportSegments();
+    // 发射偏差到底出在哪：
+    //   windows=0                  -> 两个累加器未分叉，多发不是这里来的（转去查记账/结束条件）
+    //   windows>0 且 rps_peak>0     -> 补偿确实在跑，“校准期间关闭环”没关住
+    //   windows>0 且 rps_peak==0    -> 两个累加器在钳位/递减路径上分叉（纯记账 bug）
+    printf("[CAL] emit bias: windows=%lu sum=%ld comp_rps_peak=%.4f rps\r\n",
+           static_cast<unsigned long>(c.calib_bias_windows_),
+           static_cast<long>(c.calib_bias_sum_),
+           static_cast<double>(c.calib_comp_rps_peak_));
     // 【先校验再保存】表不可信就不写 Flash。这次一个坏点就能把整段角度搞乱，
     // 而建完表原本一道检查都没有，问题才能藏这么久。
     if (save_table && !tablePlausible())
