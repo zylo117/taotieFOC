@@ -225,9 +225,10 @@
 
         // 【必须与固件一致】angle_encoder.h 的 CALIBRATION_TABLE_SIZE。
         // 项数改了不改这里，主表导出会错位或读到空页：页数、期望对数、数组长度全部由这两个常量派生。
-        const CALIBRATION_MAIN_TABLE_ITEMS = 256;
-        const CALIBRATION_MAIN_PAGE_PAIRS = 128;   // 一页 = 128 对 = 256 项
-        const CALIBRATION_MAIN_PAGE_ITEMS = CALIBRATION_MAIN_PAGE_PAIRS * 2;
+        // 一页对数 = 项数/2：固件那边页 0 就发整张主表（calibration_dump_pair_count_ = 项数/2）。
+        const CALIBRATION_MAIN_TABLE_ITEMS = 800;
+        const CALIBRATION_MAIN_PAGE_PAIRS = CALIBRATION_MAIN_TABLE_ITEMS / 2;
+        const CALIBRATION_MAIN_PAGE_ITEMS = CALIBRATION_MAIN_PAGE_PAIRS * 2;   // = 整张主表
 
         async function requestCalibrationTableDump(kind, pageIndex = null) {
             const type = kind === 'main' ? 0 : (kind === 'fast' ? 1 : (kind === 'checksum' ? 2 : 3));

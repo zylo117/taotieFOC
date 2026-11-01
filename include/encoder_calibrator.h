@@ -61,12 +61,22 @@ private:
     static constexpr uint32_t kMaxAttempts = 2000U;      // 取不满样本则判失败
 
     // ===== 表的完整性校验（不是“兼容性堆砌”，而是让“校准做坏了”不可能静默通过）=====
-    // 每格应推进 CALIBRATION_STEPS/CALIBRATION_TABLE_SIZE（256 点时 = 256 LSB）；
-    // 单点噪声就有几 LSB，INL 与负载角残差也在十几 LSB 量级，
-    // 所以步进偏差给 4 倍理想格宽的空间（按点数自动缩放，改点数不用改阈值）。
-    static constexpr int32_t kIdealStep =
-        static_cast<int32_t>(CALIBRATION_STEPS / CALIBRATION_TABLE_SIZE);
+    // 每格应推进 CALIBRATION_STEPS/CALIBRATION_TABLE_SIZE；单点噪声就有几 LSB，
+    // INL 与负载角残差也在十几 LSB 量级，所以步进偏差给 4 倍理想格宽的空间
+    // （按点数自动缩放，改点数不用改阈值）。
+    // 【理想格宽必须四舍五入，不能取整商】点数不一定要整除 65536：
+    // 800 点时真值是 81.92，取整商得 81，于是每格都算少 0.92 LSB，
+    // 799 格累积就是 ≈ 730 LSB —— 会被 closure 误报成“刻度错”。
+    // 阈值用取整后的格宽无关紧要（0.92 LSB 远小于 4 倍容差），
+    // 但理论推进量 kExpectLsb 必须用 64 位精确算。
+    static constexpr int32_t kIdealStep = static_cast<int32_t>(
+        (CALIBRATION_STEPS + CALIBRATION_TABLE_SIZE / 2U) / CALIBRATION_TABLE_SIZE);
     static constexpr int32_t kStepToleranceLsb = 4 * kIdealStep;
+    // 命令扫完 N-1 格时，传感器理论上应推进的量（不要求 N 整除 65536）
+    static constexpr int32_t kExpectLsb = static_cast<int32_t>(
+        (static_cast<int64_t>(CALIBRATION_STEPS) *
+         static_cast<int64_t>(CALIBRATION_TABLE_SIZE - 1U)) /
+        static_cast<int64_t>(CALIBRATION_TABLE_SIZE));
     static constexpr int32_t kClosureToleranceLsb = 182;
 
     // 记录每一次写表：检查与上一格的步进是否接近 64，并存下首尾两格算闭合

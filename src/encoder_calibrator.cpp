@@ -714,7 +714,7 @@ bool EncoderCalibrator::tablePlausible() const
     // 实测旧那张 1024 点的表多推了 1396 LSB（+7.67°），正好对应“正转多走了约 7 度才换向”。
     // 现在这个差值已被 createFastCal 的比例归一化吸收（不会再产生悬崖），
     // 但必须报出来：它属于“命令进给与传感器对一圈的定义不一致”。
-    const int32_t expect = (nodeCount - 1) * kIdealStep;
+    const int32_t expect = kExpectLsb;
 
     int32_t closure = static_cast<int32_t>(write_at_last_) - static_cast<int32_t>(write_at_first_) - expect;
     // 未折叠的实际推进量（只用于打印）：折叠后的值有 ±65536 歧义（差几圈看不出来），

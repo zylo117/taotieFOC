@@ -180,9 +180,19 @@ bool AngleEncoder::createFastCal(bool yield_between_pages)
 	uint16_t checksum = 0U;
 
 	const int32_t nodeCount = static_cast<int32_t>(CALIBRATION_TABLE_SIZE);
-	const int32_t idealStep = static_cast<int32_t>(CALIBRATION_STEPS / CALIBRATION_TABLE_SIZE);
 	const int32_t rawSpan = static_cast<int32_t>(CALIBRATION_STEPS);
 	const int32_t rawBase = static_cast<int32_t>(m_calData[0].value);   // 真角 0° 时的 raw
+
+	// 【节点角度必须用 64 位精确算，不能用 65536/N 的整数商】
+	// 之前写成 idealStep = CALIBRATION_STEPS / CALIBRATION_TABLE_SIZE，默认了“点数能整除
+	// 65536”。256/512/1024 确实整除，但 800 不整除（65536/800 = 81.92），整数商会取 81，
+	// 于是整表角度只铺到 800×81 = 64800，少掉 736 LSB（≈ 4°），绕回也对不上。
+	// 点数应该是“能整除每圈微步数”（运动轴）而不是“能整除 65536”（传感器轴），
+	// 这两件事本来无关，不该被一个整数除法绑住。
+	auto nodeAngle = [rawSpan, nodeCount](int32_t i) -> int32_t
+	{
+		return static_cast<int32_t>((static_cast<int64_t>(i) * rawSpan) / nodeCount);
+	};
 
 	// ---- 第一趟：按环绕步长把主表展开成单调序列，qBound[i] 暂存累计推进 ----
 	int32_t prevRaw = rawBase;
@@ -251,11 +261,13 @@ bool AngleEncoder::createFastCal(bool yield_between_pages)
 				++seg;
 			}
 			const int32_t segLen = qBound[seg + 1] - qBound[seg];
+			const int32_t angleStart = nodeAngle(seg);
+			const int32_t angleEnd = nodeAngle(seg + 1);   // seg=nodeCount-1 时正好 65536
 			const int32_t angle = (segLen <= 0)
-				? ((seg + 1) * idealStep)
-				: (seg * idealStep +
+				? angleEnd
+				: (angleStart +
 				   static_cast<int32_t>((static_cast<int64_t>(q - qBound[seg]) *
-				                       static_cast<int64_t>(idealStep)) / segLen));
+				                       static_cast<int64_t>(angleEnd - angleStart)) / segLen));
 			const int32_t slot = rawPos % static_cast<int32_t>(FLASH_ROW_SIZE);
 			data[slot] = static_cast<uint16_t>(angle & 0xFFFFU);
 			checksum = static_cast<uint16_t>(checksum + data[slot]);
