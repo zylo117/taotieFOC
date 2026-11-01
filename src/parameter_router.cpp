@@ -86,6 +86,26 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         owner_.load_angle_feedforward_ratio_ = static_cast<float>(percent) / 100.0f;
         return owner_.protocol_ != nullptr && owner_.protocol_->writeRegister(reg, percent);
     }
+    // ===== 校准期间：所有“闭环 / 运动命令”入口由校准器接管 =====
+    // 磁编码器校准必须纯开环跑：每一段的“真角”完全由脉冲数定义。如果这时候还允许
+    // 闭环补偿（0x107）、角度模式（0x128）、外部脉冲跟随（0x149）或主机的运动命令
+    //（0x11F=1）进来，PID 就会往校准段里掺额外脉冲 —— emitSteps 实际发的是
+    // 补偿累加器的步数，而“这段走完了”看的是原始累加器的记账，两者一旦不等，
+    // 整圈进给就会被抬高（实测 +3.0%，约 1.5 微步/段）。
+    // 校准器自己的 startMotion()/setTargetAngleDeg() 是直接 C++ 调用、不走寄存器入口，
+    // 所以“归零用角度模式 + 扫段用开环规划运动”的结构不受影响。
+    // 0x11F=0（停下）仍然放行：那是急停，不该被挡；校准器会在下一段发现起不来时
+    // 自己 finish(false) 干净中止。
+    if (!owner_.calibrator_.isIdle() &&
+        (reg == TMC2209_EXT_PARAM_CLOSED_LOOP_ENABLE ||
+         reg == TMC2209_EXT_PARAM_TARGET_ANGLE_DEG ||
+         reg == TMC2209_EXT_PARAM_EXT_FOLLOW_ENABLE ||
+         (reg == TMC2209_EXT_PARAM_MOTION_COMMAND && value != 0U)))
+    {
+        printf("[CALIBRATION] write rejected while calibrating (open-loop only): reg=0x%03lX value=%lu\r\n",
+               static_cast<unsigned long>(reg), static_cast<unsigned long>(value));
+        return true;   // 照常回 ACK，但不让控制结构在校准中途被改掉
+    }
     if (reg == TMC2209_EXT_PARAM_CLOSED_LOOP_ENABLE)
     {
         owner_.closed_loop_compensation_enabled_ = value != 0U;
