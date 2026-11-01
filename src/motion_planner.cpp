@@ -493,6 +493,11 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
 
     if (!c.closed_loop_angle_mode_enabled_)
     {
+        // 校准诊断用：只统计规划运动的脉冲，且用 num_steps（实发）而不是
+        // num_original_command_steps（记账值）—— 两者不相等本身就是需要看见的信息。
+        // 放在这个分支里而不是分支外，是因为归零那几步走角度模式：它们发的脉冲
+        // 不属于任何“命令段长”，混进来会假报成“多发了脉冲”。
+        c.step_pulses_emitted_ += num_steps;
         c.motion_steps_emitted_ += num_original_command_steps;
         c.motion_steps_emitted_signed += c.motion_direction_ * num_original_command_steps;
         // 本窗这批脉冲刚交给 DMA，要等下一拍确认真的发完，

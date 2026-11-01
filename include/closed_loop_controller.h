@@ -327,6 +327,10 @@ private:
     // 原因：motion_steps_emitted_signed 在窗口开头就把整窗步数加满了，但脉冲要 50us
     // 才发完（平滑模式），直接相减会让命令位置凭空领先一个窗口 ≈ 几十步 ≈ 0.3°。
     volatile int64_t motion_steps_delivered_signed = 0;
+    // 真正交给脉冲出口（TMR2/DMA 或软脉冲）的累计步数，只增不减。
+    // 用途：它和 motion_steps_emitted_（记账值）分开存在，才能查出“发的比记的多/少”
+    // 这类不对称；现在主要用于校准期间的“命令脉冲 vs 实发脉冲”对账。
+    volatile uint32_t step_pulses_emitted_ = 0U;
     // 刚交给 TMR2/DMA、还没到下一拍确认的步数（下一个 rampUpdate 才并入 delivered）
     volatile int64_t motion_dma_pending_signed = 0;
     volatile uint32_t motion_dma_pending_steps_;

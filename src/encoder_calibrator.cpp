@@ -166,6 +166,10 @@ void EncoderCalibrator::start()
     fb_max_abs_d_ = 0;
     fb_max_abs_index_ = 0U;
     fb_pairs_ = 0U;
+    // 脉冲对账基线：记下当前实发累计值（含归零前所有历史脉冲，取差即可）
+    pulse_counter_base_ = c.step_pulses_emitted_;
+    commanded_pulses_ = 0U;
+    commanded_segments_ = 0U;
     const uint32_t spr_now = c.getStepsPerRound();
     if ((spr_now % CALIBRATION_TABLE_SIZE) != 0U)
     {
@@ -202,6 +206,23 @@ void EncoderCalibrator::finish(bool save_table)
     bool saved = false;
     // 先把正/反向差值的分布报出来，再判表能不能用（两行都是诊断，不影响判定）
     reportForwardBackward();
+    // 命令脉冲 vs 实发脉冲对账：
+    //   diff ≈ 0            -> 脉冲数没问题，+3.0% 是转子在每段停止时被负载拽走的
+    //                          机械爬行（方向无关、逐段累积）-> 治“段间松手”，不是改代码
+    //   diff ≈ +390 微步    -> 真的多发了脉冲，出在发射/记账路径（例如 remaining_steps
+    //                          只钳 num_steps、却不钳记账值这类不对称）-> 纯软件 bug
+    {
+        const uint32_t emitted = c.step_pulses_emitted_ - pulse_counter_base_;
+        const int32_t diff = static_cast<int32_t>(emitted) - static_cast<int32_t>(commanded_pulses_);
+        const double per_segment = (commanded_segments_ > 0U)
+            ? static_cast<double>(diff) / static_cast<double>(commanded_segments_) : 0.0;
+        printf("[CAL] pulses: commanded=%lu emitted=%lu diff=%ld segments=%u per_seg=%+.3f\r\n",
+               static_cast<unsigned long>(commanded_pulses_),
+               static_cast<unsigned long>(emitted),
+               static_cast<long>(diff),
+               static_cast<unsigned>(commanded_segments_),
+               per_segment);
+    }
     // 【先校验再保存】表不可信就不写 Flash。这次一个坏点就能把整段角度搞乱，
     // 而建完表原本一道检查都没有，问题才能藏这么久。
     if (save_table && !tablePlausible())
@@ -268,6 +289,12 @@ bool EncoderCalibrator::startMove(uint16_t index)
     // 拉到 600000 RPM/s -> decel = 0.64 取整 0 -> steps_to_decel_ = 0 -> 全程 CRUISE。
     c.motion_accel_rpm_s_ = 600000.0f;
     c.motion_pulse_count_ = steps;
+    // 命令量累计（两趟都计）：与 step_pulses_emitted_ 的增量对账用
+    commanded_pulses_ += steps;
+    if (commanded_segments_ < 0xFFFFU)
+    {
+        commanded_segments_++;
+    }
     // 每段移动前清零等待计数器，让 SAMPLING 阶段先停 50ms 再采样
     home_wait_ticks_ = 0U;
     // 反向趟用 POSITION_REVERSE（startMotion 会据此把 motion_direction_ 设成 -1）

@@ -87,6 +87,16 @@ private:
     int32_t fb_max_abs_d_ = 0;  // 最大的 |d|（带符号）
     uint16_t fb_max_abs_index_ = 0U;
     uint16_t fb_pairs_ = 0U;    // 参与统计的节点对数
+
+    // ===== 命令脉冲 vs 实发脉冲对账 =====
+    // 整圈推进多出 +3.0%（实测相去约 390 微步）。补偿环已经实验排除、
+    // “方向相关的逐段超差”也被 d(i) 斜率排除，剩下的分歧只可能是：
+    // 要么真的多发了脉冲，要么脉冲数对但转子被负载拽着逐段爬。
+    // 实发计数在 controller->step_pulses_emitted_（只统计交给脉冲出口的步数），
+    // 这里只记初值与命令量，finish() 里一行带出结果。
+    uint32_t pulse_counter_base_ = 0U;   // start() 时的实发脉冲累计值
+    uint32_t commanded_pulses_ = 0U;     // 本场校准命令过的脉冲总数（两趟合计）
+    uint16_t commanded_segments_ = 0U;   // 段数
     bool write_prev_valid_ = false;
     uint16_t write_prev_value_ = 0U;
     uint16_t write_at_first_ = 0U;    // index 0 写进去的值
