@@ -201,10 +201,18 @@ bool AngleEncoder::createFastCal(bool yield_between_pages)
 		m_fastCalValid = false;
 		return false;
 	}
-	// 归一化：把整圈推进摊成正好 65536，最后一格必定正好收尾、不留未定义项
+	// 归一化：把节点区间按同一比例摊到整个 65536 raw 轴上。
+	// 【分母不能直接用 cum】cum 是“节点0 → 节点nodeCount-1”的推进量，只对应
+	// nodeCount-1 个区间（最后还差一个区间才能回到起点）。若按 cum 归一，
+	// qBound[nodeCount-1] 就等于 65536，最后一个节点区间宽度被压成 0，
+	// 而“真角 0° 下方那块 raw”（即 rawBase 前一个区间）没有自己的映射，
+	// 只能由前一段用过宽的斜率代劳 —— 出错位置正好在 0° 附近。
+	// 按“nodeCount 个区间”归一，则 qBound[nodeCount-1] = 65536×(N-1)/N，
+	// 最后一段 [qBound[N-1], 65536) 承担最后 1 格的 256 LSB 角度，逐 raw 速率≈ 1。
+	const int64_t normDen = (static_cast<int64_t>(cum) * nodeCount) / (nodeCount - 1);
 	for (int32_t i = 0; i < nodeCount; ++i)
 	{
-		qBound[i] = static_cast<int32_t>((static_cast<int64_t>(qBound[i]) * rawSpan) / cum);
+		qBound[i] = static_cast<int32_t>((static_cast<int64_t>(qBound[i]) * rawSpan) / normDen);
 	}
 	qBound[nodeCount] = rawSpan;
 
@@ -221,7 +229,10 @@ bool AngleEncoder::createFastCal(bool yield_between_pages)
 			{
 				q += rawSpan;
 			}
-			while (seg + 1 < nodeCount && q >= qBound[seg + 1])
+			// 段号范围 0..nodeCount-1；qBound[nodeCount] = 65536 而 q < 65536，
+			// 所以游标不会越出数组。写成 seg + 1 < nodeCount 也能工作（最后一段
+			// 区间本就不会被选中），但用 seg < nodeCount 与数组边界更一致。
+			while (seg < nodeCount && q >= qBound[seg + 1])
 			{
 				++seg;
 			}
@@ -258,6 +269,49 @@ bool AngleEncoder::createFastCal(bool yield_between_pages)
 		paintRange(rawBase, rawSpan);
 	}
 	if (write_failed)
+	{
+		m_fastCalValid = false;
+		return false;
+	}
+
+	// ---- 自检：快表必须逐 raw 连续 ----
+	// 归一化之后“角度推进 / raw 推进”接近 1:1，节点局部的斜率起伏也只有百分之几，
+	// 所以相邻 raw 差超过 ±8 LSB 就一定是建表逻辑错了（而非物理非线性）。
+	// 宁可不保存（[CALIBRATION] finished saved=0），也不能把带悬崖的表当成有效表用出去：
+	// 本次这个 off-by-one 和上一个提交的“下标用成扫描量”、以及主表里那个接缝坏点，
+	// 都会在这里被直接拦下，而不是靠人去猜现象。
+	uint16_t prevValue = m_nvmFastCal->angle[0U];
+	for (uint32_t rawPos = 1U; rawPos < 65536U; ++rawPos)
+	{
+		const uint16_t curValue = m_nvmFastCal->angle[rawPos];
+		int32_t step = static_cast<int32_t>(curValue) - static_cast<int32_t>(prevValue);
+		if (step > 32768)
+		{
+			step -= 65536;
+		}
+		else if (step < -32768)
+		{
+			step += 65536;
+		}
+		if (step > 8 || step < -8)
+		{
+			m_fastCalValid = false;
+			return false;
+		}
+		prevValue = curValue;
+	}
+	// 环形接缝（raw 65535 → 0）也要查；悬崖最容易就出现在这里
+	int32_t seamStep = static_cast<int32_t>(m_nvmFastCal->angle[0U]) -
+	                   static_cast<int32_t>(prevValue);
+	if (seamStep > 32768)
+	{
+		seamStep -= 65536;
+	}
+	else if (seamStep < -32768)
+	{
+		seamStep += 65536;
+	}
+	if (seamStep > 8 || seamStep < -8)
 	{
 		m_fastCalValid = false;
 		return false;
