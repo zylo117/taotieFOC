@@ -575,10 +575,16 @@ void Kth7823Encoder::checkJumpLatch(uint16_t out_raw, uint16_t in_corrected,
             jump += 65536;
         }
         const int32_t abs_jump = (jump < 0) ? -jump : jump;
-        if (abs_jump > kJumpLatchLsb || abs_spread > kTableSpreadLsb)
+        // 【只用输出跳变触发；spread 仅作为现场记录，不再单独触发】
+        // 上一版把 |raw - corrected| > 512 LSB (2.8°) 也当独立触发条件，但实测那张
+        // 校准表的**正当**修正量本来就有 4~7°（漂移曲线：整圈上升 ~4.5° 叠加
+        // 180° 周期波纹）—— 阈值比表的正当修正量还小，于是 rsn=2 常态化误报，
+        // 把真正的 rsn=1 淹掉了。表质量该由建表时的 [CAL] 两道检查负责；
+        // 这里只报“相邻拍真的跳了”，spread 仍写入快照，供跳变发生时分区用。
+        if (abs_jump > kJumpLatchLsb)
         {
-            // 1 = 输出跳变越线；2 = 表把值改飞（或两者同时，取跳变优先）。
-            const uint16_t reason = (abs_jump > kJumpLatchLsb) ? 1U : 2U;
+            // 1 = 只是跳变；2 = 跳变同时表在该点改了 >2.8°（局部残差，值得怀疑）。
+            const uint16_t reason = (abs_spread > kTableSpreadLsb) ? 2U : 1U;
             // 计数必须是“真实发生次数”：不管旧快照有没有被取走都要加，
             // 否则事件密集时会漏计，就估不出发生频率了。
             jump_events_++;
