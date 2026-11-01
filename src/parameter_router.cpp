@@ -104,6 +104,14 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
     {
         printf("[CALIBRATION] write rejected while calibrating (open-loop only): reg=0x%03lX value=%lu\r\n",
                static_cast<unsigned long>(reg), static_cast<unsigned long>(value));
+        // 被挡掉的写入不能让前端“以为成功了”：立即把固件里的真值回灌一次。
+        // rx.js 会用 0x0107 的回报帧把“闭环使能”勾选框弹回真实状态；
+        // 其他几个被挡的寄存器没有对应控件状态要同步，不必回灌。
+        if (reg == TMC2209_EXT_PARAM_CLOSED_LOOP_ENABLE && owner_.protocol_ != nullptr)
+        {
+            owner_.protocol_->setCustomParameter(reg,
+                owner_.closed_loop_compensation_enabled_ ? 1U : 0U);
+        }
         return true;   // 照常回 ACK，但不让控制结构在校准中途被改掉
     }
     if (reg == TMC2209_EXT_PARAM_CLOSED_LOOP_ENABLE)

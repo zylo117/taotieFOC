@@ -276,9 +276,26 @@ void EncoderCalibrator::finish(bool save_table)
     c.motion_mode_ = c.calibration_saved_motion_mode_;
     c.step_pulse_width_ns_ = c.calibration_saved_pulse_width_ns_;
 
-    // 【不恢复补偿开关】校准是开环操作；恢复成校准前的 true 会造成
-    // “界面已取消勾选、固件里补偿却开着”的不一致。由上位机下次启动显式下发 0x107。
-    c.closed_loop_compensation_enabled_ = false;
+    // 【恢复校准前的补偿开关原状】这里是“恢复”，不是“打开”：
+    // 校准前关着就仍然关着，绝不在用户没要求的时候把闭环弄成开的。
+    // 之所以现在可以安全恢复：校准期间 parameter_router 已经硬挡了 0x107 的写入，
+    // 所以备份值就等于上位机此刻的意图 —— 以前“不恢复”的理由（会造成
+    // “界面已取消勾选、固件里补偿却开着”的不一致）已经不存在了。
+    c.closed_loop_compensation_enabled_ = c.calibration_saved_compensation_enabled_;
+    // 校准全程开环，PID 积分/微分里留的是校准前的陈旧状态；恢复补偿前一律清零，
+    // 与 0x107 写入口的处理保持一致（模式切换必须清积分，这是本项目反复踩过的坑）。
+    c.position_pid_.resetIntegral();
+    c.position_pid_.resetDeriv();
+    c.velocity_pid_.resetIntegral();
+    c.velocity_pid_.resetDeriv();
+    printf("[CAL] compensation restored=%u\r\n", c.closed_loop_compensation_enabled_ ? 1U : 0U);
+    // 把固件里的真实状态回灌给上位机：rx.js 会用 0x0107 的回报帧同步“闭环使能”勾选框，
+    // 所以即使校准期间用户点过勾选框（被固件挡掉），界面也会立即弹回真值。
+    if (c.protocol_ != nullptr)
+    {
+        c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_CLOSED_LOOP_ENABLE,
+                                        c.closed_loop_compensation_enabled_ ? 1U : 0U);
+    }
 
     c.calibration_stage_ = ClosedLoopController::CALIBRATION_IDLE;
     printf("[CALIBRATION] finished saved=%u\r\n", saved ? 1U : 0U);
