@@ -140,6 +140,15 @@ void EncoderCalibrator::start()
     c.calibration_saved_pulse_width_ns_ = c.step_pulse_width_ns_;
     c.calibration_saved_motion_mode_ = c.motion_mode_;
     c.calibration_saved_compensation_enabled_ = c.closed_loop_compensation_enabled_;
+    // 【校准期间必须关掉闭环补偿】校准是开环扫齿位：每一段的“真角”完全由脉冲数定义。
+    // 而 emitSteps 实际发的脉冲来自**补偿累加器**，段结束判据却用**原始累加器**的
+    // motion_steps_emitted_ 记账；只要补偿开着，PID 就会按一个被急停搞乱的 follow_error
+    // 往每段里掺额外脉冲（实测每段约 1.5 微步），且它带着 motion_direction_ 符号——
+    // 正/反两趟同向，双程平均抵不掉，全部体现在整圈推进上（+3.0%）。
+    // 这也解释了为何“连续走一整圈”分毫不差：那是一段长运动，没有 255 次掺脉冲的边界。
+    // 旧代码只在 finish() 里强制置 false，开始的时候没关 —— 这是漏洞。
+    c.closed_loop_compensation_enabled_ = false;
+    c.compensated_rps_ = 0.0f;
     // 校准专用状态（本类持有）。注意：和原实现一样不重置 home_wait_ticks_，
     // HOMING 的超时计数会带上一次残留（最多 1000 拍 = 50ms），行为保持一致。
     // 校验状态归零；顺带报一下“每段能不能整除”
