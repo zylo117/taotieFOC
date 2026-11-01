@@ -417,8 +417,27 @@ void EncoderCalibrator::update(uint16_t raw)
     // 反向趟：与正向采样取平均后写表
     {
         const uint16_t forward_raw = (index_ < kPoints) ? forward_raw_[index_] : mean_raw;
+        // 【必须做环形平均，不能直接相加除以 2】raw 是 0~65535 的环绕角度：
+        // 正向读 65530、反向读 26 时，(65530 + 26) / 2 = 32778 —— 得到一个“半圈外”的数，
+        // 而正确答案是 10。表里凡是两趟跨过 0/65536 的那个索引都会中招（一圈只有一个，
+        // 实测那张表是 index 1005）。
+        // 级联后果：这个坏点恰好逃过 reverseLookup 的 CALIBRATION_WRAP(32768) 接缝判据
+        //（|65474 - 32778| = 32696 < 32768，只差 72），于是被当成正常的相邻两点参与插值，
+        // 把 180° 宽的 raw 区间压进 64 LSB（0.35°）的真实角区间 —— 这才是 0° 附近
+        // 出现 6~7° 假误差的根源（与使能、与 PID、与电气干扰都无关）。
+        // 注：同一个点内部的 202 个样本已经用了展开（见上面的 sample_anchor_），
+        // takeRawAverage() 也是环形平均；只有“两趟之间”这一步漏了。
+        int32_t pass_delta = static_cast<int32_t>(mean_raw) - static_cast<int32_t>(forward_raw);
+        while (pass_delta > 32768)
+        {
+            pass_delta -= 65536;
+        }
+        while (pass_delta < -32768)
+        {
+            pass_delta += 65536;
+        }
         const uint16_t averaged = static_cast<uint16_t>(
-            (static_cast<uint32_t>(forward_raw) + static_cast<uint32_t>(mean_raw)) / 2U);
+            (static_cast<int32_t>(forward_raw) + pass_delta / 2) & 0xFFFF);
         c.encoder_->feedCalibrationSample(index_, averaged);
     }
     if (index_ == 0U)
