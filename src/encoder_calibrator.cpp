@@ -542,6 +542,9 @@ bool EncoderCalibrator::tablePlausible() const
     const int32_t expect = static_cast<int32_t>(CALIBRATION_TABLE_SIZE - 1U) * kIdealStep;
 
     int32_t closure = static_cast<int32_t>(write_at_last_) - static_cast<int32_t>(write_at_first_) - expect;
+    // 未折叠的实际推进量（只用于打印）：折叠后的值有 ±65536 歧义（差几圈看不出来），
+    // 把端点与未折叠差值一起打出来就能直接反推“实际/命令”的比例。
+    const int32_t advance_lsb = static_cast<int32_t>(write_at_last_) - static_cast<int32_t>(write_at_first_);
     // 必须用 while 折返：跨接缝时这个值可能是 -129676 这种两圈外的数。
     while (closure > 32768)
     {
@@ -554,6 +557,11 @@ bool EncoderCalibrator::tablePlausible() const
     const int32_t abs_closure = (closure < 0) ? -closure : closure;
     const double lsb_deg = 360.0 / 65536.0;
 
+    printf("[CAL] v0=%u v_last=%u advance=%ld LSB expect=%ld\r\n",
+           static_cast<unsigned>(write_at_first_),
+           static_cast<unsigned>(write_at_last_),
+           static_cast<long>(advance_lsb),
+           static_cast<long>(expect));
     printf("[CAL] closure=%+.3fdeg (%+ld LSB, limit %.1fdeg)  steps/round=%lu\r\n",
            static_cast<double>(closure) * lsb_deg,
            static_cast<long>(closure),
@@ -581,10 +589,10 @@ bool EncoderCalibrator::tablePlausible() const
     }
     if (abs_closure > kClosureToleranceLsb)
     {
-        printf("[CAL] WARN: closure %.3fdeg exceeds %.1fdeg limit —— 命令进给与实际不等（系统性），"
-               "表仍会保存；这通常意味着校准运动本身有问题（起停过冲/丢步）\r\n",
-               static_cast<double>(closure) * lsb_deg,
-               static_cast<double>(kClosureToleranceLsb) * lsb_deg);
+        // 【日志统一用 ASCII】这一行原本写了中文，115200 下发出去是乱码，
+        // 反而拖累了判读（注释用中文、运行串用 ASCII）。英文版本同样说清因果。
+        printf("[CAL] WARN: actual travel != commanded (systematic). Table still saved. "
+               "Check: microsteps setting vs driver real MRES, and step loss during start/stop.\r\n");
     }
     return true;
 }
