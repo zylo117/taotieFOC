@@ -2,6 +2,7 @@
 #define ENCODER_CALIBRATOR_H
 
 #include <stdint.h>
+#include "angle_encoder.h"   // 需要 CALIBRATION_TABLE_SIZE / CALIBRATION_STEPS
 
 class ClosedLoopController;
 
@@ -13,14 +14,14 @@ class ClosedLoopController;
 //
 // 流程：
 //   HOMING   角度模式把转子拉到 0 度，等编码器读数稳定 100 拍
-//   MOVING   每段走 steps_per_round/CALIBRATION_TABLE_SIZE 步
+//   MOVING   每段走 steps_per_round/CALIBRATION_TABLE_SIZE 步（256 点、12800 细分下整 50 微步）
 //   SAMPLING 停 50ms 等负载角稳定，再采 202 个样本去极值平均
 //   正向趟只存不写表；反过来反向趟把两趟平均后写入
 //
 // 【为什么要正反转平均】负载角让转子正转时落后、反转时超前，
 // 同一个机械位置两趟的编码器读数会一低一高，平均后正好把这块系统偏差
-// 抵消（实测 1200RPM 时约 1.5 度）。代价是 2KB 临时数组（1024 点 × uint16）
-// 与一倍时间；边界点 1023 没有反向采样值，直接用正向值写表。
+// 抵消（实测 1200RPM 时约 1.5 度）。代价是临时数组（点数 × uint16，256 点仅 512 字节）
+// 与一倍时间；边界点（最后一个 index）没有反向采样值，直接用正向值写表。
 // ===========================================================================
 class EncoderCalibrator
 {
@@ -60,12 +61,12 @@ private:
     static constexpr uint32_t kMaxAttempts = 2000U;      // 取不满样本则判失败
 
     // ===== 表的完整性校验（不是“兼容性堆砌”，而是让“校准做坏了”不可能静默通过）=====
-    // 每格应推进 65536/1024 = 64 LSB；单点噪声就有 ±2 LSB，INL 与负载角残差
-    // 也在十几 LSB 量级，所以步进偏差给 4 倍空间（256 LSB = 1.4°）。
-    // 闭合偏差（整圈累加）则是硬错：命令 1023 段就是 1023×12.5 微步，
-    // 传感器应推进 1023×64 = 65472 LSB；实测那张表多推了 1393 LSB（+7.65°），
-    // 所以阀值取 1°（182 LSB）—— 既远小于实测坏值，又容得下正常残余。
-    static constexpr int32_t kStepToleranceLsb = 256;
+    // 每格应推进 CALIBRATION_STEPS/CALIBRATION_TABLE_SIZE（256 点时 = 256 LSB）；
+    // 单点噪声就有几 LSB，INL 与负载角残差也在十几 LSB 量级，
+    // 所以步进偏差给 4 倍理想格宽的空间（按点数自动缩放，改点数不用改阈值）。
+    static constexpr int32_t kIdealStep =
+        static_cast<int32_t>(CALIBRATION_STEPS / CALIBRATION_TABLE_SIZE);
+    static constexpr int32_t kStepToleranceLsb = 4 * kIdealStep;
     static constexpr int32_t kClosureToleranceLsb = 182;
 
     // 记录每一次写表：检查与上一格的步进是否接近 64，并存下首尾两格算闭合
@@ -88,8 +89,8 @@ private:
     // 因此本类只持有校准专用、外部不会碰的状态（下面这些）。
     volatile uint16_t index_ = 0U;
 
-    // 正向趟的采样值（反向趟取平均时用）。2KB：1024 点 x uint16。
-    static constexpr uint16_t kPoints = 1024U;
+    // 正向趟的采样值（反向趟取平均时用）。长度必须与主表一致，直接派生自宏。
+    static constexpr uint16_t kPoints = CALIBRATION_TABLE_SIZE;
     uint16_t forward_raw_[kPoints] = {};
     bool backward_pass_ = false;
 

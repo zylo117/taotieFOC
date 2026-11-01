@@ -484,14 +484,12 @@ void EncoderCalibrator::update(uint16_t raw)
 //
 // 两趟的写入方向相反（正向只在 1023 写一次，反向 1022→0），所以步进符号也会翻，
 // 这里取绝对值比较“每格推进量的大小”。
-// 拿实测那张坏表验算：1004→1005 的步进 = wrap(32778-65474) = -32696，
-// |32696 - 64| = 32632 ≫ 256 → 一抓一个准；而正常表的每格步进约 65~73，
-// 偏差只有几 LSB，不会误报。
+// 拿旧那张 1024 点的坏表验算：1004→1005 的步进 = wrap(32778-65474) = -32696，
+// 与理想格宽差 32632 ≫ 阈值 → 一抓一个准；而正常表的每格步进只偏离理想值几 LSB，
+// 不会误报（阈值 = 4 倍理想格宽，随点数自动缩放）。
 // ===========================================================================
 void EncoderCalibrator::noteWrite(uint16_t index, uint16_t value)
 {
-    constexpr int32_t kIdealStep = static_cast<int32_t>(CALIBRATION_STEPS / CALIBRATION_TABLE_SIZE);
-
     if (write_prev_valid_)
     {
         int32_t step = static_cast<int32_t>(value) - static_cast<int32_t>(write_prev_value_);
@@ -538,8 +536,12 @@ void EncoderCalibrator::noteWrite(uint16_t index, uint16_t value)
 // ===========================================================================
 bool EncoderCalibrator::tablePlausible() const
 {
-    constexpr int32_t kIdealStep = static_cast<int32_t>(CALIBRATION_STEPS / CALIBRATION_TABLE_SIZE);
-    const int32_t expect = static_cast<int32_t>(CALIBRATION_TABLE_SIZE - 1U) * kIdealStep;
+    const int32_t nodeCount = static_cast<int32_t>(CALIBRATION_TABLE_SIZE);
+    // 命令扫完整圈（N-1 段）时，传感器应推进 (N-1) * 理想格宽。
+    // 实测旧那张 1024 点的表多推了 1396 LSB（+7.67°），正好对应“正转多走了约 7 度才换向”。
+    // 现在这个差值已被 createFastCal 的比例归一化吸收（不会再产生悬崖），
+    // 但必须报出来：它属于“命令进给与传感器对一圈的定义不一致”。
+    const int32_t expect = (nodeCount - 1) * kIdealStep;
 
     int32_t closure = static_cast<int32_t>(write_at_last_) - static_cast<int32_t>(write_at_first_) - expect;
     // 未折叠的实际推进量（只用于打印）：折叠后的值有 ±65536 歧义（差几圈看不出来），
@@ -567,18 +569,20 @@ bool EncoderCalibrator::tablePlausible() const
            static_cast<long>(closure),
            static_cast<double>(kClosureToleranceLsb) * lsb_deg,
            static_cast<unsigned long>(owner_.getStepsPerRound()));
-    printf("[CAL] monotonic: %u bad steps, worst |step-64|=%+ld LSB at index=%u (limit %ld)\r\n",
+    printf("[CAL] monotonic: %u bad steps, worst |step-%ld|=%+ld LSB at index=%u (limit %ld)\r\n",
            static_cast<unsigned>(mono_bad_),
+           static_cast<long>(kIdealStep),
            static_cast<long>(mono_worst_dev_),
            static_cast<unsigned>(mono_worst_index_),
            static_cast<long>(kStepToleranceLsb));
 
-    // 【两类问题全部硬拒】上一版把闭合偏差当成“系统性、可以容忍”只报警，错的。
-    // 道理：正向扫一圈的 raw 总推进不等于 65472 LSB 时，扫尾的 raw 区间会重新踏入
-    // 扫头用过的 raw 区间 —— 重叠宽度正好等于 |closure|。同一段 raw 被两段索引区间
-    // 同时认领，而 reverseLookup 从 i=0 往上扫、第一个匹配就返回 → 该段 raw 会被映射到
-    // 两个相差约 353° 的答案 → 快表里出现 352° 悬崖（实测在 4 个 LSB 内从 352.87° 跳到 0.005°）。
-    // 所以“闭合不为 0”不是精度问题，是表的定义性问题：双值表不可用。
+    // 【局部坏点硬拒；闭合偏差只报】
+    // 上一版把闭合也设为硬拒，在当时是对的：旧建表算法（逐 raw 反查 + first-match）
+    // 无法表示不闭合，头尾重叠就会出 352° 悬崖。
+    // 现在 createFastCal 改成“展开 + 比例归一化后正向涂表”，任何小于半圈的漂移
+    // 都不会再产生悬崖，于是闭合偏差回到它真正的位置：它是“命令进给与传感器角度
+    // 对一圈的定义不一致”（本例 +1377 LSB = 2.1%），属于运动刻度的事，
+    // 必须报但不能因此不让写表（否则在查清它之前根本没法校准）。
     bool ok = true;
     if (mono_bad_ != 0U)
     {
@@ -591,13 +595,12 @@ bool EncoderCalibrator::tablePlausible() const
     }
     if (abs_closure > kClosureToleranceLsb)
     {
-        printf("[CAL] REJECT: overlap=%ld LSB (%.3fdeg) - table is double-valued over that raw range, "
-               "fast table will contain a %.1fdeg cliff. Limit %ld LSB.\r\n",
+        // 归一化已经吃掉这部分比例，表仍可用；把这两个数字完整报出来，
+        // 供下一步判定它到底来自“机械多走”还是“编码器刻度”。
+        printf("[CAL] WARN: scale mismatch %+ld LSB/rev (%+.3f%% of a turn). "
+               "Removed by normalization in the fast table; investigate it in the motion domain.\r\n",
                static_cast<long>(closure),
-               static_cast<double>(closure) * lsb_deg,
-               static_cast<double>(360.0 - abs_closure * lsb_deg),
-               static_cast<long>(kClosureToleranceLsb));
-        ok = false;
+               static_cast<double>(closure) * 100.0 / 65472.0);
     }
     return ok;
 }

@@ -15,7 +15,14 @@ extern "C" {
 #endif
 
 //==================== 校准参数（对齐原版MKS‑SERVO42B，适配16bit）====================
-#define	CALIBRATION_TABLE_SIZE		    (1024U)
+// 【点数必须能整除每圈微步数】12800 微步/圈（200 整步 × 64 细分）：
+//   1024 点 -> 每段 12.5 微步，段长在 12/13 之间交替（不累积错位，但不完全等长）；
+//   256 点 -> 每段正好 50 微步，无取整。
+// 改成 256 的另外两个附带收益：主表 4KB->1KB、正向涂表缓存 2KB->0.5KB，
+// 以及校准时长从约 3.3 分钟降到约 50 秒。
+// 代价：节点间隔从 0.352° 变成 1.406°，节点之间靠线性插值，
+// 高阶 INL 的补偿精度会下降。要改回来只改这一行（其余地方全部从本宏派生）。
+#define	CALIBRATION_TABLE_SIZE		    (256U)
 #define CALIBRATION_WRAP 			    ((int32_t)32768)
 #define CALIBRATION_STEPS 			    ((uint32_t)65536U)
 #define ANGLE_WRAP 					    ((int32_t)32768)
@@ -132,7 +139,7 @@ struct EncoderFilterConfig
 
 /**
  * @brief AngleEncoder基类：内置完整原版MKS‑SERVO42B非线性校准算法
- *  1. RAM稀疏表CalData[1024]
+ *  1. RAM稀疏表CalData[CALIBRATION_TABLE_SIZE]
  *  2. Flash主表FlashCalData_t
  *  3. Flash FastCal稠密表65536点 + checksum校验
  *  4. fastReverseLookup优先O(1)，校验失败自动回退reverseLookup慢速遍历

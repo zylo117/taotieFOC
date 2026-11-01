@@ -223,15 +223,25 @@
             }
         }
 
+        // 【必须与固件一致】angle_encoder.h 的 CALIBRATION_TABLE_SIZE。
+        // 项数改了不改这里，主表导出会错位或读到空页：页数、期望对数、数组长度全部由这两个常量派生。
+        const CALIBRATION_MAIN_TABLE_ITEMS = 256;
+        const CALIBRATION_MAIN_PAGE_PAIRS = 128;   // 一页 = 128 对 = 256 项
+        const CALIBRATION_MAIN_PAGE_ITEMS = CALIBRATION_MAIN_PAGE_PAIRS * 2;
+
         async function requestCalibrationTableDump(kind, pageIndex = null) {
             const type = kind === 'main' ? 0 : (kind === 'fast' ? 1 : (kind === 'checksum' ? 2 : 3));
-            const pageNumber = pageIndex === null ? 0 : clamp(Math.max(0, Math.round(Number(pageIndex))), 0, kind === 'main' ? 3 : 255);
+            const mainLastPage = Math.max(0, Math.ceil(CALIBRATION_MAIN_TABLE_ITEMS / CALIBRATION_MAIN_PAGE_ITEMS) - 1);
+            const pageNumber = pageIndex === null ? 0 : clamp(Math.max(0, Math.round(Number(pageIndex))), 0, kind === 'main' ? mainLastPage : 255);
+            const mainPageItems = Math.min(CALIBRATION_MAIN_PAGE_ITEMS,
+                                           CALIBRATION_MAIN_TABLE_ITEMS - pageNumber * CALIBRATION_MAIN_PAGE_ITEMS);
             state.calibrationDumpKind = kind;
             state.calibrationDumpPageOffset = pageNumber * 128;
-            state.calibrationDumpExpectedPairs = kind === 'main' ? ((pageNumber === 0) ? 512 : 128) : 128;
+            state.calibrationDumpExpectedPairs = kind === 'main'
+                ? Math.max(0, Math.ceil(mainPageItems / 2)) : 128;
             state.calibrationDumpReceivedPairs = 0;
             if (kind === 'main') {
-                state.calibrationMainTable = new Uint16Array(1024);
+                state.calibrationMainTable = new Uint16Array(CALIBRATION_MAIN_TABLE_ITEMS);
             }
             if (kind === 'fast') {
                 if (!state.calibrationFastTable) state.calibrationFastTable = new Uint16Array(65536);
@@ -240,7 +250,10 @@
                 document.getElementById('calibrationTableStatus').textContent = '正在读取校验码';
                 document.getElementById('calibrationTableProgress').max = 1;
             } else if (kind === 'main') {
-                document.getElementById('calibrationTableStatus').textContent = pageNumber === 0 ? '正在读取主表：0/1024' : `正在读取主表第 ${pageNumber + 1} 页：0/256`;
+                document.getElementById('calibrationTableStatus').textContent =
+                    mainLastPage === 0
+                        ? `正在读取主表：0/${CALIBRATION_MAIN_TABLE_ITEMS}`
+                        : `正在读取主表第 ${pageNumber + 1} 页：0/${mainPageItems}`;
             } else {
                 document.getElementById('calibrationTableStatus').textContent = `正在读取快速表第 ${pageNumber + 1} 页：0/256`;
             }
