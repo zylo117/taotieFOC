@@ -97,6 +97,30 @@ private:
     uint32_t pulse_counter_base_ = 0U;   // start() 时的实发脉冲累计值
     uint32_t commanded_pulses_ = 0U;     // 本场校准命令过的脉冲总数（两趟合计）
     uint16_t commanded_segments_ = 0U;   // 段数
+
+    // ===== 逐段对账：把“每段多发 1.4”摊开成分布 =====
+    // 总量只能告诉我们“多发了”，分布才能分清成因：
+    //   几乎每段都 +1/+2   -> 发射本身在系统性多发（窗口铺满擦边、guard 泄入下一窗等）
+    //   少数段 +6、+7      -> 个别段被卡住/重发，要看那些段落在哪些节点（尤其是绕回点）
+    //   出现负值          -> 有段没走完就被下一个 startMove 抢走（remaining 钳位不对称）
+    // 段的“结束时刻”定在**下一个** startMove 入口：上一段之后还有 1600 拍的静止采样，
+    // 那一窗的脉冲肯定已全部发完，所以此时取差是可信的。
+    void closeSegment();
+    void reportSegments() const;
+    bool seg_active_ = false;
+    uint32_t seg_pulse_base_ = 0U;    // 本段开始时的 step_pulses_emitted_
+    uint32_t seg_commanded_ = 0U;     // 本段命令的步数
+    uint32_t seg_ticks_ = 0U;         // 本段花了多少个控制拍（发射窗数的上界）
+    uint64_t seg_ticks_total_ = 0ULL;
+    uint32_t seg_index_ = 0U;         // 已经关闭了几段
+    int32_t seg_diff_min_ = 0;
+    int32_t seg_diff_max_ = 0;
+    uint32_t seg_diff_max_at_ = 0U;   // 最大超差发生在第几段
+    uint32_t seg_over_ = 0U;          // diff > 0 的段数
+    uint32_t seg_under_ = 0U;         // diff < 0 的段数
+    uint32_t seg_diff_sum_ = 0U;      // 正超差的总和（算平均用）
+    // 直方图桶：≤-2 / -1 / 0 / +1 / +2 / +3..5 / ≥+6
+    uint32_t seg_hist_[7] = {};
     bool write_prev_valid_ = false;
     uint16_t write_prev_value_ = 0U;
     uint16_t write_at_first_ = 0U;    // index 0 写进去的值

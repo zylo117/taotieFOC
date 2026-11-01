@@ -170,6 +170,23 @@ void EncoderCalibrator::start()
     pulse_counter_base_ = c.step_pulses_emitted_;
     commanded_pulses_ = 0U;
     commanded_segments_ = 0U;
+    // 逐段对账归零（显式清零，不依赖成员初始化的时机）
+    seg_active_ = false;
+    seg_pulse_base_ = 0U;
+    seg_commanded_ = 0U;
+    seg_ticks_ = 0U;
+    seg_ticks_total_ = 0ULL;
+    seg_index_ = 0U;
+    seg_diff_min_ = 0;
+    seg_diff_max_ = 0;
+    seg_diff_max_at_ = 0U;
+    seg_over_ = 0U;
+    seg_under_ = 0U;
+    seg_diff_sum_ = 0U;
+    for (uint32_t i = 0U; i < 7U; ++i)
+    {
+        seg_hist_[i] = 0U;
+    }
     const uint32_t spr_now = c.getStepsPerRound();
     if ((spr_now % CALIBRATION_TABLE_SIZE) != 0U)
     {
@@ -223,6 +240,9 @@ void EncoderCalibrator::finish(bool save_table)
                static_cast<unsigned>(commanded_segments_),
                per_segment);
     }
+    // 最后一段（反向趟回到 index 0 那一步）在这里结账，然后报分布
+    closeSegment();
+    reportSegments();
     // 【先校验再保存】表不可信就不写 Flash。这次一个坏点就能把整段角度搞乱，
     // 而建完表原本一道检查都没有，问题才能藏这么久。
     if (save_table && !tablePlausible())
@@ -256,6 +276,10 @@ void EncoderCalibrator::finish(bool save_table)
 bool EncoderCalibrator::startMove(uint16_t index)
 {
     ClosedLoopController& c = owner_;
+
+    // 开新段之前先给上一段结账：此时上一段后面已经跑完整个静止+采样过程，
+    // 它那一窗的脉冲肯定已全部发完，取差不会把“还在 DMA 里”的步数算漏。
+    closeSegment();
 
     // 【每 128 点才打一次进度】原来每段都打，带 %f 约 100 字节/段，
     // 1024 段就是 100KB，115200 下约 10 秒纯串口输出。
@@ -311,6 +335,12 @@ bool EncoderCalibrator::startMove(uint16_t index)
         finish(false);
         return false;
     }
+    // 重新装填逐段对账（必须在 startMotion 之后：startMotion 会 stop() 掉残留序列，
+    // 那不会发脉冲，但把基线定在它后面更干净）。
+    seg_pulse_base_ = c.step_pulses_emitted_;
+    seg_commanded_ = steps;
+    seg_ticks_ = 0U;
+    seg_active_ = true;
     return true;
 }
 
@@ -337,6 +367,13 @@ bool EncoderCalibrator::startMove(uint16_t index)
 void EncoderCalibrator::update(uint16_t raw)
 {
     ClosedLoopController& c = owner_;
+
+    // 逐段对账：数一下本段花了多少个控制拍（发射窗数的上界；窗口不够时会有
+    // “本拍不发”的窗，所以这是上界而不是实窗数，足够区分分布了）。
+    if (c.calibration_stage_ == ClosedLoopController::CALIBRATION_MOVING && seg_active_)
+    {
+        seg_ticks_++;
+    }
 
     if (c.calibration_stage_ == ClosedLoopController::CALIBRATION_HOMING)
     {
@@ -722,4 +759,113 @@ bool EncoderCalibrator::tablePlausible() const
                static_cast<double>(closure) * 100.0 / 65472.0);
     }
     return ok;
+}
+
+// ===========================================================================
+// 逐段对账：给刚结束的那一段算 diff = 实发脉冲 - 命令脉冲，并记进分布。
+// 只在任务/中断上下文做十几次算术，不打印（printf 绝不进控制拍）。
+// ===========================================================================
+void EncoderCalibrator::closeSegment()
+{
+    if (!seg_active_)
+    {
+        return;
+    }
+    const uint32_t emitted_now = owner_.step_pulses_emitted_;
+    const int32_t diff = static_cast<int32_t>(emitted_now - seg_pulse_base_)
+                       - static_cast<int32_t>(seg_commanded_);
+
+    if (seg_index_ == 0U)
+    {
+        seg_diff_min_ = diff;
+        seg_diff_max_ = diff;
+    }
+    else
+    {
+        if (diff < seg_diff_min_)
+        {
+            seg_diff_min_ = diff;
+        }
+        if (diff > seg_diff_max_)
+        {
+            seg_diff_max_ = diff;
+            seg_diff_max_at_ = seg_index_;
+        }
+    }
+    if (diff > 0)
+    {
+        seg_over_++;
+        seg_diff_sum_ += static_cast<uint32_t>(diff);
+    }
+    else if (diff < 0)
+    {
+        seg_under_++;
+    }
+
+    // 直方图：≤-2 / -1 / 0 / +1 / +2 / +3..5 / ≥+6
+    uint32_t bucket;
+    if (diff <= -2)
+    {
+        bucket = 0U;
+    }
+    else if (diff == -1)
+    {
+        bucket = 1U;
+    }
+    else if (diff == 0)
+    {
+        bucket = 2U;
+    }
+    else if (diff == 1)
+    {
+        bucket = 3U;
+    }
+    else if (diff == 2)
+    {
+        bucket = 4U;
+    }
+    else if (diff <= 5)
+    {
+        bucket = 5U;
+    }
+    else
+    {
+        bucket = 6U;
+    }
+    seg_hist_[bucket]++;
+
+    seg_ticks_total_ += seg_ticks_;
+    seg_index_++;
+    seg_active_ = false;
+}
+
+// 把分布报成两行（表质量与脉冲对账的判读都在这里）
+void EncoderCalibrator::reportSegments() const
+{
+    if (seg_index_ == 0U)
+    {
+        printf("[CAL] segments: none closed\\r\n");
+        return;
+    }
+    const double n = static_cast<double>(seg_index_);
+    const double avg_ticks = static_cast<double>(seg_ticks_total_) / n;
+    const double avg_over = (seg_over_ > 0U)
+        ? static_cast<double>(seg_diff_sum_) / static_cast<double>(seg_over_) : 0.0;
+    printf("[CAL] seg diff: n=%lu min=%ld max=%ld(max@%lu) over=%lu under=%lu avg_over=%+.2f\r\n",
+           static_cast<unsigned long>(seg_index_),
+           static_cast<long>(seg_diff_min_),
+           static_cast<long>(seg_diff_max_),
+           static_cast<unsigned long>(seg_diff_max_at_),
+           static_cast<unsigned long>(seg_over_),
+           static_cast<unsigned long>(seg_under_),
+           avg_over);
+    printf("[CAL] seg hist: le-2:%lu m1:%lu zero:%lu p1:%lu p2:%lu p3_5:%lu ge6:%lu | ticks/seg=%.1f\r\n",
+           static_cast<unsigned long>(seg_hist_[0]),
+           static_cast<unsigned long>(seg_hist_[1]),
+           static_cast<unsigned long>(seg_hist_[2]),
+           static_cast<unsigned long>(seg_hist_[3]),
+           static_cast<unsigned long>(seg_hist_[4]),
+           static_cast<unsigned long>(seg_hist_[5]),
+           static_cast<unsigned long>(seg_hist_[6]),
+           avg_ticks);
 }
