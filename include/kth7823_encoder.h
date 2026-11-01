@@ -139,9 +139,11 @@ private:
     volatile uint32_t raw_ring_overflow_ = 0U;
 
     // ===== 跳变锁存（见 JumpSnapshot 注释）=====
-    // 门限 366 LSB = 2.0°：静止时实测噪声约 0.15°（27 LSB），相差 13 倍，
-    // 不会把正常抖动误报成事件；而观测到的异常是 4~10°，必然越线。
-    static constexpr int32_t kJumpLatchLsb = 366;
+    // 门限 90 LSB = 0.5°。为什么不是更宽：建表修成单调连续之后，残留的 0° 附近
+    // 异常只有约 -2°（早期那个 7~8° 是双值悬崖，已消除），正好落在旧的 2.0°
+    // 门限以下——一直在跳过不记录，看起来像“没事件”。
+    // 也不能更窄：其它角度上的正常抖动实测最大 0.2°，取 0.5° 给它 2.5 倍余量。
+    static constexpr int32_t kJumpLatchLsb = 90;
     void checkJumpLatch(uint16_t out_raw, uint16_t in_corrected,
                         int32_t delta, int32_t evicted, int32_t span);
     JumpSnapshot jump_;

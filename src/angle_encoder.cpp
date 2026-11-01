@@ -144,129 +144,123 @@ bool AngleEncoder::saveToFlash(bool yield_between_pages)
 bool AngleEncoder::createFastCal(bool yield_between_pages)
 {
 	// ===========================================================================
-	// 正向涂表，取代原来的“逐 raw 反查”
+	// 正向涂表：按 raw 下标把 65536 项一次涂满，取代原来的“逐 raw 调 reverseLookup”
 	//
-	// 原实现：for raw in 0..65535: reverseLookup(raw)。而 reverseLookup 从 index 0
-	// 往上扫配对、第一个匹配就 return。一旦主表的头尾两段认领了同一段 raw
-	//（整圈进给不闭合时必然发生），同一个 raw 就会有两个相差几百度的答案，
-	// 快表里出现悬崖——实测 raw 65463 -> 352.870°、raw 65465 -> 0.005°，
-	// 现象就是“锁在 0 度时角度偶尔跳到 350 多度”。
+	// 原做法的问题：reverseLookup 从 index 0 往上扫配对、第一个匹配就 return。主表一旦
+	// 出现“同一段 raw 被两段索引区间同时认领”（整圈进给不闭合时必然发生），同一个 raw
+	// 就有两个相差几百度的答案，谁先被扫到谁说了算 —— 快表里就此出现悬崖。实测
+	// raw 65463 -> 352.870°、raw 65465 -> 0.005°（4 个 LSB 内跳 352°），表现就是
+	// “锁在 0 度附近时角度偶发跳到 358/352 度” —— 与电流、PID、机构、传感器无关。
 	//
-	// 新做法：把主表展开成单调序列，按 raw 升序一次性涂满 65536 项：
-	//   1) 逐格取环绕步长累加得到总推进 span；
-	//   2) 用 65536/span 归一化 raw 轴 —— 一圈对不齐的“比例”部分本质上不可能用
-	//      65536 项周期表表示（头尾必然重叠），先把这部分比例摊掉，表只留真正的非线性残差；
-	//      比例误差由 EncoderCalibrator 的 [CAL] closure 单独报出，归属运动刻度；
-	//   3) 每个 raw 只会被一个区间写到，构造上就不可能出现悬崖；
-	//   4) 顺带比原来快很多（原来每个 raw 最多扫 1024 个配对，整表要几秒）。
+	// 新做法有两个关键，都是这次踩过的位置：
+	//   1) 表的下标是 raw，所以必须按 raw 定位。扫描推进量只是中间坐标：
+	//      真角 0° 对应的 raw 是 m_calData[0].value（一般不是 0），拿推进量当下标
+	//      会把整张表错位这么多 LSB，并在 raw 跨零点处又暴露成跳变。
+	//   2) 先把“一圈对不齐”的比例部分用归一化摊掉：65536 项周期表在数学上表示不了
+	//      不闭合的进给（头尾必然重叠）；归一化后表必然单调、单值、构造上无悬崖。
+	//      这个比例误差由 EncoderCalibrator 的 [CAL] 报出来，归运动刻度处理。
+	// 顺带：建表从“每个 raw 最多扫 N 个配对”改成整表线性扫描，快几个量级。
 	// ===========================================================================
 	static uint16_t data[FLASH_ROW_SIZE];
+	static int32_t qBound[CALIBRATION_TABLE_SIZE + 1];
 	uint16_t checksum = 0U;
 
 	const int32_t nodeCount = static_cast<int32_t>(CALIBRATION_TABLE_SIZE);
 	const int32_t idealStep = static_cast<int32_t>(CALIBRATION_STEPS / CALIBRATION_TABLE_SIZE);
+	const int32_t rawSpan = static_cast<int32_t>(CALIBRATION_STEPS);
+	const int32_t rawBase = static_cast<int32_t>(m_calData[0].value);   // 真角 0° 时的 raw
 
-	// ---- 第一趟：展开成单调序列，求总推进 span ----
-	int32_t prevRaw = static_cast<int32_t>(m_calData[0].value);
-	int32_t span = 0;
+	// ---- 第一趟：按环绕步长把主表展开成单调序列，qBound[i] 暂存累计推进 ----
+	int32_t prevRaw = rawBase;
+	int32_t cum = 0;
+	qBound[0] = 0;
 	for (int32_t i = 1; i < nodeCount; ++i)
 	{
 		const int32_t cur = static_cast<int32_t>(m_calData[i].value);
 		int32_t step = cur - prevRaw;
 		while (step > CALIBRATION_WRAP)
 		{
-			step -= static_cast<int32_t>(CALIBRATION_STEPS);
+			step -= rawSpan;
 		}
 		while (step < -CALIBRATION_WRAP)
 		{
-			step += static_cast<int32_t>(CALIBRATION_STEPS);
+			step += rawSpan;
 		}
-		span += step;
+		if (step <= 0)
+		{
+			// 展开后不单调：这段 raw 没有唯一归属，表不可信
+			m_fastCalValid = false;
+			return false;
+		}
+		cum += step;
 		prevRaw = cur;
+		qBound[i] = cum;
 	}
-	// 展开失败（方向错、严重不闭合）时不建表；更细的闭合/单值判据在 EncoderCalibrator
-	if (span <= static_cast<int32_t>(CALIBRATION_STEPS / 4U) ||
-	    span >= static_cast<int32_t>(CALIBRATION_STEPS * 3U / 2U))
+	if (cum <= (rawSpan / 4) || cum >= (rawSpan / 2 * 3))
 	{
 		m_fastCalValid = false;
 		return false;
 	}
-
-	// ---- 第二趟：按归一化后的 raw 升序涂表 ----
-	int32_t pageBase = 0;   // data[] 当前页对应的全局 raw 起点
-	int32_t cum = 0;        // 展开后的累计 raw 推进
-	int32_t paintedQ = 0;   // 已涂到的归一化 raw 位置
-	prevRaw = static_cast<int32_t>(m_calData[0].value);
-	for (int32_t i = 1; i <= nodeCount; ++i)
+	// 归一化：把整圈推进摊成正好 65536，最后一格必定正好收尾、不留未定义项
+	for (int32_t i = 0; i < nodeCount; ++i)
 	{
-		int32_t targetQ;
-		if (i < nodeCount)
-		{
-			const int32_t cur = static_cast<int32_t>(m_calData[i].value);
-			int32_t step = cur - prevRaw;
-			while (step > CALIBRATION_WRAP)
-			{
-				step -= static_cast<int32_t>(CALIBRATION_STEPS);
-			}
-			while (step < -CALIBRATION_WRAP)
-			{
-				step += static_cast<int32_t>(CALIBRATION_STEPS);
-			}
-			if (step <= 0)
-			{
-				// 展开后不再单调：这段 raw 没有唯一归属，表不可信
-				m_fastCalValid = false;
-				return false;
-			}
-			cum += step;
-			prevRaw = cur;
-			targetQ = static_cast<int32_t>((static_cast<int64_t>(cum) *
-			                                static_cast<int64_t>(CALIBRATION_STEPS)) /
-			                               static_cast<int64_t>(span));
-			if (targetQ > static_cast<int32_t>(CALIBRATION_STEPS))
-			{
-				targetQ = static_cast<int32_t>(CALIBRATION_STEPS);
-			}
-		}
-		else
-		{
-			targetQ = static_cast<int32_t>(CALIBRATION_STEPS);   // 归一化后必定正好收尾
-		}
+		qBound[i] = static_cast<int32_t>((static_cast<int64_t>(qBound[i]) * rawSpan) / cum);
+	}
+	qBound[nodeCount] = rawSpan;
 
-		const int32_t angleStart = (i - 1) * idealStep;
-		const int32_t angleEnd = i * idealStep;
-		const int32_t seg = targetQ - paintedQ;
-		if (seg < 0)
+	// ---- 第二趟：按 raw 升序涂表（raw 才是表的数组下标）----
+	bool write_failed = false;
+	auto paintRange = [&](int32_t rangeBegin, int32_t rangeEnd)
+	{
+		int32_t seg = 0;
+		for (int32_t rawPos = rangeBegin; rawPos < rangeEnd; ++rawPos)
 		{
-			m_fastCalValid = false;
-			return false;
-		}
-		for (int32_t q = paintedQ; q < targetQ; ++q)
-		{
-			const int32_t off = q - paintedQ;
-			const int32_t value = (seg == 0)
-				? angleEnd
-				: (angleStart + static_cast<int32_t>((static_cast<int64_t>(off) *
-				                                    static_cast<int64_t>(angleEnd - angleStart)) / seg));
-			const int32_t slot = q - pageBase;
-			data[slot] = static_cast<uint16_t>(value & 0xFFFFU);
-			checksum = static_cast<uint16_t>(checksum + data[slot]);
-			if (((q + 1) % static_cast<int32_t>(FLASH_ROW_SIZE)) == 0)
+			// 扫描从 rawBase 起绕一圈：raw < rawBase 属于后半圈
+			int32_t q = rawPos - rawBase;
+			if (q < 0)
 			{
-				if (flash_write(FASTCAL_FLASH_BASE + static_cast<uint32_t>(pageBase) * 2U,
-				                data, FLASH_ROW_SIZE) != SUCCESS)
+				q += rawSpan;
+			}
+			while (seg + 1 < nodeCount && q >= qBound[seg + 1])
+			{
+				++seg;
+			}
+			const int32_t segLen = qBound[seg + 1] - qBound[seg];
+			const int32_t angle = (segLen <= 0)
+				? ((seg + 1) * idealStep)
+				: (seg * idealStep +
+				   static_cast<int32_t>((static_cast<int64_t>(q - qBound[seg]) *
+				                       static_cast<int64_t>(idealStep)) / segLen));
+			const int32_t slot = rawPos % static_cast<int32_t>(FLASH_ROW_SIZE);
+			data[slot] = static_cast<uint16_t>(angle & 0xFFFFU);
+			checksum = static_cast<uint16_t>(checksum + data[slot]);
+			if (((rawPos + 1) % static_cast<int32_t>(FLASH_ROW_SIZE)) == 0)
+			{
+				const uint32_t page_address = FASTCAL_FLASH_BASE +
+				    static_cast<uint32_t>(rawPos + 1 - static_cast<int32_t>(FLASH_ROW_SIZE)) * 2U;
+				if (flash_write(page_address, data, FLASH_ROW_SIZE) != SUCCESS)
 				{
-					m_fastCalValid = false;
-					return false;
+					write_failed = true;
+					return;
 				}
 				if (yield_between_pages)
 				{
 					vTaskDelay(1U);
 				}
-				pageBase = q + 1;
 			}
 		}
-		paintedQ = targetQ;
+	};
+	// 两段各自内部 q 单调递增，段游标只前进。跳 rawBase 的那一页由两次调用互补填满：
+	// 页内槽位按 rawPos % FLASH_ROW_SIZE 定位，所以仍是一个完整 1024 项才 flush 一次。
+	paintRange(0, rawBase);
+	if (!write_failed)
+	{
+		paintRange(rawBase, rawSpan);
+	}
+	if (write_failed)
+	{
+		m_fastCalValid = false;
+		return false;
 	}
 
 	calibration_checksum_ = checksum;
