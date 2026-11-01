@@ -149,6 +149,14 @@ void EncoderCalibrator::start()
     mono_worst_index_ = 0U;
     write_at_first_ = 0U;
     write_at_last_ = 0U;
+    // 正/反向差值统计归零
+    fb_sum_d_ = 0;
+    fb_sum_i_ = 0;
+    fb_sum_id_ = 0;
+    fb_sum_ii_ = 0;
+    fb_max_abs_d_ = 0;
+    fb_max_abs_index_ = 0U;
+    fb_pairs_ = 0U;
     const uint32_t spr_now = c.getStepsPerRound();
     if ((spr_now % CALIBRATION_TABLE_SIZE) != 0U)
     {
@@ -183,6 +191,8 @@ void EncoderCalibrator::finish(bool save_table)
     c.stopMotion();
 
     bool saved = false;
+    // 先把正/反向差值的分布报出来，再判表能不能用（两行都是诊断，不影响判定）
+    reportForwardBackward();
     // 【先校验再保存】表不可信就不写 Flash。这次一个坏点就能把整段角度搞乱，
     // 而建完表原本一道检查都没有，问题才能藏这么久。
     if (save_table && !tablePlausible())
@@ -446,6 +456,12 @@ void EncoderCalibrator::update(uint16_t raw)
     // 反向趟：与正向采样取平均后写表
     {
         const uint16_t forward_raw = (index_ < kPoints) ? forward_raw_[index_] : mean_raw;
+        // 此刻手里同时拿着“正向那一趟”和“反向这一趟”的原始值，差值统计必须在这里做：
+        // 平均写进表之后两者就再也分不开了（这也是 closure 分不清负载角与逐段超差的原因）。
+        if (index_ < kPoints)
+        {
+            noteForwardBackward(index_, forward_raw, mean_raw);
+        }
         // 【必须做环形平均，不能直接相加除以 2】raw 是 0~65535 的环绕角度：
         // 正向读 65530、反向读 26 时，(65530 + 26) / 2 = 32778 —— 得到一个“半圈外”的数，
         // 而正确答案是 10。表里凡是两趟跨过 0/65536 的那个索引都会中招（一圈只有一个，
@@ -525,6 +541,73 @@ void EncoderCalibrator::noteWrite(uint16_t index, uint16_t value)
     {
         write_at_last_ = value;
     }
+}
+
+// 反向趟里每写一个节点顺手记一笔：d = 反向原始值 - 正向原始值（环形折回 ±32768）。
+// 不另外开数组：这一刻两份数据都在手上，平均完就分不开了。
+void EncoderCalibrator::noteForwardBackward(uint16_t index, uint16_t fwd, uint16_t bwd)
+{
+    int32_t d = static_cast<int32_t>(bwd) - static_cast<int32_t>(fwd);
+    while (d > 32768)
+    {
+        d -= 65536;
+    }
+    while (d < -32768)
+    {
+        d += 65536;
+    }
+    const int64_t i = static_cast<int64_t>(index);
+    fb_sum_d_ += d;
+    fb_sum_i_ += i;
+    fb_sum_id_ += i * d;
+    fb_sum_ii_ += i * i;
+    fb_pairs_++;
+    const int32_t abs_d = (d < 0) ? -d : d;
+    const int32_t abs_worst = (fb_max_abs_d_ < 0) ? -fb_max_abs_d_ : fb_max_abs_d_;
+    if (abs_d > abs_worst)
+    {
+        fb_max_abs_d_ = d;
+        fb_max_abs_index_ = index;
+    }
+}
+
+// ===========================================================================
+// 报出 d(i) 的均值与斜率 —— 这两个数分别对应两件完全不同的事：
+//   mean(d)/2 = 静态负载角（两趟符号相反，已被平均抵掉；对阶段 1 标定直接有用）
+//   slope(d)  ≠ 0  则说明存在逐段累积、与方向相关的超差（平均抵不掉，
+//              而且会把 closure 做成假数字）
+// ===========================================================================
+void EncoderCalibrator::reportForwardBackward() const
+{
+    const double lsb_deg = 360.0 / 65536.0;
+    if (fb_pairs_ == 0U)
+    {
+        printf("[CAL] fwd-vs-bwd: no paired samples\r\n");
+        return;
+    }
+    const double n = static_cast<double>(fb_pairs_);
+    const double mean_d = static_cast<double>(fb_sum_d_) / n;
+    const double den = n * static_cast<double>(fb_sum_ii_)
+                     - static_cast<double>(fb_sum_i_) * static_cast<double>(fb_sum_i_);
+    const double slope_per_node = (den != 0.0)
+        ? (n * static_cast<double>(fb_sum_id_)
+           - static_cast<double>(fb_sum_i_) * static_cast<double>(fb_sum_d_)) / den
+        : 0.0;
+
+    printf("[CAL] fwd-vs-bwd n=%u mean=%+.3fdeg (static load angle %+.3fdeg) "
+           "slope=%+.3fdeg/turn max=%+.3fdeg@i=%u\r\n",
+           static_cast<unsigned>(fb_pairs_),
+           mean_d * lsb_deg,
+           mean_d * 0.5 * lsb_deg,
+           slope_per_node * static_cast<double>(CALIBRATION_TABLE_SIZE) * lsb_deg,
+           static_cast<double>(fb_max_abs_d_) * lsb_deg,
+           static_cast<unsigned>(fb_max_abs_index_));
+    // closure 的端点不对称：v0 是两趟平均，v_last 只用了正向单程值（当初为了不留空洞）。
+    // 所以 closure 里混进了“一个节点的方向差”，判读时记得扣除。
+    printf("[CAL] endpoints: v0=%u(both passes avg) v_last=%u(FORWARD ONLY) "
+           "-> closure includes one node's direction bias\r\n",
+           static_cast<unsigned>(write_at_first_),
+           static_cast<unsigned>(write_at_last_));
 }
 
 // ===========================================================================

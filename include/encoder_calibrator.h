@@ -72,6 +72,21 @@ private:
     // 记录每一次写表：检查与上一格的步进是否接近 64，并存下首尾两格算闭合
     void noteWrite(uint16_t index, uint16_t value);
     bool tablePlausible() const;      // 打印诊断 + 给出结论（由 finish 决定是否保存）
+
+    // ===== 正向趟 / 反向趟的逐节点差值统计 =====
+    // d(i) = 反向测到的角 - 正向测到的角。它的用途是分辨两件完全不同的事：
+    //   d 的常数分量     = 静态负载角（两趟符号相反，已被双程平均正确抵掉）
+    //   d 随 i 的斜率     = 逐段累积、与方向相关的超差（平均抵不掉，会造假 closure）
+    // 两者在 closure 一个数字上混在一起，只能靠这个分布分开 —— 而两份数据本来就在手上。
+    void noteForwardBackward(uint16_t index, uint16_t fwd, uint16_t bwd);
+    void reportForwardBackward() const;
+    int64_t fb_sum_d_ = 0;      // Σd
+    int64_t fb_sum_i_ = 0;      // Σi
+    int64_t fb_sum_id_ = 0;     // Σ i·d
+    int64_t fb_sum_ii_ = 0;     // Σ i²
+    int32_t fb_max_abs_d_ = 0;  // 最大的 |d|（带符号）
+    uint16_t fb_max_abs_index_ = 0U;
+    uint16_t fb_pairs_ = 0U;    // 参与统计的节点对数
     bool write_prev_valid_ = false;
     uint16_t write_prev_value_ = 0U;
     uint16_t write_at_first_ = 0U;    // index 0 写进去的值
