@@ -471,6 +471,19 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
         num_steps = MAX_PULSE_ARR_LEN;
     }
 
+    // 【记账不能超过实发】上面的 remaining / MAX_PULSE_ARR_LEN 钳位只作用于 num_steps。
+    // 如果不把 num_original_command_steps 也压到不超过实发，本窗根本没发那么多脉冲，
+    // 记账却照样加上去 —— 段结束判据（看记账值）会提前满足，最后几微步压根没发出去，
+    // 于是每段行程被悄悄少掉一点（实测 (counted-commanded)=+21 / (emitted-counted)=-21，
+    // 净 0 只是两头偏差互相抵消，不是“没问题”）；同时命令位置会比真正发出去的
+    // 脉冲领先，跟随误差因此带一个假分量。
+    // 注意这里只“下调”记账值：当补偿让实发多于原始命令时，仍按原始命令记账，
+    // 这样命令位置不会被 PID 自己的输出推着走（那是另一个问题的根源，保持原语义）。
+    if (num_original_command_steps > num_steps)
+    {
+        num_original_command_steps = num_steps;
+    }
+
 #ifdef USE_SOFT_PULSE
     // 软脉冲调试通道：直接 GPIO + 忙等，效率低，只在排查硬件时打开。
     for (uint32_t i = 0; i < num_steps; i++)
