@@ -455,7 +455,11 @@ void EncoderCalibrator::update(uint16_t raw)
     }
 
     sample_attempts_++;
-    if (raw != 0xFFFFU)
+    // 【按总线应答判有效性，不按值】原来这里写的是 raw != 0xFFFF，两个错：
+    //   1) 校准点落在接缝上时，真角 359.9x° 的合法样本会被连续丢弃（实测同一节点 27 次），
+    //      而去极值平均一旦只丢高侧，均值就被系统性拉低 —— 表在绕回处就会偏；
+    //   2) 真正的 SPI 超时样本经过校准表映射后值已变，反而会被当有效值写进表。
+    if (c.encoder_ != nullptr && c.encoder_->lastReadValid())
     {
         int32_t unwrapped = static_cast<int32_t>(raw);
         if (sample_count_ > 0U)
@@ -487,8 +491,7 @@ void EncoderCalibrator::update(uint16_t raw)
         sample_count_++;
     } else
     {
-        printf("[CALIBRATION] invalid encoder sample: %d at index=%u, attempt=%u\r\n",
-            raw,
+        printf("[CALIBRATION] spi timeout at index=%u, attempt=%u\r\n",
             static_cast<unsigned>(index_),
             static_cast<unsigned>(sample_attempts_));
     }

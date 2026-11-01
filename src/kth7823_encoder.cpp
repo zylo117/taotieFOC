@@ -126,19 +126,32 @@ uint16_t Kth7823Encoder::readRaw()
     // 不是“SPI 返回的字”——转子停在 0° 附近时 corrected==0 是完全正常的，
     // 不能拿它当“无应答”的证据。真正的电气证据要看 raw_word。
     last_spi_word_ = raw;
+    // 【有效性看总线状态，不看值】0xFFFF 既可能是“没应答”也可能是“真角 359.99°”，
+    // 拿值当错误码会同时犯两个错：把合法接缝读数当垃圾丢掉，而真正的超时样本
+    // 经过校准表映射后不再是 0xFFFF，反而被收下写进表。
+    last_spi_ok_ = !encoder_common::encoder_spi2_last_timeout();
+    if (!last_spi_ok_)
+    {
+        ++spi_timeout_count_;
+    }
     if (isNonlinearCalValid())
     {
         raw = getCorrectedRaw(raw);
     }
     last_frame_raw_ = raw;
     read_count_++;
-    if (raw == 0xFFFFU)
+    // 下面两个计数只统计“查表后的值”，当诊断参考用；总线有没有应答看
+    // spi_timeout_count_，否则超时会同时冒充两个计数器，三者就没法互相区分了。
+    if (last_spi_ok_)
     {
-        all_ones_count_++;
-    }
-    else if (raw == 0x0000U)
-    {
-        all_zeros_count_++;
+        if (raw == 0xFFFFU)
+        {
+            all_ones_count_++;
+        }
+        else if (raw == 0x0000U)
+        {
+            all_zeros_count_++;
+        }
     }
     return raw;
 }
@@ -187,9 +200,11 @@ bool Kth7823Encoder::updateFilteredSample(uint16_t raw)
     // 它只用于控制器的“行程累计”，不需要平滑（噪声零均值，累计不会偏移），
     // 而滤波会引入延迟，反而让行程与脉冲对不齐。
 
-    if (raw == 0xFFFFU)
+    if (!last_spi_ok_)
     {
-        // SPI通信错误：丢弃样本，滤波器保持上一次有效输出，上层用allOnesCount判断故障
+        // SPI 超时：丢弃样本，滤波器保持上一次有效输出。
+        // 原来这里写的是 raw == 0xFFFF：那会误杀真角 359.99° 的合法样本（接缝节点
+        // 的去极值平均因此被系统性拉低），又拦不住真正的超时（查表后值已变）。
         return false;
     }
 
@@ -370,6 +385,13 @@ void Kth7823Encoder::sampleRawFast()
     raw_ring_[raw_ring_head_ % kRawRingSize] = raw;
     raw_ring_head_ = next;
 
+    // 同样按总线状态而不按值记有效性（本函数是 TMR5 高频采样路径，目前未启用）
+    last_spi_ok_ = !encoder_common::encoder_spi2_last_timeout();
+    if (!last_spi_ok_)
+    {
+        ++spi_timeout_count_;
+    }
+
     read_count_++;
     if (raw == 0xFFFFU)
     {
@@ -519,6 +541,16 @@ uint32_t Kth7823Encoder::allOnesCount() const
 uint32_t Kth7823Encoder::allZerosCount() const
 {
     return all_zeros_count_;
+}
+
+uint32_t Kth7823Encoder::spiTimeoutCount() const
+{
+    return spi_timeout_count_;
+}
+
+bool Kth7823Encoder::lastReadValid() const
+{
+    return last_spi_ok_;
 }
 
 uint8_t Kth7823Encoder::misoLevel() const

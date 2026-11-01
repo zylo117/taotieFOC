@@ -90,6 +90,11 @@ public:
     uint32_t readCount() const;
     uint32_t allOnesCount() const;
     uint32_t allZerosCount() const;
+
+    // SPI 传输超时的真实计数（与 allOnes/allZeros 不同：那两个是“值等于多少”，
+    // 而这个是“总线到底有没有应答”）。样本有效性也看它。
+    uint32_t spiTimeoutCount() const;
+    bool lastReadValid() const override;
     uint8_t misoLevel() const;
     void setZero(float zero_angle) override;
     void setFilterWindowSize(uint16_t window_size);
@@ -130,6 +135,9 @@ private:
     volatile uint16_t last_tx_frame_;
     volatile uint32_t read_count_;
     volatile uint32_t all_ones_count_;
+    // 上一次 readRaw()/sampleRawFast() 的 SPI 传输是否成功（不是看值等于多少）
+    volatile bool last_spi_ok_ = true;
+    volatile uint32_t spi_timeout_count_ = 0U;
     volatile uint32_t all_zeros_count_;
 
     // 高频采样环形缓冲（TMR5 写、TMR4 读）

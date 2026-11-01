@@ -115,6 +115,10 @@ namespace encoder_common
     void encoder_gpio_config_input(gpio_type* port, uint16_t pin);
     void encoder_gpio_config_output(gpio_type* port, uint16_t pin);
     uint16_t encoder_spi2_rw16(uint16_t tx_data);
+
+    // 上一次 SPI 传输是否超时。调用方靠它判样本有效性，不能再拿 0xFFFF 当错误码
+    //（那是个合法角度）。本拍内读、本拍内用；跨拍读会读到后来的传输结果。
+    bool encoder_spi2_last_timeout();
 }
 
 struct EncoderFilterConfig
@@ -166,6 +170,13 @@ public:
         return true;
     }
     virtual bool magneticFieldHigh() const { return false; }
+
+    // 上一次 readRaw() 的 SPI 传输是否成功。默认 true（不支持该信息的子类保持旧行为），
+    // Kth7823Encoder 会用真实的超时标志覆盖它。
+    // 存在校准/滤波路径上原来用“raw == 0xFFFF”判无效，那会：
+    //   1) 把真角 359.99° 的合法样本当垃圾丢掉（接缝节点的去极值平均因此被拉偏）；
+    //   2) 把真正的超时样本（查表后不再是 0xFFFF）当有效值写进表。
+    virtual bool lastReadValid() const { return true; }
     virtual bool magneticFieldLow() const { return false; }
     virtual void setZero(float zero_angle) = 0;
 

@@ -39,8 +39,20 @@ namespace encoder_common
         gpio_init(port, &gpio_init_struct);
     }
 
+    // 【SPI 超时的真实证据】以前只靠“返回 0xFFFF”报失败，但 0xFFFF 同时是一个
+    // 合法角度（359.99°）：于是合法的接缝读数被当垃圾丢掉，而真正的超时经过校准表
+    // 映射后变成别的值，反而被当有效样本写进表里 —— 两头都错。
+    // 现在把“是否超时”单独留标，调用方读它，不再拿值域当错误码。
+    volatile bool s_spi2_last_timeout = false;
+
+    bool encoder_spi2_last_timeout()
+    {
+        return s_spi2_last_timeout;
+    }
+
     uint16_t encoder_spi2_rw16(uint16_t tx_data)
     {
+        s_spi2_last_timeout = false;   // 每次传输先清标，只反映本次的结果
         // 【超时预算必须与中断周期同量级】
         // 本函数跑在 TMR5 采样中断里，中断周期 32us（估算：32us × 250MHz = 8000 cycles）。
         // 正常完成一次 16bit 传输只需要 16 / 3.9MHz ≈ 4.1us ≈ 1025 cycles，
@@ -56,6 +68,7 @@ namespace encoder_common
         }
         if (timeout == 0U)
         {
+            s_spi2_last_timeout = true;
             return 0xFFFFU;
         }
         spi_i2s_data_transmit(KTH7823_SPI, tx_data);
@@ -67,6 +80,7 @@ namespace encoder_common
         }
         if (timeout == 0U)
         {
+            s_spi2_last_timeout = true;
             return 0xFFFFU;
         }
         return static_cast<uint16_t>(spi_i2s_data_receive(KTH7823_SPI));
