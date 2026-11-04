@@ -1191,6 +1191,23 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         const float max_delta_rps = (angle_accel_rpm_s_ / 60.0f) * dt;
         const float previous_rps = compensated_rps_;
         compensated_rps_ = fast_clamp(limited_rps, previous_rps - max_delta_rps, previous_rps + max_delta_rps);
+
+        // 【诊断快照 [VLOOP]】规划运动补偿路径（与角度模式同格式，方便对比）。
+        // 这条路径里速度环没有 p_scale（角度模式才有 0.01），所以 P 分量直接是 kp*err。
+        {
+            auto& d = vloop_;
+            d.err_deg = motion_follow_error_deg_;
+            d.ref_rps = total_ref_rps;
+            d.meas_rps = measured_motion_rps;
+            d.vel_err_rps = velocity_error_rps;
+            d.pos_out_rps = position_reference_rps;
+            d.vel_p = velocity_pid_.kp * velocity_error_rps;
+            d.vel_i = velocity_pid_.ki * velocity_pid_.integral;
+            d.vel_d = velocity_pid_.kd * velocity_pid_.filtered_derivative;
+            d.out_rps = compensated_rps_;
+            d.step_speed_s = current_step_speed_;
+            d.stamp++;
+        }
     }
 
     // 剩余部分（转速反算 + DDA 累加器 + 脉冲出口）已整体搬到 MotionPlanner（阶段 C）。

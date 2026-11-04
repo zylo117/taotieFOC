@@ -148,6 +148,23 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
         {
             c.motion_direction_ = calibration_rps >= 0.0f ? 1 : -1;
         }
+        // 【诊断快照 [VLOOP]】只存量、不打印（输出在 telemetry_reporter 的 kSlow 档）。
+        // P/I/D 分开存，是为了看抖动到底由哪一项贡献（而不是先猜 kp）；
+        // 这里用的是 c.velocity_pid_.kp（此刻真正在算的值），所以运行时改增益会直接露出来。
+        {
+            auto& d = c.vloop_;
+            d.err_deg = desired_error_deg;
+            d.ref_rps = total_ref_rps;
+            d.meas_rps = c.encoder_speed_rpm_ / 60.0f;
+            d.vel_err_rps = velocity_error_rps;
+            d.pos_out_rps = position_reference_rps;
+            d.vel_p = c.velocity_pid_.kp * kAnglePScale * velocity_error_rps;
+            d.vel_i = c.velocity_pid_.ki * c.velocity_pid_.integral;
+            d.vel_d = c.velocity_pid_.kd * c.velocity_pid_.filtered_derivative;
+            d.out_rps = calibration_rps;
+            d.step_speed_s = c.current_step_speed_;
+            d.stamp++;
+        }
     }
 }
 

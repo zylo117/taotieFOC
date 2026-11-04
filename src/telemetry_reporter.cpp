@@ -70,6 +70,56 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
         // 1 秒内 25 个采样点读到的都是同一个值，转速曲线看起来就是“纹丝不动”。
         // 已移到 kMedium（≈ 100Hz）档。
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, c.step_pulse_width_ns_);
+
+        // 【VLOOP 诊断】闭环在跑就每秒打一行（用快照是否更新过做判据，不需要额外开关）。
+        // 三行分工：
+        //   第 1 行：抖动归因 —— 位置/速度误差与 P、I、D 三个分量分开给出，直接看谁在抖；
+        //   第 2 行：系数透明 —— web 是网页/Flash 口径（base_*），live 是此刻真正在算的 kp/ki/kd，
+        //          两者不相等就说明中间有运行时改增益（applyGainScales）在生效；
+        //   第 3 行：限速/加速度与两个环的 p_scale（角度模式 P 被缩到 0.01，规划补偿不缩）。
+        {
+            static uint32_t s_last_vloop_stamp = 0U;
+            const uint32_t stamp_now = c.vloop_.stamp;
+            if (stamp_now != s_last_vloop_stamp)
+            {
+                s_last_vloop_stamp = stamp_now;
+                const double pos_kp_web = static_cast<double>(c.base_position_kp_);
+                const double pos_ki_web = static_cast<double>(c.base_position_ki_);
+                const double pos_kd_web = static_cast<double>(c.base_position_kd_);
+                const double vel_kp_web = static_cast<double>(c.base_velocity_kp_);
+                const double vel_ki_web = static_cast<double>(c.base_velocity_ki_);
+                const double vel_kd_web = static_cast<double>(c.base_velocity_kd_);
+                const double pos_scale = (c.base_position_kp_ > 0.001f)
+                    ? static_cast<double>(c.position_pid_.kp) / c.base_position_kp_ : 0.0;
+                const double vel_scale = (c.base_velocity_kp_ > 0.001f)
+                    ? static_cast<double>(c.velocity_pid_.kp) / c.base_velocity_kp_ : 0.0;
+                printf("[VLOOP] mode ang=%u comp=%u | err=%+.3fdeg ref=%+.4f meas=%+.4f verr=%+.4f\r\n",
+                       c.closed_loop_angle_mode_enabled_ ? 1U : 0U,
+                       c.closed_loop_compensation_enabled_ ? 1U : 0U,
+                       static_cast<double>(c.vloop_.err_deg),
+                       static_cast<double>(c.vloop_.ref_rps),
+                       static_cast<double>(c.vloop_.meas_rps),
+                       static_cast<double>(c.vloop_.vel_err_rps));
+                printf("[VLOOP] P=%+.4f I=%+.4f D=%+.4f posOut=%+.4f out=%+.4frps step=%+.0f/s\r\n",
+                       static_cast<double>(c.vloop_.vel_p),
+                       static_cast<double>(c.vloop_.vel_i),
+                       static_cast<double>(c.vloop_.vel_d),
+                       static_cast<double>(c.vloop_.pos_out_rps),
+                       static_cast<double>(c.vloop_.out_rps),
+                       static_cast<double>(c.vloop_.step_speed_s));
+                printf("[VLOOP] gains web pos %.3f/%.3f/%.3f vel %.3f/%.3f/%.3f live pos %.3f/%.3f/%.3f vel %.3f/%.3f/%.3f kscale %.3f/%.3f p_scale %.2f/%.2f\r\n",
+                       pos_kp_web, pos_ki_web, pos_kd_web, vel_kp_web, vel_ki_web, vel_kd_web,
+                       static_cast<double>(c.position_pid_.kp),
+                       static_cast<double>(c.position_pid_.ki),
+                       static_cast<double>(c.position_pid_.kd),
+                       static_cast<double>(c.velocity_pid_.kp),
+                       static_cast<double>(c.velocity_pid_.ki),
+                       static_cast<double>(c.velocity_pid_.kd),
+                       pos_scale, vel_scale,
+                       c.closed_loop_angle_mode_enabled_ ? 0.01 : 1.0,
+                       1.0);
+            }
+        }
     }
     else if (slot == TelemetryScheduler::Slot::kMedium)
     {

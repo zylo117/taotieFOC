@@ -301,6 +301,29 @@ private:
     volatile float motion_accel_rpm_s_;
     volatile float angle_max_rpm_;
     volatile float angle_accel_rpm_s_;
+
+    // ===== 速度环/角度模式诊断快照（[VLOOP]）=====
+    // printf 一律留在任务侧，控制环里只存量：这里把这一拍用到的关键量抄下来，
+    // 由遥测任务按周期输出。
+    // 两层目的：
+    //   1) 抖动归因：把 P / I / D 三个分量分开打，直接看抖的是哪一项（而不是先猜 kp）；
+    //   2) 系数透明：把“网页/Flash 口径值”(base_*) 与“此刻真正在算的 kp”并排打出来，
+    //      applyGainScales() 这类运行时改增益的行为一旦生效就藏不住。
+    struct VLoopDbg
+    {
+        volatile float err_deg = 0.0f;       // 位置误差（度，带符号）
+        volatile float ref_rps = 0.0f;       // 总期望速度 = base + 位置环修正
+        volatile float meas_rps = 0.0f;      // 实测速度（encoder_speed_rpm_/60）
+        volatile float vel_err_rps = 0.0f;   // 速度误差
+        volatile float pos_out_rps = 0.0f;   // 位置环输出
+        volatile float vel_p = 0.0f;         // 速度环 P 分量（含角度模式的 ×0.01）
+        volatile float vel_i = 0.0f;         // 速度环 I 分量
+        volatile float vel_d = 0.0f;         // 速度环 D 分量
+        volatile float out_rps = 0.0f;       // 最终交给 emitSteps 的量
+        volatile float step_speed_s = 0.0f;  // current_step_speed_（微步/s）
+        volatile uint32_t stamp = 0U;        // 更新计数：任务侧据此判断闭环是否在跑
+    };
+    VLoopDbg vloop_;
     volatile uint32_t motion_pulse_count_;
     volatile MotionMode motion_mode_;
     volatile bool closed_loop_compensation_enabled_;
