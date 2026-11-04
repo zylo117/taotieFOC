@@ -160,6 +160,16 @@ enum Tmc2209CustomExtensionRegister
     // 为什么是触发式而不是周期打印：三行浮点 printf 约 270 字节 @115200 ≈ 23ms，
     // 放在 1Hz 慢档会周期性挤占任务，实测影响闭环手感 —— 诊断不该改变被诊断的对象。
     TMC2209_EXT_PARAM_VLOOP_DEBUG_PRINT = 0x155U,
+    // R/W：角度模式（串级）的独立增益，口径与 0x129~0x12E 相同（实际增益 × 1000）。
+    // 为什么要分开：0x129~0x12E 服务规划运动/外部跟随（梯形是主驱动，PID 只做小修正），
+    // 而角度模式里 PID 输出就是全部速度指令 —— 同一个数字在两条路径上含义不同，
+    // 共用一组参数就是让两种回路互相“偷走”对方的整定结果。
+    TMC2209_EXT_PARAM_ANGLE_POSITION_KP = 0x156U,
+    TMC2209_EXT_PARAM_ANGLE_POSITION_KI = 0x157U,
+    TMC2209_EXT_PARAM_ANGLE_POSITION_KD = 0x158U,
+    TMC2209_EXT_PARAM_ANGLE_VELOCITY_KP = 0x159U,
+    TMC2209_EXT_PARAM_ANGLE_VELOCITY_KI = 0x15AU,
+    TMC2209_EXT_PARAM_ANGLE_VELOCITY_KD = 0x15BU,
 
     // R/W：诊断用——旁路磁编码器非线性校准表（0=正常查表，1=直接返回原始值）。
     // 用途：做“查表 / 不查表”的 A/B 对比，判断某个角度误差是不是校准表引入的。
@@ -226,8 +236,8 @@ private:
     bool readOfficialRegister(uint8_t reg, uint32_t* value) const;
 
     ClosedLoopDriverProtocolConfig config_;
-    // 扩展参数表长度：覆盖 0x100 ~ 0x155，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x155U - 0x100U + 1U;
+    // 扩展参数表长度：覆盖 0x100 ~ 0x15B，新增寄存器时同步这个常量
+    static constexpr uint16_t kCustomParameterCount = 0x15BU - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

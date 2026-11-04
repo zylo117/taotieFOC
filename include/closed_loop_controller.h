@@ -274,9 +274,25 @@ private:
     bool load_angle_fit_saved_;
     PidController position_pid_;
     PidController velocity_pid_;
+
+    // ===== 角度模式（串级）专用 PID =====
+    // 不与上面两个实例共用：同一个 kp 在两条路径里含义不同（角度模式里 PID 输出就是
+    // 全部速度指令；规划运动/外部跟随里梯形是主驱动、PID 只做小修正），而且共用实例
+    // 会共享积分状态，在模式切换时互相污染（本项目反复踩过）。
+    PidController angle_position_pid_;
+    PidController angle_velocity_pid_;
     PidAutoTuner pid_auto_tuner_;
 
     float base_position_kp_;
+
+    // 角度模式增益的基准值（网页/Flash 口径，也用于 [VLOOP] 与 live 值对比）。
+    // 默认值是串级结构下的推荐起步：位置环纯 P 给速度指令，速度环只做轻度阻尼。
+    float base_angle_position_kp_ = 20.0f;
+    float base_angle_position_ki_ = 0.0f;
+    float base_angle_position_kd_ = 0.0f;
+    float base_angle_velocity_kp_ = 0.2f;
+    float base_angle_velocity_ki_ = 0.0f;
+    float base_angle_velocity_kd_ = 0.0f;
     float base_position_ki_;
     float base_position_kd_;
     float base_velocity_kp_;

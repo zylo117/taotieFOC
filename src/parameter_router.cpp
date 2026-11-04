@@ -20,7 +20,9 @@ namespace
     // 所以上限实际是 30000 / 3000），配合 param_store 的 uint32_t 字段不会溢出。
     float clampPidGain(uint16_t reg, uint32_t raw_value)
     {
-        const float max_gain = (reg == TMC2209_EXT_PARAM_POSITION_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KI)
+        const float max_gain = (reg == TMC2209_EXT_PARAM_POSITION_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KI ||
+                                reg == TMC2209_EXT_PARAM_ANGLE_POSITION_KI ||
+                                reg == TMC2209_EXT_PARAM_ANGLE_VELOCITY_KI)
             ? 3000.0f
             : 30000.0f;
         const float gain = static_cast<float>(raw_value) / 1000.0f;
@@ -72,6 +74,13 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         params.velocity_kp = static_cast<uint32_t>(owner_.base_velocity_kp_ * 1000.0f + 0.5f);
         params.velocity_ki = static_cast<uint32_t>(owner_.base_velocity_ki_ * 1000.0f + 0.5f);
         params.velocity_kd = static_cast<uint32_t>(owner_.base_velocity_kd_ * 1000.0f + 0.5f);
+        // 【v2】角度模式（串级）的独立增益，同样只存 base（用户口径）
+        params.angle_position_kp = static_cast<uint32_t>(owner_.base_angle_position_kp_ * 1000.0f + 0.5f);
+        params.angle_position_ki = static_cast<uint32_t>(owner_.base_angle_position_ki_ * 1000.0f + 0.5f);
+        params.angle_position_kd = static_cast<uint32_t>(owner_.base_angle_position_kd_ * 1000.0f + 0.5f);
+        params.angle_velocity_kp = static_cast<uint32_t>(owner_.base_angle_velocity_kp_ * 1000.0f + 0.5f);
+        params.angle_velocity_ki = static_cast<uint32_t>(owner_.base_angle_velocity_ki_ * 1000.0f + 0.5f);
+        params.angle_velocity_kd = static_cast<uint32_t>(owner_.base_angle_velocity_kd_ * 1000.0f + 0.5f);
         // 角度限速/加速度不存 Flash：它们属于“本次运行设定”，每次按现场需要在界面上调，
         // 存进 Flash 反而会让一个旧值在重启后静默生效。结构体字段保留（置 0）用于兼容。
         params.angle_max_rpm = 0U;
@@ -332,6 +341,33 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         owner_.position_pid_.resetDeriv();
         owner_.velocity_pid_.resetIntegral();
         owner_.velocity_pid_.resetDeriv();
+        return owner_.protocol_ != nullptr && owner_.protocol_->setCustomParameter(reg, value);
+    }
+    // ===== 角度模式（串级）的独立增益：0x156~0x15B =====
+    // 与 0x129~0x12E 完全分开：那一组服务规划运动/外部跟随（PID 只做小修正），
+    // 这一组服务角度模式（PID 输出就是全部速度指令）。
+    // 写入只动角度实例，不会反过来影响规划运动的补偿。
+    if (reg == TMC2209_EXT_PARAM_ANGLE_POSITION_KP || reg == TMC2209_EXT_PARAM_ANGLE_POSITION_KI ||
+        reg == TMC2209_EXT_PARAM_ANGLE_POSITION_KD || reg == TMC2209_EXT_PARAM_ANGLE_VELOCITY_KP ||
+        reg == TMC2209_EXT_PARAM_ANGLE_VELOCITY_KI || reg == TMC2209_EXT_PARAM_ANGLE_VELOCITY_KD)
+    {
+        const float gain = clampPidGain(reg, value);
+        if (reg == TMC2209_EXT_PARAM_ANGLE_POSITION_KP) owner_.base_angle_position_kp_ = gain;
+        if (reg == TMC2209_EXT_PARAM_ANGLE_POSITION_KI) owner_.base_angle_position_ki_ = gain;
+        if (reg == TMC2209_EXT_PARAM_ANGLE_POSITION_KD) owner_.base_angle_position_kd_ = gain;
+        if (reg == TMC2209_EXT_PARAM_ANGLE_VELOCITY_KP) owner_.base_angle_velocity_kp_ = gain;
+        if (reg == TMC2209_EXT_PARAM_ANGLE_VELOCITY_KI) owner_.base_angle_velocity_ki_ = gain;
+        if (reg == TMC2209_EXT_PARAM_ANGLE_VELOCITY_KD) owner_.base_angle_velocity_kd_ = gain;
+        owner_.angle_position_pid_.setGains(owner_.base_angle_position_kp_,
+                                            owner_.base_angle_position_ki_,
+                                            owner_.base_angle_position_kd_);
+        owner_.angle_velocity_pid_.setGains(owner_.base_angle_velocity_kp_,
+                                            owner_.base_angle_velocity_ki_,
+                                            owner_.base_angle_velocity_kd_);
+        owner_.angle_position_pid_.resetIntegral();
+        owner_.angle_position_pid_.resetDeriv();
+        owner_.angle_velocity_pid_.resetIntegral();
+        owner_.angle_velocity_pid_.resetDeriv();
         return owner_.protocol_ != nullptr && owner_.protocol_->setCustomParameter(reg, value);
     }
     if (reg == TMC2209_EXT_PARAM_MOTOR_ENABLE)
@@ -602,6 +638,37 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_POSITION_KD)
     {
         *value = static_cast<uint32_t>(owner_.base_position_kd_ * 1000.0f);
+        return true;
+    }
+    // 角度模式（串级）独立增益的回显：读 base（用户口径），不读 live
+    if (reg == TMC2209_EXT_PARAM_ANGLE_POSITION_KP)
+    {
+        *value = static_cast<uint32_t>(owner_.base_angle_position_kp_ * 1000.0f);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ANGLE_POSITION_KI)
+    {
+        *value = static_cast<uint32_t>(owner_.base_angle_position_ki_ * 1000.0f);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ANGLE_POSITION_KD)
+    {
+        *value = static_cast<uint32_t>(owner_.base_angle_position_kd_ * 1000.0f);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ANGLE_VELOCITY_KP)
+    {
+        *value = static_cast<uint32_t>(owner_.base_angle_velocity_kp_ * 1000.0f);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ANGLE_VELOCITY_KI)
+    {
+        *value = static_cast<uint32_t>(owner_.base_angle_velocity_ki_ * 1000.0f);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ANGLE_VELOCITY_KD)
+    {
+        *value = static_cast<uint32_t>(owner_.base_angle_velocity_kd_ * 1000.0f);
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_PID_TUNE_SCORE_MDEG)

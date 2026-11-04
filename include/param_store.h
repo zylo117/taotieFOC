@@ -36,7 +36,19 @@ struct PersistedMotorParams
     uint32_t velocity_kp;
     uint32_t velocity_ki;
     uint32_t velocity_kd;
-    uint16_t reserved[7];       // 预留到字号对齐，方便以后扩展
+
+    // 【v2 新增】角度模式（串级）的独立增益。同样的上位机口径（实际增益 × 1000）。
+    // 为什么要分离：同一个 kp 在两条路径里含义完全不同 —— 角度模式里 PID 输出就是
+    // 全部速度指令；规划运动/外部跟随里梯形（或外部脉冲）是主驱动、PID 只做小修正。
+    // 共用一组参数等于让两种回路互相 “偷走”对方的整定结果，而且三个模式还共用
+    // 同一份 PID 实例与积分状态 —— 这正是本项目反复踩过的“模式切换残留”坑。
+    uint32_t angle_position_kp;
+    uint32_t angle_position_ki;
+    uint32_t angle_position_kd;
+    uint32_t angle_velocity_kp;
+    uint32_t angle_velocity_ki;
+    uint32_t angle_velocity_kd;
+    uint16_t reserved[1];       // 预留到字号对齐，方便以后扩展
 };
 
 // 从 Flash 读取参数到 out。返回 true 表示校验通过、内容有效。
