@@ -77,7 +77,8 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
         //   第 1 行：抖动归因 —— 位置/速度误差与 P、I、D 三个分量分开给出，直接看谁在抖；
         //   第 2 行：系数透明 —— web 是网页/Flash 口径（base_*），live 是此刻真正在算的 kp/ki/kd，
         //          两者不相等就说明中间有运行时改增益（applyGainScales）在生效；
-        //   第 3 行：两个环的 p_scale（角度模式 P 被缩到 0.01，规划补偿不缩）。
+        //   第 3 行：两个环的 p_scale。现在两条路径都应该是 1.00（角度模式历史上缩到 0.01），
+        //          保留这一列是为了防回归：一旦哪里又偷加口径倍率，这里会直接显示出来。
         if (c.vloop_debug_once_)
         {
             c.vloop_debug_once_ = false;
@@ -115,8 +116,8 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
                        static_cast<double>(c.velocity_pid_.ki),
                        static_cast<double>(c.velocity_pid_.kd),
                        pos_scale, vel_scale,
-                       c.closed_loop_angle_mode_enabled_ ? 0.01 : 1.0,
-                       1.0);
+                       1.0,   // 角度模式 p_scale：串级改造后已删除，永远是 1.00
+                       1.0);  // 规划运动补偿路径 p_scale：本来就没有缩
             }
         }
     }

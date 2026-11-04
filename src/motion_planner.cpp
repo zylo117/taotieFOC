@@ -61,11 +61,17 @@ MotionPlanner::MotionPlanner(ClosedLoopController& owner) : owner_(owner)
 //      ↓ 加速度限幅（angle_accel_rpm_s_）
 //   compensated_rps_ → 下一步由 emitSteps 转成脉冲
 //
-// 两个“看起来奇怪但必须保留”的设计：
-//   1) base_speed 用上一拍输出：没有它，小 P 根本推不动转子（实测极慢）；
-//      代价是它是正反馈，所以速度环 Ki 必须为 0，否则持续发散。
-//   2) P 项 ×0.01：角度模式 PID 输出就是全部速度，而运动模式里 PID 只做小修正，
-//      同样的 P 在角度模式等效放大很多，不缩就大幅摆动。
+// 两个已删除的隐藏环节（历史遗留，但它们是坑）：
+//   1) kAnglePScale = 0.01：当年“PID 输出就是全部速度”，同样的 P 等效大 100 倍，
+//      所以把 P 缩到 1/100；但同一个 kp 在规划运动补偿路径里不缩（p_scale=1），
+//      于是一个数字在两条路径上等效增益差 100 倍，手感完全不一致。
+//   2) base_speed_rps = current_step_speed_/spr：把“自己上一拍的输出”当基础速度，
+//      等于给位置环偷加了一个积分器。它确实是“小 P 也能滚起来”的原因，但它积分的是
+//      **速度反馈噪声**（单拍差分的残余噪声实测约 1.35 rps），稳态抖动≈σ·√(kp/2)：
+//      kp 再小也抖，kp 调小又推不动；而且速度环 I 一开就发散（因为正反馈）。
+// 现在的结构：位置环输出 v_ref（速度指令）→ 速度环只对 (v_ref − 实测) 做阻尼修正
+// → 限幅/方向钳位/加速度钳位 → 微步/s。“尾巴收敛不到 0”该由位置环 ki 管（有 anti-windup、
+// 模式切换会清），而不是靠自引用把噪声积起来。注意：改完之后原有增益需要重整定。
 // ===========================================================================
 void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
 {
@@ -81,29 +87,14 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
     if (dt > 0.0f)
     {
         const float position_error_rev = desired_error_deg / 360.0f;
-        // 【唯一样例：角度模式的 P 项 ×1/100】
-        // 网页与固件用的是同一套 PID（没有任何口径倍率），但角度模式下
-        // P 的等效增益比运动模式大得多（运动模式 PID 只做小修正），所以这里把 P 缩到 1/100。
-        // 只缩 P：缩 I 会让稳态误差永远消不掉，缩 D 会丢阻尼而过冲。
-        constexpr float kAnglePScale = 0.01f;
-        // 根据误差角算出位置环的速度修正量
-        const float position_reference_rps = c.position_pid_.update(position_error_rev, dt, kAnglePScale);
-        // 【恢复 base_speed：角度模式需要“记忆”】
-        // 一度改成 0（纯位置伺服）后实测：
-        //   - 极慢：误差 4 度 -> P=9 -> 只输出 0.1rps，几乎不动
-        //   - 抖动：PID 输出直接就是全部速度，速度环的小噪声被完整放大
-        // 原来的写法把上一拍输出作为基础速度，相当于给位置环一个积分器，
-        // 小 P 也能逐渐把速度“滚”起来，这是这个结构能用的关键。
-        //
-        // 代价（已知且可接受）：它是个正反馈，所以速度环不能靠 I 项去消除稳态误差，
-        // 否则会持续发散（实测 I=1 就发散）。速度环只当阻尼用。
-        const float base_speed_rps = c.current_step_speed_ / static_cast<float>(c.getStepsPerRound());
-        // 总期望速度 = 基础速度 + 位置环修正量
-        const float total_ref_rps = base_speed_rps + position_reference_rps;
-        // 总期望速度和实际速度的速度差
-        const float velocity_error_rps = total_ref_rps - (c.encoder_speed_rpm_ / 60.0f);
-        // 根据速度差算出速度环修正量（同样只缩 P 项）
-        const float velocity_correction_rps = c.velocity_pid_.update(velocity_error_rps, dt, kAnglePScale);
+        // 【位置环：输出就是速度指令 v_ref】网页值 = 进 PID 的值，没有任何口径倍率。
+        const float v_ref_rps = c.position_pid_.update(position_error_rev, dt);
+        // 【速度环：只做阻尼/跟踪】误差 = v_ref − 实测，不再把“自己上一拍输出”掺进参考
+        const float measured_motion_rps = c.encoder_speed_rpm_ / 60.0f;
+        const float velocity_error_rps = v_ref_rps - measured_motion_rps;
+        const float velocity_correction_rps = c.velocity_pid_.update(velocity_error_rps, dt);
+        // 下游限幅与诊断沿用这个名字（它就是“基础速度指令”，但现在是算出来的，不是自引用）
+        const float position_reference_rps = v_ref_rps;
 
         const float max_rps = c.angle_max_rpm_ / 60.0f;
         const float unconstrained_rps =
@@ -154,11 +145,11 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
         {
             auto& d = c.vloop_;
             d.err_deg = desired_error_deg;
-            d.ref_rps = total_ref_rps;
-            d.meas_rps = c.encoder_speed_rpm_ / 60.0f;
+            d.ref_rps = v_ref_rps;
+            d.meas_rps = measured_motion_rps;
             d.vel_err_rps = velocity_error_rps;
             d.pos_out_rps = position_reference_rps;
-            d.vel_p = c.velocity_pid_.kp * kAnglePScale * velocity_error_rps;
+            d.vel_p = c.velocity_pid_.kp * velocity_error_rps;
             d.vel_i = c.velocity_pid_.ki * c.velocity_pid_.integral;
             d.vel_d = c.velocity_pid_.kd * c.velocity_pid_.filtered_derivative;
             d.out_rps = calibration_rps;
