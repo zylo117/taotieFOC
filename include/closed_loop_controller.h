@@ -336,10 +336,23 @@ private:
         volatile float vel_i = 0.0f;         // 速度环 I 分量
         volatile float vel_d = 0.0f;         // 速度环 D 分量
         volatile float out_rps = 0.0f;       // 最终交给 emitSteps 的量
+        volatile float prof_vel_rps = 0.0f;  // 角度模式轮廓速度（= 速度前馈量）
         volatile float step_speed_s = 0.0f;  // current_step_speed_（微步/s）
         volatile uint32_t stamp = 0U;        // 更新计数：任务侧据此判断闭环是否在跑
     };
     VLoopDbg vloop_;
+
+    // ===== 角度模式的梯形轮廓（速度前馈）=====
+    // 为什么要有轮廓：纯 P 的角度模式里「速度 ∝ 误差」，越接近目标越慢（指数尾巴），
+    // 而且无法“按指定转速转到目标角”。以前的 base_speed 自引用是在偷偷补这个洞，
+    // 代价是把速度反馈噪声积成抖动。现在换成正规做法：
+    //   轮廓以 0x12F（限速）/0x130（限加速度）向目标推进；
+    //   v_ref = 轮廓速度（前馈） + 位置PID（轮廓位置 - 实际位置）（只处理跟踪误差）
+    // 前馈负责“走多快”，闭环负责“跟得准”，不再挤在一个 P 上。
+    // 轮廓位置不做 0~360 归一：它始终在目标附近，越缝时靠环形误差处理，不会飘远。
+    volatile float angle_profile_pos_deg_ = 0.0f;
+    volatile float angle_profile_vel_rps_ = 0.0f;
+    volatile bool angle_profile_valid_ = false;
     // 一次性打印开关（写 0x155 置位）：遥测慢档打印一次后自动归零。
     volatile bool vloop_debug_once_ = false;
     volatile uint32_t motion_pulse_count_;

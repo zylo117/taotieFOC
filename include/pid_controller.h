@@ -29,11 +29,16 @@ public:
     // 计算当前误差下的控制输出。
     // error：当前误差，dt：控制周期时间
     // p_scale 只缩放比例项，不影响积分和微分。
-    // 用途：角度模式下没有基础速度，PID 输出直接就是全部速度，同样增益等于被放大百倍，
-    // 必须把 P 缩小（实测 1/100）。但 I 和 D 不能一起缩：
-    //   I 缩小 100 倍 -> 积分几乎失效 -> 稳态误差永远消不掉
-    //   D 缩小 100 倍 -> 阻尼消失 -> 过冲严重
-    float update(float error, float dt, float p_scale = 1.0f);
+    // 用途：旧版角度模式没有基础速度，PID 输出直接就是全部速度，同样增益等于被放大百倍，
+    // 当时靠把 P 缩到 1/100 压住。现在角度模式改成“梯形轮廓 + 跟踪误差”结构，
+    // 不再需要这种口径倍率（保留该参数是为了向后兼容已有调用）。
+    //
+    // 【d_on_measurement + measured_rate：微分先行（超前校正的等价实现）】
+    // 对「误差」求导时，改目标值那一刻误差是阶跃，微分会打出一脚冲击（derivative kick），
+    // 表现为“换个目标角度第一下猛冲”。改成对「测量值」求导（取负号），
+    // 阻尼作用完全相同但没有冲击。默认 false，所有旧调用行为不变。
+    float update(float error, float dt, float p_scale = 1.0f,
+                 float measured_rate = 0.0f, bool d_on_measurement = false);
 
     // 清零积分项，防止误差长期累积导致超调。
     void resetIntegral();

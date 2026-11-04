@@ -75,6 +75,8 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
         // 三行浮点 printf ≈ 270 字节 @115200 ≈ 23ms，周期打印会干扰被诊断的对象。
         // 三行分工：
         //   第 1 行：抖动归因 —— 位置/速度误差与 P、I、D 三个分量分开给出，直接看谁在抖；
+        //          （err 现在是“轮廓位置 - 实际位置”的跟踪误差，不再是指令-实际的目标误差）
+        //          ff 列就是梯形轮廓给的速度前馈量，能直接看出前馈有没有出力、有没有贴限速帽。
         //   第 2 行：系数透明 —— web 是网页/Flash 口径（base_*），live 是此刻真正在算的 kp/ki/kd，
         //          两者不相等就说明中间有运行时改增益（applyGainScales）在生效；
         //   第 3 行：两个环的 p_scale。现在两条路径都应该是 1.00（角度模式历史上缩到 0.01），
@@ -100,12 +102,13 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
                        static_cast<double>(c.vloop_.ref_rps),
                        static_cast<double>(c.vloop_.meas_rps),
                        static_cast<double>(c.vloop_.vel_err_rps));
-                printf("[VLOOP] P=%+.4f I=%+.4f D=%+.4f posOut=%+.4f out=%+.4frps step=%+.0f/s\r\n",
+                printf("[VLOOP] P=%+.4f I=%+.4f D=%+.4f posOut=%+.4f out=%+.4frps ff=%+.4frps step=%+.0f/s\r\n",
                        static_cast<double>(c.vloop_.vel_p),
                        static_cast<double>(c.vloop_.vel_i),
                        static_cast<double>(c.vloop_.vel_d),
                        static_cast<double>(c.vloop_.pos_out_rps),
                        static_cast<double>(c.vloop_.out_rps),
+                       static_cast<double>(c.vloop_.prof_vel_rps),
                        static_cast<double>(c.vloop_.step_speed_s));
                 printf("[VLOOP] gains web pos %.3f/%.3f/%.3f vel %.3f/%.3f/%.3f live pos %.3f/%.3f/%.3f vel %.3f/%.3f/%.3f kscale %.3f/%.3f p_scale %.2f/%.2f\r\n",
                        pos_kp_web, pos_ki_web, pos_kd_web, vel_kp_web, vel_ki_web, vel_kd_web,

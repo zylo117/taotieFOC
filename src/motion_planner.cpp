@@ -86,17 +86,51 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
 
     if (dt > 0.0f)
     {
-        const float position_error_rev = desired_error_deg / 360.0f;
-        // 【位置环：输出就是速度指令 v_ref】网页值 = 进 PID 的值，没有任何口径倍率。
-        const float v_ref_rps = c.angle_position_pid_.update(position_error_rev, dt);
-        // 【速度环：只做阻尼/跟踪】误差 = v_ref − 实测，不再把“自己上一拍输出”掺进参考
         const float measured_motion_rps = c.encoder_speed_rpm_ / 60.0f;
-        const float velocity_error_rps = v_ref_rps - measured_motion_rps;
-        const float velocity_correction_rps = c.angle_velocity_pid_.update(velocity_error_rps, dt);
-        // 下游限幅与诊断沿用这个名字（它就是“基础速度指令”，但现在是算出来的，不是自引用）
-        const float position_reference_rps = v_ref_rps;
-
         const float max_rps = c.angle_max_rpm_ / 60.0f;
+        const float max_accel_rps2 = c.angle_accel_rpm_s_ / 60.0f;
+
+        // ---------- 1) 梯形轮廓（速度前馈的来源）----------
+        // 刚进入角度模式（或上次已停止）时从当前实际角度起步，避免轮廓凭空跳到位。
+        if (!c.angle_profile_valid_)
+        {
+            c.angle_profile_pos_deg_ = c.motion_position_deg_;
+            c.angle_profile_vel_rps_ = 0.0f;
+            c.angle_profile_valid_ = true;
+        }
+        const float to_target_deg =
+            normalize_signed_angle_error_deg(c.target_angle_deg_ - c.angle_profile_pos_deg_);
+        const float profile_dir = (to_target_deg >= 0.0f) ? 1.0f : -1.0f;
+        const float remaining_rev = fast_abs(to_target_deg) / 360.0f;
+        // 平方根律：以恒定减速度刚好停在目标上所允许的最大速度。
+        // 与“提前算减速点”等价，但不需额外状态，也不会因为目标跳变而算错。
+        const float decel_cap_rps = (max_accel_rps2 > 0.001f)
+            ? std::sqrt(2.0f * max_accel_rps2 * remaining_rev) : max_rps;
+        float profile_desired_rps = profile_dir * ((max_rps < decel_cap_rps) ? max_rps : decel_cap_rps);
+        // 轮廓速度本身也受加速度限制：前馈必须是连续的，不能一步跳到全速
+        const float accel_cap = max_accel_rps2 * dt;
+        profile_desired_rps = fast_clamp(profile_desired_rps,
+                                         c.angle_profile_vel_rps_ - accel_cap,
+                                         c.angle_profile_vel_rps_ + accel_cap);
+        c.angle_profile_vel_rps_ = profile_desired_rps;
+        // 度/s = rps × 360
+        c.angle_profile_pos_deg_ += profile_desired_rps * 360.0f * dt;
+
+        // ---------- 2) 前馈 + 跟踪 ----------
+        // 位置环只看“轮廓位置 − 实际位置”（跟踪误差），不再看目标：
+        // 走多快由前馈决定，跟得准不准才交给 PID。换目标时不再产生“误差是阶跃”的大 P 冲击。
+        const float follow_err_deg =
+            normalize_signed_angle_error_deg(c.angle_profile_pos_deg_ - c.motion_position_deg_);
+        // 【微分先行】D 对测量值求导（-measured_rate），不对误差求导：
+        // 目标角改变时误差是阶跃，对误差微分会打一脚冲击（derivative kick）。
+        const float position_reference_rps =
+            profile_desired_rps +
+            c.angle_position_pid_.update(follow_err_deg / 360.0f, dt, 1.0f,
+                                         measured_motion_rps, true);
+        // 速度环只对“指令速度 − 实测速度”做阻尼修正
+        const float velocity_error_rps = position_reference_rps - measured_motion_rps;
+        const float velocity_correction_rps = c.angle_velocity_pid_.update(velocity_error_rps, dt);
+
         const float unconstrained_rps =
             fast_clamp(position_reference_rps + velocity_correction_rps, -max_rps, max_rps);
 
@@ -123,6 +157,9 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
                 : desired_rps;
         if (c.calibration_stage_ == ClosedLoopController::CALIBRATION_HOMING && calibration_rps == 0.0f)
         {
+            // 归零已到位：轮廓也拉回当前位置并停下，否则下次进角度模式会从旧轮廓接着跑
+            c.angle_profile_pos_deg_ = c.motion_position_deg_;
+            c.angle_profile_vel_rps_ = 0.0f;
             c.motion_step_accumulator_ = 0.0f;
             c.compensated_motion_step_accumulator_ = 0.0f;
             c.compensated_rps_ = 0.0f;
@@ -144,11 +181,12 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
         // 这里用的是 c.velocity_pid_.kp（此刻真正在算的值），所以运行时改增益会直接露出来。
         {
             auto& d = c.vloop_;
-            d.err_deg = desired_error_deg;
-            d.ref_rps = v_ref_rps;
+            d.err_deg = follow_err_deg;
+            d.ref_rps = position_reference_rps;
             d.meas_rps = measured_motion_rps;
             d.vel_err_rps = velocity_error_rps;
             d.pos_out_rps = position_reference_rps;
+            d.prof_vel_rps = profile_desired_rps;
             d.vel_p = c.angle_velocity_pid_.kp * velocity_error_rps;
             d.vel_i = c.angle_velocity_pid_.ki * c.angle_velocity_pid_.integral;
             d.vel_d = c.angle_velocity_pid_.kd * c.angle_velocity_pid_.filtered_derivative;

@@ -24,7 +24,8 @@ void PidController::setGains(float kp_value, float ki_value, float kd_value)
 // - I 项用于消除稳态误差
 // - D 项用于抑制超调和提高阻尼
 // 但在电机闭环中，积分项和微分项不能无限大，否则会导致振荡，因此要做限幅。
-float PidController::update(float error, float dt, float p_scale)
+float PidController::update(float error, float dt, float p_scale,
+                            float measured_rate, bool d_on_measurement)
 {
     // 时间差非法（首拍 / 调度异常）：只给比例项，不碰积分和微分状态。
     // 旧实现里 dt=0 时 derivative 保持 0、但 integral 仍然累加一个 0，
@@ -38,7 +39,11 @@ float PidController::update(float error, float dt, float p_scale)
     // 直接对 (error - last_error)/dt 做 D 会被编码器量化噪声主导：
     // 1 LSB = 0.0055°，dt = 50us 时原始斜率就是 114°/s 的尖峰，
     // 乘 kd=60 得 6800，实际效果接近 bang-bang，D 项根本没在提供阻尼。
-    const float raw_derivative = (error - last_error) / dt;
+    // 微分先行：d_on_measurement 时不对误差求导，而是用测量变化率的负值。
+    // 两者在线性段的阻尼效果等价，但前者在改目标值时不会产生微分冲击。
+    const float raw_derivative = d_on_measurement
+        ? (-measured_rate)
+        : ((error - last_error) / dt);
     filtered_derivative = PID_DERIVATIVE_LPF * filtered_derivative +
                           (1.0f - PID_DERIVATIVE_LPF) * raw_derivative;
 

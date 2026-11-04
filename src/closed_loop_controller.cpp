@@ -1312,6 +1312,10 @@ void ClosedLoopController::stopMotion()
     angle_position_pid_.resetDeriv();
     angle_velocity_pid_.resetIntegral();
     angle_velocity_pid_.resetDeriv();
+    // 轮廓作废：下次进角度模式从当前实际角度重新起步。
+    // 不清的话，停止前那个“已经走到一半”的轮廓会在下次启动时直接把前馈叠上去，
+    // 表现为“一上电/一进角度模式就先跑一下”。
+    angle_profile_valid_ = false;
     motion_last_ramp_time_ns_ = 0ULL;
     // printf("fuck3 motion_last_ramp_time_ns_: %f\n", motion_last_ramp_time_ns_/1e9);
     motion_step_high_ = false;
