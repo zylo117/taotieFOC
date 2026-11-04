@@ -156,6 +156,10 @@ enum Tmc2209CustomExtensionRegister
     // 保存内容：PID 六项 + 角度模式限速/加速度。写入会 stall Flash 总线几毫秒，
     // 只能在静止、用户显式点击时用。
     TMC2209_EXT_PARAM_SAVE_PARAMS = 0x154U,
+    // R/W：一次性打印 [VLOOP] 速度环/增益诊断快照（写 1 = 打一次，打完自动清零）。
+    // 为什么是触发式而不是周期打印：三行浮点 printf 约 270 字节 @115200 ≈ 23ms，
+    // 放在 1Hz 慢档会周期性挤占任务，实测影响闭环手感 —— 诊断不该改变被诊断的对象。
+    TMC2209_EXT_PARAM_VLOOP_DEBUG_PRINT = 0x155U,
 
     // R/W：诊断用——旁路磁编码器非线性校准表（0=正常查表，1=直接返回原始值）。
     // 用途：做“查表 / 不查表”的 A/B 对比，判断某个角度误差是不是校准表引入的。
@@ -222,8 +226,8 @@ private:
     bool readOfficialRegister(uint8_t reg, uint32_t* value) const;
 
     ClosedLoopDriverProtocolConfig config_;
-    // 扩展参数表长度：覆盖 0x100 ~ 0x154，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x154U - 0x100U + 1U;
+    // 扩展参数表长度：覆盖 0x100 ~ 0x155，新增寄存器时同步这个常量
+    static constexpr uint16_t kCustomParameterCount = 0x155U - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

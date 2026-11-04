@@ -38,6 +38,13 @@ ParameterRouter::ParameterRouter(ClosedLoopController& owner) : owner_(owner)
 
 bool ParameterRouter::write(uint16_t reg, uint32_t value)
 {
+    if (reg == TMC2209_EXT_PARAM_VLOOP_DEBUG_PRINT)
+    {
+        // 一次性触发：由遥测慢档打印一条 [VLOOP] 快照后自动清零。
+        // 不做周期打印：三行浮点≈ 23ms 的阻塞会干扰被诊断的对象本身。
+        owner_.vloop_debug_once_ = value != 0U;
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_SAVE_PARAMS)
     {
         // 【写入会 stall Flash 总线几毫秒】运动中绝对不能做，否则会丢脉冲。
@@ -53,13 +60,18 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         }
 
         PersistedMotorParams params = {};
-        // PID 用上位机口径（×1000 的整数），与 param_store.h 注释一致
-        params.position_kp = static_cast<uint32_t>(owner_.position_pid_.kp * 1000.0f + 0.5f);
-        params.position_ki = static_cast<uint32_t>(owner_.position_pid_.ki * 1000.0f + 0.5f);
-        params.position_kd = static_cast<uint32_t>(owner_.position_pid_.kd * 1000.0f + 0.5f);
-        params.velocity_kp = static_cast<uint32_t>(owner_.velocity_pid_.kp * 1000.0f + 0.5f);
-        params.velocity_ki = static_cast<uint32_t>(owner_.velocity_pid_.ki * 1000.0f + 0.5f);
-        params.velocity_kd = static_cast<uint32_t>(owner_.velocity_pid_.kd * 1000.0f + 0.5f);
+        // PID 用上位机口径（×1000 的整数），与 param_store.h 注释一致。
+        // 【必须存 base_*，不能存 live 的 position_pid_.kp】applyGainScales() 会在运行时
+        // 把 kp/ki/kd 乘上速度/加速/误差相关的系数（planner 自适应路径），如果存 live 值，
+        // 整定/自适应之后点“保存参数”就会把被放大过的增益永久写进 Flash：下次开机 base
+        // 就是那个错值，而网页回显读的是 base —— 于是“我填的值并不是给 PID 的值”，
+        // 而且下次再也不会恢复。这就是系数“莫名失效”的真实通道。
+        params.position_kp = static_cast<uint32_t>(owner_.base_position_kp_ * 1000.0f + 0.5f);
+        params.position_ki = static_cast<uint32_t>(owner_.base_position_ki_ * 1000.0f + 0.5f);
+        params.position_kd = static_cast<uint32_t>(owner_.base_position_kd_ * 1000.0f + 0.5f);
+        params.velocity_kp = static_cast<uint32_t>(owner_.base_velocity_kp_ * 1000.0f + 0.5f);
+        params.velocity_ki = static_cast<uint32_t>(owner_.base_velocity_ki_ * 1000.0f + 0.5f);
+        params.velocity_kd = static_cast<uint32_t>(owner_.base_velocity_kd_ * 1000.0f + 0.5f);
         // 角度限速/加速度不存 Flash：它们属于“本次运行设定”，每次按现场需要在界面上调，
         // 存进 Flash 反而会让一个旧值在重启后静默生效。结构体字段保留（置 0）用于兼容。
         params.angle_max_rpm = 0U;

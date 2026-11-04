@@ -324,6 +324,8 @@ private:
         volatile uint32_t stamp = 0U;        // 更新计数：任务侧据此判断闭环是否在跑
     };
     VLoopDbg vloop_;
+    // 一次性打印开关（写 0x155 置位）：遥测慢档打印一次后自动归零。
+    volatile bool vloop_debug_once_ = false;
     volatile uint32_t motion_pulse_count_;
     volatile MotionMode motion_mode_;
     volatile bool closed_loop_compensation_enabled_;

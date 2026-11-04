@@ -78,6 +78,9 @@ const CUSTOM_REGS = {
     EXT_FOLLOW_WINDOW_REVERSALS: 0x150,
     LOAD_ANGLE_MDEG: 0x151,
     LOAD_ANGLE_FF_RATIO: 0x152,
+    // 写 1 = 让固件打印一次 [VLOOP] 诊断快照（P/I/D 分量 + web/live 增益对比），
+    // 打完自动清零。默认不打：周期 printf 的 23ms 阻塞会干扰被诊断的闭环本身。
+    VLOOP_DEBUG_PRINT: 0x155,
     CPU_USAGE_CENTIPERCENT: 0x137,
     CONTROL_TASK_USAGE_CENTIPERCENT: 0x138,
     MAX_RPM: 0x11B,

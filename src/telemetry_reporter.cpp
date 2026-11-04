@@ -71,18 +71,17 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
         // 已移到 kMedium（≈ 100Hz）档。
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, c.step_pulse_width_ns_);
 
-        // 【VLOOP 诊断】闭环在跑就每秒打一行（用快照是否更新过做判据，不需要额外开关）。
+        // 【VLOOP 诊断】写 0x155=1 才打一次（打完自动清零）。默认不打：
+        // 三行浮点 printf ≈ 270 字节 @115200 ≈ 23ms，周期打印会干扰被诊断的对象。
         // 三行分工：
         //   第 1 行：抖动归因 —— 位置/速度误差与 P、I、D 三个分量分开给出，直接看谁在抖；
         //   第 2 行：系数透明 —— web 是网页/Flash 口径（base_*），live 是此刻真正在算的 kp/ki/kd，
         //          两者不相等就说明中间有运行时改增益（applyGainScales）在生效；
-        //   第 3 行：限速/加速度与两个环的 p_scale（角度模式 P 被缩到 0.01，规划补偿不缩）。
+        //   第 3 行：两个环的 p_scale（角度模式 P 被缩到 0.01，规划补偿不缩）。
+        if (c.vloop_debug_once_)
         {
-            static uint32_t s_last_vloop_stamp = 0U;
-            const uint32_t stamp_now = c.vloop_.stamp;
-            if (stamp_now != s_last_vloop_stamp)
+            c.vloop_debug_once_ = false;
             {
-                s_last_vloop_stamp = stamp_now;
                 const double pos_kp_web = static_cast<double>(c.base_position_kp_);
                 const double pos_ki_web = static_cast<double>(c.base_position_ki_);
                 const double pos_kd_web = static_cast<double>(c.base_position_kd_);
