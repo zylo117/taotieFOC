@@ -400,9 +400,9 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
 // 否则低速时每拍不足 1 步会被反复丢弃，掉速很严重。
 //
 // 角度模式的特殊处理：每拍最多走 kMaxStepsPerTick 步。
-// 这个钳位同时是“防喷发”（大误差时一次吐几十步堵住 DMA）和“实际限速”：
-// 3 步/拍 x 20kHz = 60000 步/s，按 12800 步/圈约 281 RPM，
-// 界面上的“闭环最大速度”超过这个值也达不到。
+// 这个钳位同时是“防喷发”（大误差时一次发出几十步堵住 DMA）和“实际限速”：
+// 8 步/拍 x 20kHz = 160000 步/s，按 12800 步/圈约 750 RPM；再往上的真限速
+// 由 0x12F（角度最大速度）与 0x130（角度加速度）决定。
 // ===========================================================================
 bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
 {
@@ -431,10 +431,15 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
         fast_abs(c.current_step_speed_ + compensated_step_speed) * dt_step_s;
 
     // 角度模式：每拍最多走 kMaxStepsPerTick 步。
-    // 原来钳到 1 步/拍等于硬限速 20000 步/s：按 12800 步/圈就是 93 RPM，
-    // 所以界面上设“闭环最大速度 1200RPM”根本达不到。
-    // 现在提到 3 步/拍（60000 步/s ≈ 280 RPM），仍在 50us 窗口内。
-    constexpr float kMaxStepsPerTick = 3.0f;
+    // 这个钳位同时是“防喷发”和“实际限速”：超出部分是被**丢弃**的（两个累加器都被直接
+    // 压到上限），所以帽定得太低会让位置环在高误差段完全失去比例作用（v_ref 再大也出不去）。
+    // 历史值：1 步/拍 = 20000 步/s ≈ 93 RPM（太低，1200RPM 设定根本达不到）；
+    //            3 步/拍 = 60000 步/s ≈ 281 RPM —— 但 250 RPM 就已贴帽（2.67 步/拍），
+    //            没有任何调节余量。
+    // 现在 8 步/拍 = 160000 步/s ≈ 750 RPM（64 细分）。硬件上很宽：最小步距
+    // 2×200ns=400ns → 一窗（50us）能装 125 步，MAX_PULSE_ARR_LEN=128 也没碰到。
+    // 真正的限速回到它们该在的地方：0x12F（角度限速 RPM）与 0x130（加速度）。
+    constexpr float kMaxStepsPerTick = 8.0f;
     if (c.closed_loop_angle_mode_enabled_ && c.motion_step_accumulator_ > kMaxStepsPerTick)
     {
         c.motion_step_accumulator_ = kMaxStepsPerTick;
