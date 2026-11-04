@@ -1276,6 +1276,42 @@
                                 <input id="velKd" min="0" max="30000" step="0.01" type="number" value="20.0"/>
                             </div>
                         </div>
+
+                        <!-- 角度模式（串级）独立增益：与上面那一组完全分开。
+                             原因：角度模式里 PID 输出就是全部速度指令，而规划运动/外部跟随里
+                             梯形是主驱动、PID 只做小修正；同一个数字在两条路径上含义不同。 -->
+                        <div class="card">
+                            <h3 style="margin-top:0;">角度模式 位置 PID</h3>
+                            <div class="field">
+                                <label>Kp</label>
+                                <input id="anglePosKp" min="0" max="30000" step="0.01" type="number" value="20.0"/>
+                            </div>
+                            <div class="field mt">
+                                <label>Ki</label>
+                                <input id="anglePosKi" min="0" max="3000" step="0.01" type="number" value="0.0"/>
+                            </div>
+                            <div class="field mt">
+                                <label>Kd</label>
+                                <input id="anglePosKd" min="0" max="30000" step="0.01" type="number" value="0.0"/>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <h3 style="margin-top:0;">角度模式 速度 PID</h3>
+                            <div class="field">
+                                <label>Kp</label>
+                                <input id="angleVelKp" min="0" max="30000" step="0.01" type="number" value="0.2"/>
+                            </div>
+                            <div class="field mt">
+                                <label>Ki</label>
+                                <input id="angleVelKi" min="0" max="3000" step="0.01" type="number" value="0.0"/>
+                            </div>
+                            <div class="field mt">
+                                <label>Kd</label>
+                                <input id="angleVelKd" min="0" max="30000" step="0.01" type="number" value="0.0"/>
+                            </div>
+                            <div class="tiny mt">角度模式专用（串级，无口径倍率）；上面那组只对规划运动/外部跟随生效。限速与加速度由 0x12F/0x130 控制。</div>
+                        </div>
                         <div class="field mt">
                             <button id="savePidToFlashBtn" type="button">写入 PID 参数到 Flash</button>
                             <span class="tiny" id="savePidToFlashStatus"></span>

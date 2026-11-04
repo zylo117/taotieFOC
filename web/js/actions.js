@@ -343,6 +343,9 @@
         }
 
         async function writePidParameters(params = getPidParameters()) {
+            // 【只下发规划运动/外部跟随那一组】故意不把角度模式的六个寄存器加进来：
+            // 自动整定/应用默认值的结果属于规划运动回路，写它会误改角度模式的参数。
+            // 角度增益的持久化由 0x154「写入参数到 Flash」负责（固件会两组一起存）。
             // 【单位】输入框里填的是“实际增益”（默认 60.0 就是增益 60），
             // 发送时乘 1000 变成固件口径。上限和固件 clampPidGain 保持一致：
             //   比例/微分 实际 <= 30，积分 实际 <= 3
@@ -371,7 +374,14 @@
                 posKd: [CUSTOM_REGS.POSITION_KD, 30000],
                 velKp: [CUSTOM_REGS.VELOCITY_KP, 30000],
                 velKi: [CUSTOM_REGS.VELOCITY_KI, 3000],
-                velKd: [CUSTOM_REGS.VELOCITY_KD, 30000]
+                velKd: [CUSTOM_REGS.VELOCITY_KD, 30000],
+                // 角度模式（串级）独立增益：上限与固件 clampPidGain 一致（ki 的上限是 3000）
+                anglePosKp: [CUSTOM_REGS.ANGLE_POSITION_KP, 30000],
+                anglePosKi: [CUSTOM_REGS.ANGLE_POSITION_KI, 3000],
+                anglePosKd: [CUSTOM_REGS.ANGLE_POSITION_KD, 30000],
+                angleVelKp: [CUSTOM_REGS.ANGLE_VELOCITY_KP, 30000],
+                angleVelKi: [CUSTOM_REGS.ANGLE_VELOCITY_KI, 3000],
+                angleVelKd: [CUSTOM_REGS.ANGLE_VELOCITY_KD, 30000]
             };
             const parameter = registerByInput[input.id];
             if (!parameter) return;
@@ -411,7 +421,13 @@
                 CUSTOM_REGS.POSITION_KD,
                 CUSTOM_REGS.VELOCITY_KP,
                 CUSTOM_REGS.VELOCITY_KI,
-                CUSTOM_REGS.VELOCITY_KD
+                CUSTOM_REGS.VELOCITY_KD,
+                CUSTOM_REGS.ANGLE_POSITION_KP,
+                CUSTOM_REGS.ANGLE_POSITION_KI,
+                CUSTOM_REGS.ANGLE_POSITION_KD,
+                CUSTOM_REGS.ANGLE_VELOCITY_KP,
+                CUSTOM_REGS.ANGLE_VELOCITY_KI,
+                CUSTOM_REGS.ANGLE_VELOCITY_KD
             ];
             regs.forEach(async (reg) => {
                 await readRegister(reg);

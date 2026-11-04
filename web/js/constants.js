@@ -81,6 +81,15 @@ const CUSTOM_REGS = {
     // 写 1 = 让固件打印一次 [VLOOP] 诊断快照（P/I/D 分量 + web/live 增益对比），
     // 打完自动清零。默认不打：周期 printf 的 23ms 阻塞会干扰被诊断的闭环本身。
     VLOOP_DEBUG_PRINT: 0x155,
+    // 角度模式（串级）独立增益：与 0x129~0x12E 完全分开。
+    // 0x129~0x12E 服务规划运动/外部跟随（梯形是主驱动，PID 只做小修正），
+    // 而角度模式里 PID 输出就是全部速度指令 —— 同一个数字在两条路径含义不同。
+    ANGLE_POSITION_KP: 0x156,
+    ANGLE_POSITION_KI: 0x157,
+    ANGLE_POSITION_KD: 0x158,
+    ANGLE_VELOCITY_KP: 0x159,
+    ANGLE_VELOCITY_KI: 0x15A,
+    ANGLE_VELOCITY_KD: 0x15B,
     CPU_USAGE_CENTIPERCENT: 0x137,
     CONTROL_TASK_USAGE_CENTIPERCENT: 0x138,
     MAX_RPM: 0x11B,
