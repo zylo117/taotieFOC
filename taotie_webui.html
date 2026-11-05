@@ -1310,10 +1310,12 @@
                                 <label>Kd</label>
                                 <input id="angleVelKd" min="0" max="30000" step="0.01" type="number" value="0.0"/>
                             </div>
-                            <div class="tiny mt">角度模式专用（串级，无口径倍率）；上面那组只对规划运动/外部跟随生效。限速与加速度由 0x12F/0x130 控制。</div>
+                            <div class="tiny mt">角度模式专用（串级，无口径倍率）；上面那组只对规划运动/外部跟随生效。<br/>注意：改成梯形轮廓后，转速由 0x12F/0x130 决定，这里的 Kp 只管“跟踪刚度/抗扰”，不再决定跑多快。</div>
                         </div>
                         <div class="field mt">
                             <button id="savePidToFlashBtn" type="button">写入 PID 参数到 Flash</button>
+                            <button id="vloopSnapshotBtn" type="button">取一次 [VLOOP] 诊断</button>
+                            <span class="tiny" id="vloopSnapshotHint">写 0x155=1：串口输出一次速度环诊断（跟踪误差 err / P、I、D 分量 / 前馈 ff / web 与 live 增益对比），打完自动清零；固件刻意不做周期打印，因为 23ms 的 printf 会干扰被诊断的闭环本身。</span>
                             <span class="tiny" id="savePidToFlashStatus"></span>
                         </div>
                     </div>

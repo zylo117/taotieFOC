@@ -609,6 +609,16 @@
                 log('[INFO] 外部跟随计数已清零（命令/已转发/积压/丢步）');
             });
 
+            // 【VLOOP 诊断】写 0x155=1 让固件打印一次快照，打完自动清零。
+            // 为什么不是周期打印：三行浮点 ≈ 23ms 的 printf 会干扰被诊断的闭环本身；
+            // 也不能“一直在后台存着不说”——之前几次误判都是因为没有现场数据。
+            document.getElementById('vloopSnapshotBtn').addEventListener('click', async () => {
+                if (!state.connected) return;
+                await writeRegister(CUSTOM_REGS.VLOOP_DEBUG_PRINT, 1);
+                log('[INFO] 已请求 [VLOOP] 快照：约 1 秒内出现在串口。'
+                    + 'err=跟踪误差, P/I/D=速度环三分量, ff=轮廓前馈速度, kscale=live/base 增益比（应为 1.000）');
+            });
+
             ['posKp', 'posKi', 'posKd', 'velKp', 'velKi', 'velKd',
              'anglePosKp', 'anglePosKi', 'anglePosKd', 'angleVelKp', 'angleVelKi', 'angleVelKd'].forEach((id) => {
                 document.getElementById(id).addEventListener('input', (event) => {
