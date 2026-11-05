@@ -24,16 +24,13 @@ public:
     PidController();
 
     // 设定比例、积分、微分三个增益参数。
-    void setGains(float kp, float ki, float kd);
+    void setGains(float kp_value, float ki_value, float kd_value);
 
     // 计算当前误差下的控制输出。
     // error：当前误差，dt：控制周期时间
-    // p_scale 只缩放比例项，不影响积分和微分。
-    // 用途：旧版角度模式没有基础速度，PID 输出直接就是全部速度，同样增益等于被放大百倍，
-    // 当时靠把 P 缩到 1/100 压住。现在角度模式改成“梯形轮廓 + 跟踪误差”结构，
-    // 不再需要这种口径倍率（保留该参数是为了向后兼容已有调用）。
+    // p_scale 只缩放比例项，不影响积分和微分（保留是为了向后兼容旧调用，新代码不该再依赖）。
     //
-    // 【d_on_measurement + measured_rate：微分先行（超前校正的等价实现）】
+    // 【d_on_measurement + measured_rate：微分先行（超前校正的等价实现之一）】
     // 对「误差」求导时，改目标值那一刻误差是阶跃，微分会打出一脚冲击（derivative kick），
     // 表现为“换个目标角度第一下猛冲”。改成对「测量值」求导（取负号），
     // 阻尼作用完全相同但没有冲击。默认 false，所有旧调用行为不变。
@@ -46,6 +43,7 @@ public:
     // 清零微分项历史值，避免误差突变导致抖动。
     void resetDeriv();
 
+    // ===== 公开状态 =====
     float kp;
     float ki;
     float kd;
@@ -57,6 +55,19 @@ public:
     float filtered_derivative;
     float max_integral;
     float max_output;
+
+    // ===== 超前校正系数 α（建议只在位置环使用；默认 1.0 = 不启用）=====
+    // 现状：D 项 = kd · LPF(斜率)，而那个低通会吃掉相位裕度 —— 想靠加 kd 提高阻尼，
+    // 反而先引入相位落后。超前网络把这点相位补回来：
+    //     H(s) = (1 + α·τp·s) / (1 + τp·s)          α>1 超前，α=1 退化成纯通过
+    // 级在已有 LPF 之后，所以 α=1 时输出与不启用该项时逐位一致（默认值就是 1.0）。
+    // τp 用现有 LPF 的等效时间常数 T·β/(1-β)，不再新增第二个滤波参数。
+    float lead_alpha;
+
+    // 超前级的差分方程状态（后向欧拉）：
+    //   (T+τp)·y[k] = τp·y[k-1] + (T+τz)·x[k] - τz·x[k-1]
+    float lead_prev_out;
+    float lead_prev_in;
 };
 
 #endif //TAOTIEFOC_PID_CONTROLLER_H

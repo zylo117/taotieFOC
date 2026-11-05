@@ -181,13 +181,8 @@
                 [CUSTOM_REGS.VELOCITY_KP, 'velKp'],
                 [CUSTOM_REGS.VELOCITY_KI, 'velKi'],
                 [CUSTOM_REGS.VELOCITY_KD, 'velKd'],
-                // 角度模式（串级）独立增益的回显
-                [CUSTOM_REGS.ANGLE_POSITION_KP, 'anglePosKp'],
-                [CUSTOM_REGS.ANGLE_POSITION_KI, 'anglePosKi'],
-                [CUSTOM_REGS.ANGLE_POSITION_KD, 'anglePosKd'],
-                [CUSTOM_REGS.ANGLE_VELOCITY_KP, 'angleVelKp'],
-                [CUSTOM_REGS.ANGLE_VELOCITY_KI, 'angleVelKi'],
-                [CUSTOM_REGS.ANGLE_VELOCITY_KD, 'angleVelKd']
+                // 位置环超前系数 α（固件不存 Flash，重启后回显 1.0）
+                [CUSTOM_REGS.POSITION_LEAD_ALPHA, 'posLeadAlpha']
             ]);
             if (pidInputByRegister.has(frame.reg)) {
                 // 【只在首次连接时从固件回填】原来每收到一条读回包就往输入框写，

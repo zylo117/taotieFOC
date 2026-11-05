@@ -164,12 +164,21 @@ enum Tmc2209CustomExtensionRegister
     // 为什么要分开：0x129~0x12E 服务规划运动/外部跟随（梯形是主驱动，PID 只做小修正），
     // 而角度模式里 PID 输出就是全部速度指令 —— 同一个数字在两条路径上含义不同，
     // 共用一组参数就是让两种回路互相“偷走”对方的整定结果。
-    TMC2209_EXT_PARAM_ANGLE_POSITION_KP = 0x156U,
-    TMC2209_EXT_PARAM_ANGLE_POSITION_KI = 0x157U,
-    TMC2209_EXT_PARAM_ANGLE_POSITION_KD = 0x158U,
-    TMC2209_EXT_PARAM_ANGLE_VELOCITY_KP = 0x159U,
-    TMC2209_EXT_PARAM_ANGLE_VELOCITY_KI = 0x15AU,
-    TMC2209_EXT_PARAM_ANGLE_VELOCITY_KD = 0x15BU,
+    // 【已废弃】0x156~0x15B：角度模式独立增益。
+    // 角度模式改成“梯形轮廓 + 跟踪误差”后，它与规划运动/外部跟随的输入量级对齐了，
+    // 于是三种模式合并为一组参数（0x129~0x12E）。这些编号不再接受写入，
+    // 保留枚举只为旧脚本/旧前端不至于误写到别的寄存器上。
+    TMC2209_EXT_PARAM_ANGLE_POSITION_KP_DEPRECATED = 0x156U,
+    TMC2209_EXT_PARAM_ANGLE_POSITION_KI_DEPRECATED = 0x157U,
+    TMC2209_EXT_PARAM_ANGLE_POSITION_KD_DEPRECATED = 0x158U,
+    TMC2209_EXT_PARAM_ANGLE_VELOCITY_KP_DEPRECATED = 0x159U,
+    TMC2209_EXT_PARAM_ANGLE_VELOCITY_KI_DEPRECATED = 0x15AU,
+    TMC2209_EXT_PARAM_ANGLE_VELOCITY_KD_DEPRECATED = 0x15BU,
+    // R/W：位置环超前校正系数 α，单位 0.001（填 1000 = α=1.0 = 不启用）。
+    // H(s) = (1+ατp·s)/(1+τp·s)，补回微分低通吃掉的相位裕度；与 kd 配合使用，
+    // 允许在不过分放大噪声的前提下提高阻尼。合法区间 1.0~5.0。
+    // 不写 Flash（与 0x12F/0x130 同属“本次运行设定”），重启后回到 1.0。
+    TMC2209_EXT_PARAM_POSITION_LEAD_ALPHA = 0x15CU,
 
     // R/W：诊断用——旁路磁编码器非线性校准表（0=正常查表，1=直接返回原始值）。
     // 用途：做“查表 / 不查表”的 A/B 对比，判断某个角度误差是不是校准表引入的。
@@ -236,8 +245,8 @@ private:
     bool readOfficialRegister(uint8_t reg, uint32_t* value) const;
 
     ClosedLoopDriverProtocolConfig config_;
-    // 扩展参数表长度：覆盖 0x100 ~ 0x15B，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x15BU - 0x100U + 1U;
+    // 扩展参数表长度：覆盖 0x100 ~ 0x15C，新增寄存器时同步这个常量
+    static constexpr uint16_t kCustomParameterCount = 0x15CU - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

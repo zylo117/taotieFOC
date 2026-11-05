@@ -258,9 +258,6 @@ ClosedLoopController::ClosedLoopController()
 {
     position_pid_.setGains(base_position_kp_, base_position_ki_, base_position_kd_);
     velocity_pid_.setGains(base_velocity_kp_, base_velocity_ki_, base_velocity_kd_);
-    // 角度模式用独立实例：先把基准值装进去，不让它借用规划运动那组
-    angle_position_pid_.setGains(base_angle_position_kp_, base_angle_position_ki_, base_angle_position_kd_);
-    angle_velocity_pid_.setGains(base_angle_velocity_kp_, base_angle_velocity_ki_, base_angle_velocity_kd_);
 }
 
 void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
@@ -291,27 +288,11 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
             base_velocity_kp_ = velocity_pid_.kp;
             base_velocity_ki_ = velocity_pid_.ki;
             base_velocity_kd_ = velocity_pid_.kd;
-            // 【v2】角度模式（串级）的独立增益；v1 旧记录会在 param_store_load 里被
-            // 填成推荐起步值（不能照抄规划运动那组，含义不同）
-            angle_position_pid_.kp = static_cast<float>(params.angle_position_kp) / 1000.0f;
-            angle_position_pid_.ki = static_cast<float>(params.angle_position_ki) / 1000.0f;
-            angle_position_pid_.kd = static_cast<float>(params.angle_position_kd) / 1000.0f;
-            angle_velocity_pid_.kp = static_cast<float>(params.angle_velocity_kp) / 1000.0f;
-            angle_velocity_pid_.ki = static_cast<float>(params.angle_velocity_ki) / 1000.0f;
-            angle_velocity_pid_.kd = static_cast<float>(params.angle_velocity_kd) / 1000.0f;
-            base_angle_position_kp_ = angle_position_pid_.kp;
-            base_angle_position_ki_ = angle_position_pid_.ki;
-            base_angle_position_kd_ = angle_position_pid_.kd;
-            base_angle_velocity_kp_ = angle_velocity_pid_.kp;
-            base_angle_velocity_ki_ = angle_velocity_pid_.ki;
-            base_angle_velocity_kd_ = angle_velocity_pid_.kd;
             // 角度限速/加速度不从 Flash 恢复：它们是“本次运行设定”，每次在界面上调，
             // 存进 Flash 会让一个旧值在重启后静默生效。
-            printf("[PARAM] loaded from flash: pid %.3f/%.3f/%.3f %.3f/%.3f/%.3f | angle %.3f/%.3f/%.3f %.3f/%.3f/%.3f\r\n",
+            printf("[PARAM] loaded from flash: pid %.3f/%.3f/%.3f %.3f/%.3f/%.3f\r\n",
                    position_pid_.kp, position_pid_.ki, position_pid_.kd,
-                   velocity_pid_.kp, velocity_pid_.ki, velocity_pid_.kd,
-                   angle_position_pid_.kp, angle_position_pid_.ki, angle_position_pid_.kd,
-                   angle_velocity_pid_.kp, angle_velocity_pid_.ki, angle_velocity_pid_.kd);
+                   velocity_pid_.kp, velocity_pid_.ki, velocity_pid_.kd);
         }
         else
         {
@@ -1308,10 +1289,11 @@ void ClosedLoopController::stopMotion()
     motion_ramp_stage_ = RAMP_STAGE_ACCEL;
     // 角度模式用的是独立实例，停止时同样要清干净：否则上一次锁定留下的积分会
     // 带进下一次角度模式（这正是“换个目标角度第一下就猛冲”的成因）。
-    angle_position_pid_.resetIntegral();
-    angle_position_pid_.resetDeriv();
-    angle_velocity_pid_.resetIntegral();
-    angle_velocity_pid_.resetDeriv();
+    // 统一实例之后，这里清的就是真正在用的那两个（角度模式不再有独立 PID）。
+    position_pid_.resetIntegral();
+    position_pid_.resetDeriv();
+    velocity_pid_.resetIntegral();
+    velocity_pid_.resetDeriv();
     // 轮廓作废：下次进角度模式从当前实际角度重新起步。
     // 不清的话，停止前那个“已经走到一半”的轮廓会在下次启动时直接把前馈叠上去，
     // 表现为“一上电/一进角度模式就先跑一下”。

@@ -125,11 +125,11 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
         // 目标角改变时误差是阶跃，对误差微分会打一脚冲击（derivative kick）。
         const float position_reference_rps =
             profile_desired_rps +
-            c.angle_position_pid_.update(follow_err_deg / 360.0f, dt, 1.0f,
-                                         measured_motion_rps, true);
+            c.position_pid_.update(follow_err_deg / 360.0f, dt, 1.0f,
+                                   measured_motion_rps, true);
         // 速度环只对“指令速度 − 实测速度”做阻尼修正
         const float velocity_error_rps = position_reference_rps - measured_motion_rps;
-        const float velocity_correction_rps = c.angle_velocity_pid_.update(velocity_error_rps, dt);
+        const float velocity_correction_rps = c.velocity_pid_.update(velocity_error_rps, dt);
 
         const float unconstrained_rps =
             fast_clamp(position_reference_rps + velocity_correction_rps, -max_rps, max_rps);
@@ -163,10 +163,10 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
             c.motion_step_accumulator_ = 0.0f;
             c.compensated_motion_step_accumulator_ = 0.0f;
             c.compensated_rps_ = 0.0f;
-            c.angle_position_pid_.resetIntegral();
-            c.angle_position_pid_.resetDeriv();
-            c.angle_velocity_pid_.resetIntegral();
-            c.angle_velocity_pid_.resetDeriv();
+            c.position_pid_.resetIntegral();
+            c.position_pid_.resetDeriv();
+            c.velocity_pid_.resetIntegral();
+            c.velocity_pid_.resetDeriv();
         }
 
         const uint32_t micro_steps_per_round = c.getStepsPerRound();
@@ -187,9 +187,9 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
             d.vel_err_rps = velocity_error_rps;
             d.pos_out_rps = position_reference_rps;
             d.prof_vel_rps = profile_desired_rps;
-            d.vel_p = c.angle_velocity_pid_.kp * velocity_error_rps;
-            d.vel_i = c.angle_velocity_pid_.ki * c.angle_velocity_pid_.integral;
-            d.vel_d = c.angle_velocity_pid_.kd * c.angle_velocity_pid_.filtered_derivative;
+            d.vel_p = c.velocity_pid_.kp * velocity_error_rps;
+            d.vel_i = c.velocity_pid_.ki * c.velocity_pid_.integral;
+            d.vel_d = c.velocity_pid_.kd * c.velocity_pid_.filtered_derivative;
             d.out_rps = calibration_rps;
             d.step_speed_s = c.current_step_speed_;
             d.stamp++;

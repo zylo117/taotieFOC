@@ -375,13 +375,8 @@
                 velKp: [CUSTOM_REGS.VELOCITY_KP, 30000],
                 velKi: [CUSTOM_REGS.VELOCITY_KI, 3000],
                 velKd: [CUSTOM_REGS.VELOCITY_KD, 30000],
-                // 角度模式（串级）独立增益：上限与固件 clampPidGain 一致（ki 的上限是 3000）
-                anglePosKp: [CUSTOM_REGS.ANGLE_POSITION_KP, 30000],
-                anglePosKi: [CUSTOM_REGS.ANGLE_POSITION_KI, 3000],
-                anglePosKd: [CUSTOM_REGS.ANGLE_POSITION_KD, 30000],
-                angleVelKp: [CUSTOM_REGS.ANGLE_VELOCITY_KP, 30000],
-                angleVelKi: [CUSTOM_REGS.ANGLE_VELOCITY_KI, 3000],
-                angleVelKd: [CUSTOM_REGS.ANGLE_VELOCITY_KD, 30000]
+                // 位置环超前系数 α：输入框里填的是 α 本身（1.0~5.0），发送时同样 ×1000
+                posLeadAlpha: [CUSTOM_REGS.POSITION_LEAD_ALPHA, 5]
             };
             const parameter = registerByInput[input.id];
             if (!parameter) return;
@@ -422,12 +417,7 @@
                 CUSTOM_REGS.VELOCITY_KP,
                 CUSTOM_REGS.VELOCITY_KI,
                 CUSTOM_REGS.VELOCITY_KD,
-                CUSTOM_REGS.ANGLE_POSITION_KP,
-                CUSTOM_REGS.ANGLE_POSITION_KI,
-                CUSTOM_REGS.ANGLE_POSITION_KD,
-                CUSTOM_REGS.ANGLE_VELOCITY_KP,
-                CUSTOM_REGS.ANGLE_VELOCITY_KI,
-                CUSTOM_REGS.ANGLE_VELOCITY_KD
+                CUSTOM_REGS.POSITION_LEAD_ALPHA
             ];
             regs.forEach(async (reg) => {
                 await readRegister(reg);

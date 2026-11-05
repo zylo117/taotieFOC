@@ -64,12 +64,7 @@
             , [CUSTOM_REGS.ENCODER_ZERO, ['0x0119', 'ENCODER_ZERO', '编码器启动零点，原始角度值']]
             , [CUSTOM_REGS.TARGET_ANGLE_DEG, ['0x0128', 'TARGET_ANGLE_DEG', '目标角度，单位 0.001°']]
             , [CUSTOM_REGS.POSITION_KP, ['0x0129', 'POSITION_KP', '位置环 Kp，单位 0.001']]
-            , [CUSTOM_REGS.ANGLE_POSITION_KP, ['0x0156', 'ANGLE_POSITION_KP', '角度模式位置环 Kp（串级，独立参数），单位 0.001']]
-            , [CUSTOM_REGS.ANGLE_POSITION_KI, ['0x0157', 'ANGLE_POSITION_KI', '角度模式位置环 Ki，单位 0.001']]
-            , [CUSTOM_REGS.ANGLE_POSITION_KD, ['0x0158', 'ANGLE_POSITION_KD', '角度模式位置环 Kd，单位 0.001']]
-            , [CUSTOM_REGS.ANGLE_VELOCITY_KP, ['0x0159', 'ANGLE_VELOCITY_KP', '角度模式速度环 Kp，单位 0.001']]
-            , [CUSTOM_REGS.ANGLE_VELOCITY_KI, ['0x015A', 'ANGLE_VELOCITY_KI', '角度模式速度环 Ki，单位 0.001']]
-            , [CUSTOM_REGS.ANGLE_VELOCITY_KD, ['0x015B', 'ANGLE_VELOCITY_KD', '角度模式速度环 Kd，单位 0.001']]
+            , [CUSTOM_REGS.POSITION_LEAD_ALPHA, ['0x015C', 'POSITION_LEAD_ALPHA', '位置环超前系数 α，单位 0.001（1000=不启用）']]
             , [CUSTOM_REGS.POSITION_KI, ['0x012A', 'POSITION_KI', '位置环 Ki，单位 0.001']]
             , [CUSTOM_REGS.POSITION_KD, ['0x012B', 'POSITION_KD', '位置环 Kd，单位 0.001']]
             , [CUSTOM_REGS.VELOCITY_KP, ['0x012C', 'VELOCITY_KP', '速度环 Kp，单位 0.001']]
@@ -619,8 +614,7 @@
                     + 'err=跟踪误差, P/I/D=速度环三分量, ff=轮廓前馈速度, kscale=live/base 增益比（应为 1.000）');
             });
 
-            ['posKp', 'posKi', 'posKd', 'velKp', 'velKi', 'velKd',
-             'anglePosKp', 'anglePosKi', 'anglePosKd', 'angleVelKp', 'angleVelKi', 'angleVelKd'].forEach((id) => {
+            ['posKp', 'posKi', 'posKd', 'velKp', 'velKi', 'velKd', 'posLeadAlpha'].forEach((id) => {
                 document.getElementById(id).addEventListener('input', (event) => {
                     void writePidParameter(event.currentTarget);
                 });

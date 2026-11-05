@@ -6,7 +6,8 @@
 
 PidController::PidController()
     : kp(1.0f), ki(0.04f), kd(0.02f), integral(0.0f), last_error(0.0f),
-      filtered_derivative(0.0f), max_integral(MAX_I_TERM), max_output(MAX_PID_OUTPUT)
+      filtered_derivative(0.0f), max_integral(MAX_I_TERM), max_output(MAX_PID_OUTPUT),
+      lead_alpha(1.0f), lead_prev_out(0.0f), lead_prev_in(0.0f)
 {
 }
 
@@ -48,7 +49,30 @@ float PidController::update(float error, float dt, float p_scale,
                           (1.0f - PID_DERIVATIVE_LPF) * raw_derivative;
 
     const float p_term = kp * p_scale * error;
-    const float d_term = kd * filtered_derivative;
+
+    // 【超前级】H(s) = (1 + τz·s)/(1 + τp·s)，τz = α·τp，级在上面的 LPF 之后。
+    // 后向欧拉离散：(T+τp)·y[k] = τp·y[k-1] + (T+τz)·x[k] - τz·x[k-1]
+    // α==1 时 τz==τp，代入可得 y[k] == x[k]（逐位纯通过，含首拍），所以默认值
+    // 不会改变任何已有行为；要启用只需写 0x15C（α>1）。
+    float d_signal = filtered_derivative;
+    if (lead_alpha > 1.0001f)
+    {
+        const float beta = PID_DERIVATIVE_LPF;
+        const float tau_p = (beta < 0.999f) ? (dt * beta / (1.0f - beta)) : dt;
+        const float tau_z = tau_p * lead_alpha;
+        const float denom = dt + tau_p;
+        if (denom > 0.0f)
+        {
+            const float y = (tau_p * lead_prev_out
+                             + (dt + tau_z) * filtered_derivative
+                             - tau_z * lead_prev_in) / denom;
+            lead_prev_out = y;
+            lead_prev_in = filtered_derivative;
+            d_signal = y;
+        }
+    }
+
+    const float d_term = kd * d_signal;
 
     // ---- 条件积分（anti-windup）----
     // 只在“误差方向会加剧饱和”时停止积分；误差反号（正在往回调）时继续积分，
@@ -100,4 +124,7 @@ void PidController::resetDeriv()
     last_error = 0.0f;
     // 滤波器状态也要一起清，否则重新使能后前几拍的 D 项会带着上一次运动的旧斜率。
     filtered_derivative = 0.0f;
+    // 超前级是两个一阶状态，同样必须清：否则它的记忆会跳过一次模式切换。
+    lead_prev_out = 0.0f;
+    lead_prev_in = 0.0f;
 }

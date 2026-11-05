@@ -1259,6 +1259,11 @@
                                 <label>Kd</label>
                                 <input id="posKd" min="0" max="30000" step="0.01" type="number" value="60.0"/>
                             </div>
+                            <div class="field mt">
+                                <label>超前 α</label>
+                                <input id="posLeadAlpha" min="1" max="5" step="0.01" type="number" value="1.0"/>
+                            </div>
+                            <div class="tiny mt">超前校正系数（0x15C）：1.0 = 不启用。补回微分低通吃掉的相位裕度，范围 1.0~5.0；需配合 Kd&gt;0 才有作用。不存 Flash，重启后回到 1.0。</div>
                         </div>
 
                         <div class="card">
@@ -1277,40 +1282,13 @@
                             </div>
                         </div>
 
-                        <!-- 角度模式（串级）独立增益：与上面那一组完全分开。
-                             原因：角度模式里 PID 输出就是全部速度指令，而规划运动/外部跟随里
-                             梯形是主驱动、PID 只做小修正；同一个数字在两条路径上含义不同。 -->
+                        <!-- 角度模式增益曾一度独立成 0x156~0x15B；改成“梯形轮廓 + 跟踪误差”之后，
+                             三种模式的位置环输入量级一致（都是跟踪误差），故合并为一组参数。 -->
                         <div class="card">
-                            <h3 style="margin-top:0;">角度模式 位置 PID</h3>
-                            <div class="field">
-                                <label>Kp</label>
-                                <input id="anglePosKp" min="0" max="30000" step="0.01" type="number" value="20.0"/>
-                            </div>
-                            <div class="field mt">
-                                <label>Ki</label>
-                                <input id="anglePosKi" min="0" max="3000" step="0.01" type="number" value="0.0"/>
-                            </div>
-                            <div class="field mt">
-                                <label>Kd</label>
-                                <input id="anglePosKd" min="0" max="30000" step="0.01" type="number" value="0.0"/>
-                            </div>
-                        </div>
-
-                        <div class="card">
-                            <h3 style="margin-top:0;">角度模式 速度 PID</h3>
-                            <div class="field">
-                                <label>Kp</label>
-                                <input id="angleVelKp" min="0" max="30000" step="0.01" type="number" value="0.2"/>
-                            </div>
-                            <div class="field mt">
-                                <label>Ki</label>
-                                <input id="angleVelKi" min="0" max="3000" step="0.01" type="number" value="0.0"/>
-                            </div>
-                            <div class="field mt">
-                                <label>Kd</label>
-                                <input id="angleVelKd" min="0" max="30000" step="0.01" type="number" value="0.0"/>
-                            </div>
-                            <div class="tiny mt">角度模式专用（串级，无口径倍率）；上面那组只对规划运动/外部跟随生效。<br/>注意：改成梯形轮廓后，转速由 0x12F/0x130 决定，这里的 Kp 只管“跟踪刚度/抗扰”，不再决定跑多快。</div>
+                            <h3 style="margin-top:0;">三种模式共用一组参数</h3>
+                            <div class="tiny">角度伺服 / 规划运动 / 外部脉冲跟随都用上面那一组（0x129~0x12E）。<br/>
+                                角度模式的<strong>转速由 0x12F/0x130 的梯形轮廓决定</strong>，Kp 只管跟踪刚度与抗扰，
+                                不再决定跑多快。写废弃的 0x156~0x15B 会在串口提示。</div>
                         </div>
                         <div class="field mt">
                             <button id="savePidToFlashBtn" type="button">写入 PID 参数到 Flash</button>
