@@ -137,6 +137,10 @@ class Tuner:
         h.set_pid(gains["pos_kp"], gains["pos_ki"], gains["pos_kd"],
                   gains["vel_kp"], gains["vel_ki"], gains["vel_kd"])
         h.enable()
+        # 【必须显式开闭环补偿】固件评分只在 compensation_enabled 时采样；
+        # 0x107 掉电默认是关的。不写这一行，重新上电后第一次整定会"评分无效(samples=0)"，
+        # 而且整定出来的是一组开环参数（等于没整定）。
+        h.write(0x107, 1)
         pulse_count = max(2, int(round(profile.turns * self.spr)))
         result = h.run_motion(profile.start_rpm, profile.max_rpm, profile.accel_rpm_s,
                               pulse_count, profile.mode)
