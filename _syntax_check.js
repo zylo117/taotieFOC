@@ -1,0 +1,2929 @@
+
+        const logArea = document.getElementById('logArea');
+        const connBadge = document.getElementById('connBadge');
+        const protoBadge = document.getElementById('protoBadge');
+        const faultBadge = document.getElementById('faultBadge');
+
+        const state = {
+            connected: false,
+            port: null,
+            reader: null,
+            writer: null,
+            registerReadWaiters: new Map(),
+            registerWriteAckWaiters: new Map(),
+            lastEncoderTelemetryAt: 0,
+            autoTuneActive: false,
+            autoTuneCancelled: false,
+            tuneTrialActive: false,
+            tuneActionBusy: false,
+            tuneActionProfiles: [],
+            tuneMotionObserved: false,
+            tuneMotionResolver: null,
+            tuneMotionTimeout: null,
+            tuneTrialStage: '',
+            tuneTrialProfile: null,
+            tuneTrialStartedAt: 0,
+            tuneLastMotionTelemetryAt: 0,
+            tuneLastMotionStatus: null,
+            tuneLastMotionStatusCmd: null,
+            tuneLastCommand: '无',
+            bestTuneGains: null,
+            currentAngle: 0,
+            targetAngle: 0,
+            targetPosition: 0,
+            microsteps: 64,
+            pendingTargetAngle: null,
+            targetWriteInFlight: false,
+            speed: 0,
+            accel: 0,
+            currentA: 0,
+            dragging: false,
+            encoderFault: false,
+            magneticFault: false,
+            outputStopped: false,
+            faultSummary: '正常',
+            phaseACurrentA: 0,
+            phaseBCurrentA: 0,
+            posLoopHz: 0,
+            velLoopHz: 0,
+            curLoopHz: 0
+            , encoderRaw: 0
+            , encoderAngleDeg: 0
+            , magneticHigh: false
+            , magneticLow: false
+            , actualPosition: 0
+            , lastEncoderLogAt: 0
+            , rxBuffer: new Uint8Array(0)
+            , motionSpeedRpm: 0
+            , motionFollowErrorDeg: 0
+            , angleMaxRpm: 1200
+            , angleAccelRpmS: 6000
+            , waveHistory: []
+            , wavePaused: false
+            , wavePausedAt: 0
+            , motionWaveTimer: null
+            , waveCaptureActive: false
+            , waveCaptureStartedAt: 0
+            , waveMotionObserved: false
+            , waveFrozenAt: 0
+            , lastWaveStamp: 0
+            , cpuUsagePercent: 0
+            , controlTaskUsagePercent: 0
+            , calibrationMainTable: null
+            , calibrationFastTable: null
+            , calibrationFastPagesLoaded: new Uint8Array(256)
+            , calibrationTableChecksum: null
+            , calibrationDumpKind: null
+            , calibrationDumpExpectedPairs: 0
+            , calibrationDumpReceivedPairs: 0
+            , calibrationDumpPageOffset: 0
+            , calibrationDumpNextKind: null
+            , calibrationLookupInFlight: false
+            , calibrationLookupSerialToken: null
+            , calibrationLookupDesynchronized: false
+            , calibrationLookupActiveDirection: null
+            , calibrationLookupLastRaw: null
+            , calibrationLookupLastCorrected: null
+            , calibrationLookupRequestId: 0
+            , loadAngleCalibrationRunning: false
+            , loadAngleCalibrationCancelled: false
+            , loadAngleMaxSpeedRpm: 3000
+        };
+
+        const OFFICIAL_REGS = {
+            GCONF: 0x00,
+            GSTAT: 0x01,
+            IOUT: 0x06,
+            DRV_CONF: 0x0A,
+            IHOLD_IRUN: 0x10,
+            TPOWERDOWN: 0x11,
+            TSTEP: 0x12,
+            TPWMTHRS: 0x13,
+            TCOOLTHRS: 0x14,
+            THIGH: 0x15,
+            MSCNT: 0x6A,
+            MSCURACT: 0x6B,
+            CHOPCONF: 0x6C,
+            COOLCONF: 0x6D,
+            DCCTRL: 0x6E,
+            DRV_STATUS: 0x6F,
+            PWMCONF: 0x70,
+            PWMSCALE: 0x71,
+            ENCM_CTRL: 0x72
+        };
+
+        const CUSTOM_REGS = {
+            MICROSTEPS: 0x100,
+            INTERPOLATION: 0x101,
+            RUN_CURRENT_A: 0x102,
+            HOLD_CURRENT_A: 0x103,
+            HOLD_ENABLED: 0x104,
+            SILENT_MODE: 0x105,
+            SENSE_RESISTOR: 0x106,
+            CLOSED_LOOP_ENABLE: 0x107
+            , FAULT_STATUS: 0x108
+            , ENCODER_FAULT: 0x109
+            , MAGNETIC_FAULT: 0x10A
+            , OUTPUT_STOP: 0x10B
+            , PHASE_A_CURRENT_MA: 0x10C
+            , PHASE_B_CURRENT_MA: 0x10D
+            , POSITION_LOOP_HZ: 0x10E
+            , VELOCITY_LOOP_HZ: 0x10F
+            , CURRENT_LOOP_HZ: 0x110
+            , LAST_FAULT: 0x111
+            , TARGET_POSITION: 0x112
+            , ACTUAL_POSITION: 0x113
+            , FOLLOW_ERROR: 0x114
+            , ENCODER_RAW: 0x115
+            , ENCODER_ANGLE_MDEG: 0x116
+            , MAGNETIC_HIGH: 0x117
+            , MAGNETIC_LOW: 0x118
+            , ENCODER_ZERO: 0x119
+            , TARGET_ANGLE_DEG: 0x128
+            , POSITION_KP: 0x129
+            , POSITION_KI: 0x12A
+            , POSITION_KD: 0x12B
+            , VELOCITY_KP: 0x12C
+            , VELOCITY_KI: 0x12D
+            , VELOCITY_KD: 0x12E
+            , ANGLE_MAX_RPM: 0x12F
+            , ANGLE_ACCEL_RPM_S: 0x130
+            , PID_TUNE_CONTROL: 0x131
+            , PID_TUNE_SCORE_MDEG: 0x132
+            , PID_TUNE_SAMPLE_COUNT: 0x133
+            , MOTION_SCHEDULED_STEPS: 0x134
+            , MOTION_COMMAND_SPEED_MRPM: 0x135
+            , SPEED_RPM: 0x120
+            , FOLLOW_ERROR_DEG: 0x121
+            , CALIBRATE_ENCODER: 0x136
+            , CALIBRATION_LOOKUP_RAW_TO_CORRECTED: 0x13A
+            , CALIBRATION_LOOKUP_CORRECTED_TO_RAW: 0x13B
+            , CALIBRATION_TABLE_DUMP: 0x139
+            , LOAD_ANGLE_UPLOAD_COUNT: 0x13C
+            , LOAD_ANGLE_POINT_INDEX: 0x13D
+            , LOAD_ANGLE_POINT_SPEED_RPM: 0x13E
+            , LOAD_ANGLE_POINT_MDEG: 0x13F
+            , LOAD_ANGLE_POINT_COMMIT: 0x140
+            , LOAD_ANGLE_FIT: 0x141
+            , LOAD_ANGLE_QUERY_SPEED_RPM: 0x142
+            , LOAD_ANGLE_QUERY_MDEG: 0x143
+            , LOAD_ANGLE_POINT_COUNT: 0x144
+            , LOAD_ANGLE_FIT_SLOPE: 0x145
+            , LOAD_ANGLE_FIT_INTERCEPT: 0x146
+            , LOAD_ANGLE_FIT_EXPONENT: 0x147
+            , MOTOR_STEP_ANGLE_MDEG: 0x148
+            , SAVE_MOTOR_CONFIG: 0x149
+            , CPU_USAGE_CENTIPERCENT: 0x137
+            , CONTROL_TASK_USAGE_CENTIPERCENT: 0x138
+            , MAX_RPM: 0x11B
+            , ACCEL_RPM_S: 0x11C
+        };
+
+        const REGISTER_DESCRIPTIONS = new Map([
+            [OFFICIAL_REGS.GCONF, ['0x0000', 'GCONF', 'TMC 全局配置 / 单线 UART 选择']],
+            [OFFICIAL_REGS.GSTAT, ['0x0001', 'GSTAT', 'TMC 状态清除寄存器']],
+            [OFFICIAL_REGS.DRV_CONF, ['0x000A', 'DRV_CONF', '驱动器模式配置 / 静音模式']],
+            [OFFICIAL_REGS.IHOLD_IRUN, ['0x0010', 'IHOLD_IRUN', '保持电流与运行电流']],
+            [OFFICIAL_REGS.TSTEP, ['0x0012', 'TSTEP', '步进周期']],
+            [OFFICIAL_REGS.CHOPCONF, ['0x006C', 'CHOPCONF', '斩波与微步配置']],
+            [OFFICIAL_REGS.DRV_STATUS, ['0x006F', 'DRV_STATUS', '驱动状态']],
+            [CUSTOM_REGS.MICROSTEPS, ['0x0100', 'MICROSTEPS', '微步数']],
+            [CUSTOM_REGS.INTERPOLATION, ['0x0101', 'INTERPOLATION', '插值微步数']],
+            [CUSTOM_REGS.RUN_CURRENT_A, ['0x0102', 'RUN_CURRENT_A', '运行电流，单位 A × 1000']],
+            [CUSTOM_REGS.HOLD_CURRENT_A, ['0x0103', 'HOLD_CURRENT_A', '保持电流，单位 A × 1000']],
+            [CUSTOM_REGS.CLOSED_LOOP_ENABLE, ['0x0107', 'CLOSED_LOOP_ENABLE', '闭环使能']],
+            [CUSTOM_REGS.FAULT_STATUS, ['0x0108', 'FAULT_STATUS', '故障位图：bit0 编码器，bit1 磁场，bit2 停输出']],
+            [CUSTOM_REGS.ENCODER_FAULT, ['0x0109', 'ENCODER_FAULT', '编码器故障']],
+            [CUSTOM_REGS.MAGNETIC_FAULT, ['0x010A', 'MAGNETIC_FAULT', '磁场报警']],
+            [CUSTOM_REGS.OUTPUT_STOP, ['0x010B', 'OUTPUT_STOP', '输出已停止']],
+            [CUSTOM_REGS.PHASE_A_CURRENT_MA, ['0x010C', 'PHASE_A_CURRENT', 'A 相电流，单位 mA']],
+            [CUSTOM_REGS.PHASE_B_CURRENT_MA, ['0x010D', 'PHASE_B_CURRENT', 'B 相电流，单位 mA']],
+            [CUSTOM_REGS.POSITION_LOOP_HZ, ['0x010E', 'POSITION_LOOP_HZ', '位置环频率，单位 Hz']],
+            [CUSTOM_REGS.VELOCITY_LOOP_HZ, ['0x010F', 'VELOCITY_LOOP_HZ', '速度环频率，单位 Hz']],
+            [CUSTOM_REGS.CURRENT_LOOP_HZ, ['0x0110', 'CURRENT_LOOP_HZ', '电流环频率，单位 Hz']],
+            [CUSTOM_REGS.LAST_FAULT, ['0x0111', 'LAST_FAULT', '最近一次故障位图']],
+            [CUSTOM_REGS.TARGET_POSITION, ['0x0112', 'TARGET_POSITION', '目标位置，单位闭环步数']],
+            [CUSTOM_REGS.ACTUAL_POSITION, ['0x0113', 'ACTUAL_POSITION', '当前位置，单位闭环步数']],
+            [CUSTOM_REGS.FOLLOW_ERROR, ['0x0114', 'FOLLOW_ERROR', '跟随误差，单位闭环步数']]
+            , [CUSTOM_REGS.ENCODER_RAW, ['0x0115', 'ENCODER_RAW', 'KTH7823 原始角度，0 至 65535']]
+            , [CUSTOM_REGS.ENCODER_ANGLE_MDEG, ['0x0116', 'ENCODER_ANGLE', '磁编码器角度，单位 0.001°']]
+            , [CUSTOM_REGS.MAGNETIC_HIGH, ['0x0117', 'MAGNETIC_HIGH', 'MGH 磁场过高输入']]
+            , [CUSTOM_REGS.MAGNETIC_LOW, ['0x0118', 'MAGNETIC_LOW', 'MGL 磁场过低输入']]
+            , [CUSTOM_REGS.ENCODER_ZERO, ['0x0119', 'ENCODER_ZERO', '编码器启动零点，原始角度值']]
+            , [CUSTOM_REGS.TARGET_ANGLE_DEG, ['0x0128', 'TARGET_ANGLE_DEG', '目标角度，单位 0.001°']]
+            , [CUSTOM_REGS.POSITION_KP, ['0x0129', 'POSITION_KP', '位置环 Kp，单位 0.001']]
+            , [CUSTOM_REGS.POSITION_KI, ['0x012A', 'POSITION_KI', '位置环 Ki，单位 0.001']]
+            , [CUSTOM_REGS.POSITION_KD, ['0x012B', 'POSITION_KD', '位置环 Kd，单位 0.001']]
+            , [CUSTOM_REGS.VELOCITY_KP, ['0x012C', 'VELOCITY_KP', '速度环 Kp，单位 0.001']]
+            , [CUSTOM_REGS.VELOCITY_KI, ['0x012D', 'VELOCITY_KI', '速度环 Ki，单位 0.001']]
+            , [CUSTOM_REGS.VELOCITY_KD, ['0x012E', 'VELOCITY_KD', '速度环 Kd，单位 0.001']]
+            , [CUSTOM_REGS.ANGLE_MAX_RPM, ['0x012F', 'ANGLE_MAX_RPM', '闭环整定最大速度，单位 RPM']]
+            , [CUSTOM_REGS.ANGLE_ACCEL_RPM_S, ['0x0130', 'ANGLE_ACCEL_RPM_S', '闭环整定加速度，单位 RPM/s']]
+            , [CUSTOM_REGS.PID_TUNE_CONTROL, ['0x0131', 'PID_TUNE_CONTROL', '固件 PID 整定评分采集控制']]
+            , [CUSTOM_REGS.PID_TUNE_SCORE_MDEG, ['0x0132', 'PID_TUNE_SCORE', '固件计算的跟随误差评分，单位 0.001°']]
+            , [CUSTOM_REGS.PID_TUNE_SAMPLE_COUNT, ['0x0133', 'PID_TUNE_SAMPLES', '固件参与评分的误差样本数']]
+            , [CUSTOM_REGS.MOTION_SCHEDULED_STEPS, ['0x0134', 'MOTION_SCHEDULED_STEPS', '当前动作已提交的 STEP 数']]
+            , [CUSTOM_REGS.MOTION_COMMAND_SPEED_MRPM, ['0x0135', 'MOTION_COMMAND_SPEED', '当前命令速度，单位 0.001 RPM']]
+            , [CUSTOM_REGS.CPU_USAGE_CENTIPERCENT, ['0x0137', 'CPU_USAGE', 'MCU 总 CPU 占用率，单位 0.01%']]
+            , [CUSTOM_REGS.CONTROL_TASK_USAGE_CENTIPERCENT, ['0x0138', 'CONTROL_TASK_USAGE', 'Control_task CPU 占用率，单位 0.01%']]
+            , [CUSTOM_REGS.LOAD_ANGLE_UPLOAD_COUNT, ['0x013C', 'LOAD_ANGLE_UPLOAD_COUNT', '上位机待上传拟合点数']]
+            , [CUSTOM_REGS.LOAD_ANGLE_POINT_INDEX, ['0x013D', 'LOAD_ANGLE_POINT_INDEX', '待写入的拟合点索引']]
+            , [CUSTOM_REGS.LOAD_ANGLE_POINT_SPEED_RPM, ['0x013E', 'LOAD_ANGLE_POINT_SPEED_RPM', '拟合点速度，单位 RPM']]
+            , [CUSTOM_REGS.LOAD_ANGLE_POINT_MDEG, ['0x013F', 'LOAD_ANGLE_POINT_MDEG', '拟合点负载角，单位 0.001°']]
+            , [CUSTOM_REGS.LOAD_ANGLE_POINT_COMMIT, ['0x0140', 'LOAD_ANGLE_POINT_COMMIT', '提交当前拟合点']]
+            , [CUSTOM_REGS.LOAD_ANGLE_FIT, ['0x0141', 'LOAD_ANGLE_FIT', '固件执行拟合并保存']]
+            , [CUSTOM_REGS.LOAD_ANGLE_QUERY_SPEED_RPM, ['0x0142', 'LOAD_ANGLE_QUERY_SPEED_RPM', '设置待查询速度，单位 RPM']]
+            , [CUSTOM_REGS.LOAD_ANGLE_QUERY_MDEG, ['0x0143', 'LOAD_ANGLE_QUERY_MDEG', '固件拟合查询值，单位 0.001°']]
+            , [CUSTOM_REGS.LOAD_ANGLE_POINT_COUNT, ['0x0144', 'LOAD_ANGLE_POINT_COUNT', '已保存拟合点数']]
+            , [CUSTOM_REGS.LOAD_ANGLE_FIT_SLOPE, ['0x0145', 'LOAD_ANGLE_POWER_COEFFICIENT', '幂律系数 c，单位 °/RPM^a × 1000000']]
+            , [CUSTOM_REGS.LOAD_ANGLE_FIT_INTERCEPT, ['0x0146', 'LOAD_ANGLE_FIT_INTERCEPT', '固件拟合截距，单位 0.001°']]
+            , [CUSTOM_REGS.LOAD_ANGLE_FIT_EXPONENT, ['0x0147', 'LOAD_ANGLE_FIT_EXPONENT', '幂律指数 a，单位 0.000001']]
+            , [CUSTOM_REGS.MOTOR_STEP_ANGLE_MDEG, ['0x0148', 'MOTOR_STEP_ANGLE', '电机固有步距角，单位 0.001°']]
+            , [CUSTOM_REGS.SAVE_MOTOR_CONFIG, ['0x0149', 'SAVE_MOTOR_CONFIG', '写入/读取 MCU Flash 中的电机参数状态']]
+            , [0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
+            , [0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
+            , [0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
+            , [0x11D, ['0x011D', 'PULSE_COUNT', '测速脉冲总数']]
+            , [0x11E, ['0x011E', 'MOTION_MODE', '运动模式：0正转 1反转 2速度正转 3速度反转 4正转归零 5反转归零 6正向起步往返 7反向起步往返']]
+            , [0x11F, ['0x011F', 'MOTION_CMD', '运动命令：0停止 1启动']]
+            , [0x120, ['0x0120', 'SPEED_RPM', '当前测速转速，单位 RPM']]
+            , [0x121, ['0x0121', 'FOLLOW_ERROR_DEG', '位置跟随误差：理论累计行程 - 编码器累计行程，单位 0.001°']]
+            , [0x122, ['0x0122', 'WAVE_WINDOW_MS', '波形窗口长度，单位 ms']]
+            , [0x123, ['0x0123', 'STEP_PULSE_WIDTH_NS', 'STEP 高电平脉宽，单位 ns']]
+            , [0x124, ['0x0124', 'MOTOR_ENABLE', '电机使能，EN 输出低电平']]
+            , [0x125, ['0x0125', 'MOTOR_DISABLE', '电机失能，EN 输出高电平']]
+            , [0x126, ['0x0126', 'SINGLE_FORWARD_STEP', 'DIR 高电平并输出单个 STEP']]
+            , [0x136, ['0x0136', 'CALIBRATE_ENCODER', '磁编码器校准：写 1 触发一次校准']]
+        ]);
+
+        function log(message) {
+            const line = document.createElement('p');
+            line.className = 'log-line';
+            line.textContent = message;
+            logArea.appendChild(line);
+            while (logArea.children.length > 200) {
+                logArea.removeChild(logArea.firstElementChild);
+            }
+            logArea.scrollTop = logArea.scrollHeight;
+        }
+
+        function setConnBadge(status, isOk = true) {
+            connBadge.textContent = status;
+            connBadge.className = 'badge ' + (isOk ? 'ok' : 'warn');
+            connBadge.style.setProperty('border-color', isOk ? 'rgba(34,197,94,0.3)' : 'rgba(245,158,11,0.3)');
+        }
+
+        function setMotorSettingsStatus(message, status = 'info') {
+            const element = document.getElementById('motorSettingsStatus');
+            element.textContent = message;
+            element.style.color = status === 'ok' ? '#86efac' : status === 'error' ? '#fca5a5' : 'var(--muted)';
+        }
+
+        function updateFaultStatus() {
+            const hasFault = state.encoderFault || state.magneticFault || state.outputStopped;
+            const summary = state.encoderFault ? '编码器读取失败' : state.magneticFault ? '磁场报警' : state.outputStopped ? '已停止输出' : '正常';
+            state.faultSummary = summary;
+
+            faultBadge.innerHTML = `<span class="led ${hasFault ? (state.encoderFault || state.magneticFault ? 'warn' : 'danger') : ''}"></span> ${summary}`;
+            faultBadge.className = 'badge ' + (hasFault ? (state.encoderFault || state.magneticFault ? 'warn' : 'danger') : 'ok');
+            document.getElementById('faultSummaryValue').textContent = summary;
+            if (hasFault) {
+                log('[WARN] 故障状态：' + summary);
+            }
+        }
+
+        function updateTelemetryDisplay() {
+            document.getElementById('phaseACurrentValue').textContent = `${state.phaseACurrentA.toFixed(2)} A`;
+            document.getElementById('phaseBCurrentValue').textContent = `${state.phaseBCurrentA.toFixed(2)} A`;
+            document.getElementById('posLoopRateValue').textContent = `${state.posLoopHz} Hz`;
+            document.getElementById('velLoopRateValue').textContent = `${state.velLoopHz} Hz`;
+            document.getElementById('curLoopRateValue').textContent = `${state.curLoopHz} Hz`;
+            document.getElementById('cpuUsageBadge').textContent = `CPU ${state.cpuUsagePercent.toFixed(1)}%`;
+            document.getElementById('controlUsageBadge').textContent = `控制 ${state.controlTaskUsagePercent.toFixed(1)}%`;
+            document.getElementById('faultSummaryValue').textContent = state.faultSummary;
+            document.getElementById('encoderAngleValue').textContent = `${state.encoderAngleDeg.toFixed(2)}°`;
+            document.getElementById('magneticLevelValue').textContent = `${state.magneticHigh ? '报警' : '正常'} / ${state.magneticLow ? '报警' : '正常'}`;
+            document.getElementById('speedValue').textContent = Number(state.motionSpeedRpm || 0).toFixed(2);
+            document.getElementById('accelValue').textContent = (state.accel || 0).toFixed(2);
+            document.getElementById('currentValue').textContent = (state.currentA || 0).toFixed(2);
+        }
+
+        function renderRegisterMap() {
+            const rows = [...REGISTER_DESCRIPTIONS.values()].map(([address, name, description]) =>
+                `<div>${address}　<strong>${name}</strong>　${description}</div>`).join('');
+            document.getElementById('registerMap').innerHTML = rows;
+        }
+
+        function clamp(value, min, max) {
+            return Math.min(max, Math.max(min, value));
+        }
+
+        function normalizeTmcMicrosteps(value) {
+            const supported = [2, 4, 8, 16, 32, 64, 128, 256];
+            return supported.reduce((nearest, candidate) =>
+                Math.abs(candidate - value) < Math.abs(nearest - value) ? candidate : nearest, supported[0]);
+        }
+
+        function normalizeAngle(value) {
+            let v = value;
+            while (v > 180) v -= 360;
+            while (v < -180) v += 360;
+            return v;
+        }
+
+        function normalize360Angle(value) {
+            let v = value % 360;
+            if (v < 0) v += 360;
+            return v;
+        }
+
+        function crc8(data) {
+            let crc = 0x00;
+            for (let i = 0; i < data.length; i++) {
+                crc ^= data[i];
+                for (let bit = 0; bit < 8; bit++) {
+                    if ((crc & 0x80) !== 0) {
+                        crc = (crc << 1) ^ 0x07;
+                    } else {
+                        crc = crc << 1;
+                    }
+                }
+            }
+            return crc & 0xFF;
+        }
+
+        function buildFrame(cmd, reg, value) {
+            const regHi = (reg >> 8) & 0xFF;
+            const regLo = reg & 0xFF;
+            const data = new Uint8Array([
+                0x55, 0xAA, cmd,
+                regHi, regLo,
+                (value >> 24) & 0xFF,
+                (value >> 16) & 0xFF,
+                (value >> 8) & 0xFF,
+                value & 0xFF,
+                0x00
+            ]);
+            data[data.length - 1] = crc8(data.slice(0, -1));
+            return data;
+        }
+
+        function parseFrame(raw) {
+            if (!raw || raw.length < 10) return null;
+            const arr = new Uint8Array(raw);
+            if (arr[0] !== 0x55 || arr[1] !== 0xAA || crc8(arr.slice(0, 9)) !== arr[9]) return null;
+            const cmd = arr[2];
+            const reg = (arr[3] << 8) | arr[4];
+            const value = (
+                (arr[5] << 24) |
+                (arr[6] << 16) |
+                (arr[7] << 8) |
+                arr[8]
+            ) >>> 0;
+            return {cmd, reg, value};
+        }
+
+        function appendRxBytes(value) {
+            const incoming = new Uint8Array(value);
+            const merged = new Uint8Array(state.rxBuffer.length + incoming.length);
+            merged.set(state.rxBuffer);
+            merged.set(incoming, state.rxBuffer.length);
+            state.rxBuffer = merged;
+
+            while (state.rxBuffer.length >= 10) {
+                let start = 0;
+                while (start + 1 < state.rxBuffer.length &&
+                (state.rxBuffer[start] !== 0x55 || state.rxBuffer[start + 1] !== 0xAA)) start++;
+                if (start > 0) state.rxBuffer = state.rxBuffer.slice(start);
+                if (state.rxBuffer.length < 10) return;
+                const frame = parseFrame(state.rxBuffer.slice(0, 10));
+                if (!frame) {
+                    state.rxBuffer = state.rxBuffer.slice(1);
+                    continue;
+                }
+                state.rxBuffer = state.rxBuffer.slice(10);
+                handleIncomingFrame(frame);
+            }
+        }
+
+        function handleIncomingFrame(frame) {
+            if (frame.cmd === 0x83 || frame.cmd === 0x84) {
+                handleCalibrationTablePair(frame);
+                return;
+            }
+            if (frame.cmd === 0x85) {
+                state.calibrationTableChecksum = frame.value & 0xFFFF;
+                document.getElementById('calibrationTableProgress').value = 1;
+                document.getElementById('calibrationTableChecksum').textContent =
+                    `0x${state.calibrationTableChecksum.toString(16).padStart(4, '0').toUpperCase()} (${state.calibrationTableChecksum})`;
+                const allFastPagesLoaded = state.calibrationFastPagesLoaded.every((loaded) => loaded !== 0);
+                const canCheckFullFastTable = allFastPagesLoaded && state.calibrationFastTable && state.calibrationFastTable.length === 65536;
+                const computed = canCheckFullFastTable
+                    ? state.calibrationFastTable.reduce((sum, value) => (sum + value) & 0xFFFF, 0)
+                    : null;
+                const checksumStatus = !canCheckFullFastTable
+                    ? '，当前快速表未加载完整，不能用部分页结果做全表校验'
+                    : (computed === state.calibrationTableChecksum ? '，校验通过' : '，校验不匹配');
+                document.getElementById('calibrationTableStatus').textContent = `读取完成${checksumStatus}`;
+                state.calibrationDumpKind = null;
+                return;
+            }
+            if (frame.cmd === 0x86) {
+                if (frame.value === 0xFFFFFFFF) {
+                    document.getElementById('calibrationTableStatus').textContent =
+                        '读取失败：校准表不可用，或校准正在写入';
+                    state.calibrationDumpKind = null;
+                    return;
+                }
+                if (state.calibrationDumpKind === 'main') {
+                    if (state.calibrationDumpReceivedPairs !== state.calibrationDumpExpectedPairs) {
+                        document.getElementById('calibrationTableStatus').textContent = '主表数据不完整';
+                        state.calibrationDumpKind = null;
+                        return;
+                    }
+                    document.getElementById('calibrationTableStatus').textContent = '主表读取完成';
+                    state.calibrationDumpKind = null;
+                    renderCalibrationTablePage();
+                    return;
+                }
+                if (state.calibrationDumpKind === 'fast') {
+                    if (state.calibrationDumpReceivedPairs !== state.calibrationDumpExpectedPairs) {
+                        document.getElementById('calibrationTableStatus').textContent = '快速表数据不完整';
+                        state.calibrationDumpKind = null;
+                        return;
+                    }
+                    const pageIndex = Math.floor(state.calibrationDumpPageOffset / 128);
+                    state.calibrationFastPagesLoaded[pageIndex] = 1;
+                    const allFastPagesLoaded = state.calibrationFastPagesLoaded.every((loaded) => loaded !== 0);
+                    document.getElementById('calibrationTableStatus').textContent = `快速表第 ${pageIndex + 1} 页读取完成`;
+                    state.calibrationDumpKind = null;
+                    renderCalibrationTablePage();
+                    if (allFastPagesLoaded && state.calibrationFastTable && state.calibrationFastTable.length === 65536) {
+                        void requestCalibrationTableDump('checksum');
+                    }
+                    return;
+                }
+                return;
+            }
+
+            const registerWaiters = state.registerReadWaiters.get(frame.reg);
+            const writeAckWaiter = state.registerWriteAckWaiters.get(frame.reg);
+            if (frame.cmd === 0x82 && writeAckWaiter) {
+                window.clearTimeout(writeAckWaiter.timeout);
+                state.registerWriteAckWaiters.delete(frame.reg);
+                if (frame.value === 0xFFFFFFFF) {
+                    writeAckWaiter.reject(new Error(`固件报告 WRITE 0x${frame.reg.toString(16).padStart(4, '0')} 失败；TMC UART 未确认寄存器写入`));
+                } else if (frame.value !== writeAckWaiter.expectedValue) {
+                    writeAckWaiter.reject(new Error(
+                        `WRITE ACK 值不匹配：期望 0x${writeAckWaiter.expectedValue.toString(16).padStart(8, '0').toUpperCase()}，收到 0x${frame.value.toString(16).padStart(8, '0').toUpperCase()}`
+                    ));
+                } else {
+                    writeAckWaiter.resolve(frame.value);
+                }
+            }
+            // 只接受真正的“读寄存器回包”（0x81）。周期遥测（0x10）是广播，不应被当成
+            // 读取命令的答复，否则同一寄存器的等待器会被提前消费，出现超时和样本丢失。
+            if (registerWaiters && registerWaiters.length > 0 && frame.cmd === 0x81) {
+                const waiter = registerWaiters.shift();
+                window.clearTimeout(waiter.timeout);
+                waiter.resolve(frame.value);
+                if (registerWaiters.length === 0) state.registerReadWaiters.delete(frame.reg);
+            }
+
+            // 写 ACK（0x82）只用于确认写入结果，绝不能拿来回填界面：
+            // 写入失败时固件把 0xFFFFFFFF 当否定应答发回来，一旦回填，
+            // 微步数输入框会变成 4294967295，接着 getMotorStepsPerRevolution() 算出的
+            // “每圈步数”就是天文数字，下一次运动命令会直接把脉冲数发到上限。
+            if (frame.cmd === 0x82) {
+                updateFaultStatus();
+                return;
+            }
+
+            // 统一哨兵防护：0xFFFFFFFF 是协议约定的“无效值/读失败”，不许回填界面。
+            // 只拦 0x81 读回包：遥测里的有符号寄存器（如跟随误差 -1）合法值就是 0xFFFFFFFF，不能误杀。
+            if (frame.cmd === 0x81 && (frame.value >>> 0) === 0xFFFFFFFF) {
+                log(`[WARN] 忽略无效值回包 reg=0x${frame.reg.toString(16).padStart(4, '0')}（读失败或参数不可用）`);
+                return;
+            }
+            const description = REGISTER_DESCRIPTIONS.get(frame.reg);
+            const name = description ? description[1] : 'UNKNOWN';
+            const isTelemetry = frame.cmd === 0x10;
+            const diagnosticRegister = frame.reg === CUSTOM_REGS.ENCODER_RAW ||
+                frame.reg === CUSTOM_REGS.ENCODER_ANGLE_MDEG ||
+                frame.reg === CUSTOM_REGS.MAGNETIC_HIGH ||
+                frame.reg === CUSTOM_REGS.MAGNETIC_LOW ||
+                frame.reg === CUSTOM_REGS.CPU_USAGE_CENTIPERCENT ||
+                frame.reg === CUSTOM_REGS.CONTROL_TASK_USAGE_CENTIPERCENT;
+            const routineMotionStatus = isTelemetry && frame.reg === 0x11F;
+            const isSignedRegister = frame.reg === 0x0113 || frame.reg === 0x0120 ||
+                frame.reg === 0x0121 || frame.reg === 0x0135;
+            const displayValue = isSignedRegister ? (frame.value | 0) : Number(frame.value >>> 0);
+            if (!routineMotionStatus && (!isTelemetry || !diagnosticRegister)) {
+                log(`[RX] cmd=0x${frame.cmd.toString(16).padStart(2, '0')} ${description ? description[0] : '0x' + frame.reg.toString(16).padStart(4, '0')} ${name} = ${displayValue}`);
+            }
+
+            if (frame.reg === CUSTOM_REGS.PHASE_A_CURRENT_MA) state.phaseACurrentA = (frame.value | 0) / 1000;
+            if (frame.reg === CUSTOM_REGS.PHASE_B_CURRENT_MA) state.phaseBCurrentA = (frame.value | 0) / 1000;
+            if (frame.reg === CUSTOM_REGS.POSITION_LOOP_HZ) state.posLoopHz = Number(frame.value >>> 0);
+            if (frame.reg === CUSTOM_REGS.VELOCITY_LOOP_HZ) state.velLoopHz = Number(frame.value >>> 0);
+            if (frame.reg === CUSTOM_REGS.CURRENT_LOOP_HZ) state.curLoopHz = Number(frame.value >>> 0);
+            if (frame.reg === CUSTOM_REGS.CPU_USAGE_CENTIPERCENT) state.cpuUsagePercent = frame.value / 100;
+            if (frame.reg === CUSTOM_REGS.CONTROL_TASK_USAGE_CENTIPERCENT) {
+                state.controlTaskUsagePercent = frame.value / 100;
+            }
+            if (frame.reg === CUSTOM_REGS.MICROSTEPS) {
+                /* 再叠一道夹紧：微步只能是 2~256，界面里出现 4294967295 这类值
+                 * 比不显示更危险（后续所有步数换算都会跟着爆） */
+                const microsteps = normalizeTmcMicrosteps(clamp(Math.round(Number(frame.value) || 32), 2, 256));
+                state.microsteps = microsteps;
+                document.getElementById('microsteps').value = String(microsteps);
+            }
+            if (frame.reg === CUSTOM_REGS.CLOSED_LOOP_ENABLE) {
+                document.getElementById('closedLoopEnableInput').checked = frame.value !== 0;
+            }
+            if (frame.reg === CUSTOM_REGS.ENCODER_FAULT) state.encoderFault = frame.value !== 0;
+            if (frame.reg === CUSTOM_REGS.MAGNETIC_FAULT) state.magneticFault = frame.value !== 0;
+            if (frame.reg === CUSTOM_REGS.OUTPUT_STOP) state.outputStopped = frame.value !== 0;
+            if (frame.reg === CUSTOM_REGS.ENCODER_RAW) state.encoderRaw = frame.value;
+            if (frame.reg === CUSTOM_REGS.ENCODER_ANGLE_MDEG) {
+                state.encoderAngleDeg = (frame.value | 0) / 1000;
+                state.lastEncoderTelemetryAt = performance.now();
+                setCurrentAngle(state.encoderAngleDeg);
+            }
+            const pidInputByRegister = new Map([
+                [CUSTOM_REGS.POSITION_KP, 'posKp'],
+                [CUSTOM_REGS.POSITION_KI, 'posKi'],
+                [CUSTOM_REGS.POSITION_KD, 'posKd'],
+                [CUSTOM_REGS.VELOCITY_KP, 'velKp'],
+                [CUSTOM_REGS.VELOCITY_KI, 'velKi'],
+                [CUSTOM_REGS.VELOCITY_KD, 'velKd']
+            ]);
+            if (pidInputByRegister.has(frame.reg)) {
+                document.getElementById(pidInputByRegister.get(frame.reg)).value = (frame.value / 1000).toFixed(3);
+            }
+            if (frame.reg === CUSTOM_REGS.MAGNETIC_HIGH) state.magneticHigh = frame.value !== 0;
+            if (frame.reg === CUSTOM_REGS.MAGNETIC_LOW) state.magneticLow = frame.value !== 0;
+            if (frame.reg === CUSTOM_REGS.ACTUAL_POSITION) {
+                state.actualPosition = frame.value | 0;
+            }
+            if (frame.reg === CUSTOM_REGS.ANGLE_MAX_RPM) state.angleMaxRpm = frame.value;
+            if (frame.reg === CUSTOM_REGS.ANGLE_ACCEL_RPM_S) state.angleAccelRpmS = frame.value;
+            if (frame.reg === CUSTOM_REGS.ANGLE_MAX_RPM) {
+                document.getElementById('angleMaxRpmInput').value = frame.value;
+            }
+            if (frame.reg === CUSTOM_REGS.ANGLE_ACCEL_RPM_S) {
+                document.getElementById('angleAccelRpmSInput').value = frame.value;
+            }
+            updateFaultStatus();
+            updateTelemetryDisplay();
+
+            if (isTelemetry && frame.reg === CUSTOM_REGS.MAGNETIC_LOW) {
+                const now = performance.now();
+                if (!state.lastEncoderLogAt || now - state.lastEncoderLogAt >= 500) {
+                    log(`[KTH7823] raw=0x${state.encoderRaw.toString(16).padStart(4, '0').toUpperCase()} angle=${state.encoderAngleDeg.toFixed(3)}° MGH=${state.magneticHigh ? 1 : 0} MGL=${state.magneticLow ? 1 : 0}`);
+                    state.lastEncoderLogAt = now;
+                }
+            }
+        }
+
+        async function requestCalibrationTableDump(kind, pageIndex = null) {
+            const type = kind === 'main' ? 0 : (kind === 'fast' ? 1 : (kind === 'checksum' ? 2 : 3));
+            const pageNumber = pageIndex === null ? 0 : clamp(Math.max(0, Math.round(Number(pageIndex))), 0, kind === 'main' ? 3 : 255);
+            state.calibrationDumpKind = kind;
+            state.calibrationDumpPageOffset = pageNumber * 128;
+            state.calibrationDumpExpectedPairs = kind === 'main' ? ((pageNumber === 0) ? 512 : 128) : 128;
+            state.calibrationDumpReceivedPairs = 0;
+            if (kind === 'main') {
+                state.calibrationMainTable = new Uint16Array(1024);
+            }
+            if (kind === 'fast') {
+                if (!state.calibrationFastTable) state.calibrationFastTable = new Uint16Array(65536);
+            }
+            if (kind === 'checksum') {
+                document.getElementById('calibrationTableStatus').textContent = '正在读取校验码';
+                document.getElementById('calibrationTableProgress').max = 1;
+            } else if (kind === 'main') {
+                document.getElementById('calibrationTableStatus').textContent = pageNumber === 0 ? '正在读取主表：0/1024' : `正在读取主表第 ${pageNumber + 1} 页：0/256`;
+            } else {
+                document.getElementById('calibrationTableStatus').textContent = `正在读取快速表第 ${pageNumber + 1} 页：0/256`;
+            }
+            document.getElementById('calibrationTableProgress').value = 0;
+            document.getElementById('calibrationTableProgress').max = Math.max(1, state.calibrationDumpExpectedPairs);
+            try {
+                await writeRegister(CUSTOM_REGS.CALIBRATION_TABLE_DUMP, ((pageNumber & 0xFFFF) << 16) | (type & 0xFFFF));
+            } catch (error) {
+                state.calibrationDumpKind = null;
+                document.getElementById('calibrationTableStatus').textContent = `读取失败：${error.message}`;
+            }
+        }
+
+        function handleCalibrationTablePair(frame) {
+            const isMain = frame.cmd === 0x83;
+            const expectedKind = isMain ? 'main' : 'fast';
+            const table = isMain ? state.calibrationMainTable : state.calibrationFastTable;
+            if (state.calibrationDumpKind !== expectedKind || !table) return;
+            const expectedPairIndex = state.calibrationDumpPageOffset + state.calibrationDumpReceivedPairs;
+            if (frame.reg !== expectedPairIndex) {
+                document.getElementById('calibrationTableStatus').textContent =
+                    `数据帧索引错位：期望 ${expectedPairIndex}，收到 ${frame.reg}`;
+                state.calibrationDumpKind = null;
+                return;
+            }
+            const firstIndex = frame.reg * 2;
+            if (firstIndex >= table.length) return;
+            table[firstIndex] = (frame.value >>> 16) & 0xFFFF;
+            if (firstIndex + 1 < table.length) table[firstIndex + 1] = frame.value & 0xFFFF;
+            state.calibrationDumpReceivedPairs++;
+            document.getElementById('calibrationTableProgress').value = state.calibrationDumpReceivedPairs;
+            if ((state.calibrationDumpReceivedPairs & 0x7F) === 0 || state.calibrationDumpReceivedPairs === state.calibrationDumpExpectedPairs) {
+                const received = state.calibrationDumpReceivedPairs * 2;
+                const total = state.calibrationDumpExpectedPairs * 2;
+                const pageText = state.calibrationDumpPageOffset === 0 ? '' : `第 ${state.calibrationDumpPageOffset / 128 + 1} 页 · `;
+                document.getElementById('calibrationTableStatus').textContent =
+                    `正在读取${isMain ? '主表' : '快速表'}${pageText}${received}/${total}`;
+                if (document.getElementById('calibrationTableSelect').value === expectedKind) {
+                    renderCalibrationTablePage();
+                }
+            }
+        }
+
+        function toCalibrationAngle(value) {
+            return ((Number(value) % 65536) + 65536) % 65536 * 360.0 / 65536.0;
+        }
+
+        function updateLookupInputAvailability() {
+            const rawInput = document.getElementById('calibrationRawInput');
+            const rawBtn = document.getElementById('calibrationRawLookupBtn');
+            const correctedInput = document.getElementById('calibrationCorrectedInput');
+            const correctedBtn = document.getElementById('calibrationCorrectedLookupBtn');
+            const busy = Boolean(state.calibrationLookupInFlight);
+            rawInput.disabled = busy;
+            rawInput.readOnly = busy;
+            rawBtn.disabled = busy;
+            correctedInput.disabled = busy;
+            correctedInput.readOnly = busy;
+            correctedBtn.disabled = busy;
+        }
+
+        function updateCalibrationLookupDisplays() {
+            const rawInput = document.getElementById('calibrationRawInput');
+            const correctedInput = document.getElementById('calibrationCorrectedInput');
+            const rawOutput = document.getElementById('calibrationRawOutputValue');
+            const rawAngle = document.getElementById('calibrationRawOutputAngle');
+            const correctedOutput = document.getElementById('calibrationCorrectedOutputValue');
+            const correctedAngle = document.getElementById('calibrationCorrectedOutputAngle');
+
+            if (state.calibrationLookupInFlight) {
+                updateLookupInputAvailability();
+                return;
+            }
+
+            const resetForInvalid = (input, valueOutput, angleOutput) => {
+                if (input.value.trim() === '' || !Number.isFinite(Number(input.value))) {
+                    valueOutput.textContent = '--';
+                    angleOutput.textContent = '--';
+                }
+            };
+
+            resetForInvalid(rawInput, rawOutput, rawAngle);
+            resetForInvalid(correctedInput, correctedOutput, correctedAngle);
+        }
+
+        async function requestFirmwareCalibrationLookup(direction, value) {
+            if (!state.connected || !state.writer) {
+                throw new Error('串口未连接');
+            }
+            if (state.calibrationLookupDesynchronized) {
+                throw new Error('协议状态已因超时失去同步；为避免旧回包被误认，断开并重新连接后再查询');
+            }
+            if (state.calibrationLookupSerialToken !== null) {
+                throw new Error('上一个校准查询仍在进行中，必须等待回包收回后再发下一条');
+            }
+            const isForward = direction === 'forward';
+            const reg = isForward
+                ? CUSTOM_REGS.CALIBRATION_LOOKUP_RAW_TO_CORRECTED
+                : CUSTOM_REGS.CALIBRATION_LOOKUP_CORRECTED_TO_RAW;
+            const token = Symbol('calibrationLookup');
+            state.calibrationLookupSerialToken = token;
+            const inputValue = clamp(Math.round(Number(value)), 0, 65535);
+            const startedAt = performance.now();
+            try {
+                log(`[校准互查] 开始 direction=${direction} reg=0x${reg.toString(16).padStart(4, '0')} input=${inputValue}`);
+                log(`[校准互查] 阶段 1/3：发送 WRITE，等待固件 0x82 确认`);
+                await writeRegisterAndWaitAck(reg, inputValue, 1200);
+                log(`[校准互查] 阶段 2/3：WRITE ACK 已收到，耗时 ${Math.round(performance.now() - startedAt)}ms；发送 READ`);
+                const result = await readRegisterValue(reg, 1200, 0);
+                log(`[校准互查] 阶段 3/3：READ 0x81 已收到，result=${result & 0xFFFF}，总耗时 ${Math.round(performance.now() - startedAt)}ms`);
+                return (result >>> 0) & 0xFFFF;
+            } catch (error) {
+                if (error.lookupTransactionSent) {
+                    state.calibrationLookupDesynchronized = true;
+                    log('[校准互查] 协议状态标记为不同步；本次不自动重试，也不再发新查询，需重新连接以排除迟到回包');
+                }
+                throw error;
+            } finally {
+                if (state.calibrationLookupSerialToken === token) {
+                    state.calibrationLookupSerialToken = null;
+                }
+            }
+        }
+
+        async function writeRegisterAndWaitAck(reg, value, timeoutMs = 1200) {
+            const previousWaiter = state.registerWriteAckWaiters.get(reg);
+            if (previousWaiter) {
+                throw new Error(`WRITE 0x${reg.toString(16).padStart(4, '0')} 仍有未完成的 ACK 等待`);
+            }
+            const expectedValue = value >>> 0;
+            let waiter;
+            const ackPromise = new Promise((resolve, reject) => {
+                waiter = {
+                    expectedValue,
+                    resolve,
+                    reject,
+                    timeout: window.setTimeout(() => {
+                        if (state.registerWriteAckWaiters.get(reg) === waiter) {
+                            state.registerWriteAckWaiters.delete(reg);
+                        }
+                        const error = new Error(`阶段 1/3 失败：WRITE 已提交给串口，但 ${timeoutMs}ms 内未收到 0x82 ACK`);
+                        error.lookupTransactionSent = true;
+                        reject(error);
+                    }, timeoutMs)
+                };
+                state.registerWriteAckWaiters.set(reg, waiter);
+            });
+            try {
+                await writeRegister(reg, expectedValue);
+                await ackPromise;
+                window.clearTimeout(waiter.timeout);
+            } catch (error) {
+                window.clearTimeout(waiter.timeout);
+                if (state.registerWriteAckWaiters.get(reg) === waiter) {
+                    state.registerWriteAckWaiters.delete(reg);
+                }
+                if (!error.lookupTransactionSent) error.lookupTransactionSent = true;
+                throw error;
+            }
+        }
+
+        async function runCalibrationLookup(direction) {
+            const isForward = direction === 'forward';
+            const input = document.getElementById(isForward ? 'calibrationRawInput' : 'calibrationCorrectedInput');
+            const button = document.getElementById(isForward ? 'calibrationRawLookupBtn' : 'calibrationCorrectedLookupBtn');
+            const valueOutput = document.getElementById(isForward ? 'calibrationRawOutputValue' : 'calibrationCorrectedOutputValue');
+            const angleOutput = document.getElementById(isForward ? 'calibrationRawOutputAngle' : 'calibrationCorrectedOutputAngle');
+            const inputValue = Number(input.value);
+            if (!Number.isFinite(inputValue) || input.value.trim() === '') {
+                valueOutput.textContent = '--';
+                angleOutput.textContent = '--';
+                return;
+            }
+            if (state.calibrationLookupInFlight) {
+                return;
+            }
+
+            const requestId = ++state.calibrationLookupRequestId;
+            state.calibrationLookupInFlight = true;
+            state.calibrationLookupActiveDirection = direction;
+            updateLookupInputAvailability();
+            valueOutput.textContent = '等待固件计算…';
+            angleOutput.textContent = '--';
+            button.disabled = true;
+            try {
+                const result = await requestFirmwareCalibrationLookup(direction, inputValue);
+                if (state.calibrationLookupRequestId !== requestId) {
+                    return;
+                }
+                valueOutput.textContent = `0x${result.toString(16).padStart(4, '0').toUpperCase()} (${result})`;
+                angleOutput.textContent = `${toCalibrationAngle(result).toFixed(3)}°`;
+            } catch (error) {
+                if (state.calibrationLookupRequestId !== requestId) {
+                    return;
+                }
+                valueOutput.textContent = `查询失败：${error.message}`;
+                angleOutput.textContent = '--';
+                log(`[校准互查] 查询失败 direction=${direction} input=${inputValue}: ${error.message}`);
+            } finally {
+                if (state.calibrationLookupRequestId === requestId) {
+                    state.calibrationLookupInFlight = false;
+                    state.calibrationLookupActiveDirection = null;
+                    updateLookupInputAvailability();
+                    document.getElementById('calibrationRawLookupBtn').disabled = false;
+                    document.getElementById('calibrationCorrectedLookupBtn').disabled = false;
+                }
+            }
+        }
+
+        function renderCalibrationTablePage() {
+            const kind = document.getElementById('calibrationTableSelect').value;
+            const table = kind === 'main' ? state.calibrationMainTable : state.calibrationFastTable;
+            const values = document.getElementById('calibrationTableValues');
+            const pageInput = document.getElementById('calibrationTablePageInput');
+            if (!table) {
+                values.textContent = kind === 'main' ? '主表尚未读取' : '快速表尚未读取，切换到快速表后会按需加载';
+                document.getElementById('calibrationTablePageStatus').textContent = '未读取';
+                return;
+            }
+            const pageSize = 256;
+            const pageCount = Math.ceil(table.length / pageSize);
+            const page = clamp(Math.round(Number(pageInput.value) || 1), 1, pageCount);
+            pageInput.value = String(page);
+            pageInput.max = String(pageCount);
+            const first = (page - 1) * pageSize;
+            const last = Math.min(first + pageSize, table.length);
+            const rows = [];
+            for (let index = first; index < last; index++) {
+                const value = table[index];
+                rows.push(`${String(index).padStart(5, '0')}  0x${value.toString(16).padStart(4, '0').toUpperCase()}  ${value}`);
+            }
+            values.textContent = rows.join('\n');
+            document.getElementById('calibrationTablePageStatus').textContent = `第 ${page}/${pageCount} 页 · ${first}-${last - 1}`;
+            updateCalibrationLookupDisplays();
+        }
+
+        function exportCalibrationTable() {
+            const kind = document.getElementById('calibrationTableSelect').value;
+            const table = kind === 'main' ? state.calibrationMainTable : state.calibrationFastTable;
+            if (!table) {
+                log('[WARN] 当前表尚未读取完成，无法导出');
+                return;
+            }
+            const csv = `index,value,hex\n${Array.from(table, (value, index) => `${index},${value},0x${value.toString(16).padStart(4, '0').toUpperCase()}`).join('\n')}\n`;
+            const url = URL.createObjectURL(new Blob([csv], {type: 'text/csv;charset=utf-8'}));
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = `encoder-${kind}-calibration.csv`;
+            anchor.click();
+            URL.revokeObjectURL(url);
+        }
+
+        async function openCalibrationTableViewer() {
+            if (!state.connected) {
+                log('[WARN] 尚未连接串口，无法读取校准表');
+                return;
+            }
+            const dialog = document.getElementById('calibrationTableDialog');
+            if (!dialog.open) dialog.showModal();
+            state.calibrationMainTable = null;
+            state.calibrationFastTable = null;
+            state.calibrationFastPagesLoaded = new Uint8Array(256);
+            state.calibrationTableChecksum = null;
+            document.getElementById('calibrationTableChecksum').textContent = '未读取';
+            document.getElementById('calibrationTableSelect').value = 'main';
+            document.getElementById('calibrationTablePageInput').value = '1';
+            document.getElementById('calibrationTableValues').textContent = '';
+            await requestCalibrationTableDump('main');
+        }
+
+        async function closeCalibrationTableViewer() {
+            if (state.calibrationDumpKind && state.connected) {
+                await writeRegister(CUSTOM_REGS.CALIBRATION_TABLE_DUMP, 3);
+            }
+            state.calibrationDumpKind = null;
+            document.getElementById('calibrationTableDialog').close();
+        }
+
+        function drawLoadAngleChart(points, maxSpeedRpm = 3000) {
+            const canvas = document.getElementById('loadAngleChart');
+            const rect = canvas.getBoundingClientRect();
+            const pixelRatio = window.devicePixelRatio || 1;
+            canvas.width = Math.max(1, Math.round(rect.width * pixelRatio));
+            canvas.height = Math.max(1, Math.round(rect.height * pixelRatio));
+            const context = canvas.getContext('2d');
+            context.scale(pixelRatio, pixelRatio);
+            context.clearRect(0, 0, rect.width, rect.height);
+
+            const left = 58;
+            const right = rect.width - 18;
+            const top = 18;
+            const bottom = rect.height - 42;
+            const values = points.flatMap((point) => Number.isFinite(point.fitAngleDeg)
+                ? [point.angleDeg, point.fitAngleDeg]
+                : [point.angleDeg]);
+            const minValue = values.length ? Math.min(...values) : -1;
+            const maxValue = values.length ? Math.max(...values) : 1;
+            const padding = Math.max(0.5, (maxValue - minValue) * 0.12);
+            const minAngle = minValue - padding;
+            const maxAngle = maxValue + padding;
+            const x = (rpm) => left + (rpm / Math.max(1, maxSpeedRpm)) * (right - left);
+            const y = (angle) => bottom - ((angle - minAngle) / (maxAngle - minAngle)) * (bottom - top);
+
+            context.font = '12px Segoe UI, sans-serif';
+            context.lineWidth = 1;
+            context.strokeStyle = 'rgba(148, 163, 184, 0.2)';
+            context.fillStyle = '#94a3b8';
+            for (let tick = 0; tick <= 4; tick++) {
+                const tickY = top + (tick / 4) * (bottom - top);
+                const angle = maxAngle - (tick / 4) * (maxAngle - minAngle);
+                context.beginPath();
+                context.moveTo(left, tickY);
+                context.lineTo(right, tickY);
+                context.stroke();
+                context.fillText(`${angle.toFixed(2)}°`, 6, tickY + 4);
+            }
+            const speedTicks = 6;
+            for (let tick = 0; tick <= speedTicks; tick++) {
+                const rpm = maxSpeedRpm * tick / speedTicks;
+                const tickX = x(rpm);
+                context.beginPath();
+                context.moveTo(tickX, top);
+                context.lineTo(tickX, bottom);
+                context.stroke();
+                context.fillText(String(Math.round(rpm)), tickX - 12, bottom + 20);
+            }
+
+            if (points.length > 0) {
+                context.strokeStyle = '#f59e0b';
+                context.lineWidth = 2;
+                context.beginPath();
+                const fittedPoints = points.filter((point) => Number.isFinite(point.fitAngleDeg))
+                    .sort((a, b) => a.speedRpm - b.speedRpm);
+                fittedPoints.forEach((point, index) => {
+                    if (index === 0) context.moveTo(x(point.speedRpm), y(point.fitAngleDeg));
+                    else context.lineTo(x(point.speedRpm), y(point.fitAngleDeg));
+                });
+                if (fittedPoints.length > 1) context.stroke();
+
+                context.fillStyle = '#38bdf8';
+                for (const point of points) {
+                    context.beginPath();
+                    context.arc(x(point.speedRpm), y(point.angleDeg), 2.5, 0, Math.PI * 2);
+                    context.fill();
+                }
+            } else {
+                context.fillStyle = '#94a3b8';
+                context.fillText('尚无固件校准点', left + 12, top + 24);
+            }
+            context.fillStyle = '#cbd5e1';
+            context.fillText('速度 (RPM)', (left + right) / 2 - 30, rect.height - 8);
+            context.save();
+            context.translate(15, (top + bottom) / 2);
+            context.rotate(-Math.PI / 2);
+            context.fillText('负载角 (°)', -34, 0);
+            context.restore();
+        }
+
+        async function refreshLoadAngleCalibration() {
+            if (!state.connected) throw new Error('串口未连接');
+            const fitted = await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_FIT);
+            if ((fitted >>> 0) !== 1) throw new Error('固件中没有已保存的有效拟合');
+            const count = await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_POINT_COUNT);
+            const safeCount = Math.min(1024, count >>> 0);
+            const points = [];
+            for (let index = 0; index < safeCount; index++) {
+                await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_POINT_INDEX, index);
+                const speedRpm = await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_POINT_SPEED_RPM);
+                const angleMdeg = await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_POINT_MDEG);
+                await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_QUERY_SPEED_RPM, speedRpm >>> 0);
+                const fitMdeg = await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_QUERY_MDEG);
+                points.push({
+                    speedRpm: speedRpm >>> 0,
+                    angleDeg: (angleMdeg | 0) / 1000,
+                    fitAngleDeg: (fitMdeg | 0) / 1000
+                });
+            }
+            const coefficient = (await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_FIT_SLOPE) | 0) / 1000000;
+            const intercept = (await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_FIT_INTERCEPT) | 0) / 1000;
+            const exponent = (await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_FIT_EXPONENT) | 0) / 1000000;
+            document.getElementById('loadAngleProgress').textContent = `${safeCount} / ${safeCount}`;
+            document.getElementById('loadAngleEquation').textContent =
+                `固件幂律拟合：负载角 = ${intercept.toFixed(3)}° + ${coefficient.toFixed(8)} × RPM^${exponent.toFixed(4)}`;
+            state.loadAngleMaxSpeedRpm = Math.max(1, ...points.map((point) => point.speedRpm));
+            drawLoadAngleChart(points, state.loadAngleMaxSpeedRpm);
+            document.getElementById('loadAngleStatus').textContent = `已读取 ${safeCount} 个固件保存点及拟合查询值`;
+        }
+
+        function loadAngleSweepConfig() {
+            const startRpm = Math.round(Number(document.getElementById('loadAngleStartRpm').value));
+            const stopRpm = Math.round(Number(document.getElementById('loadAngleStopRpm').value));
+            const stepRpm = Math.round(Number(document.getElementById('loadAngleStepRpm').value));
+            const intervalSec = Number(document.getElementById('loadAngleIntervalSec').value);
+            const sampleWindowSec = Number(document.getElementById('loadAngleSampleWindowSec').value);
+            const samplePeriodMs = Number(document.getElementById('loadAngleSamplePeriodMs').value);
+            const accelRpmS = Math.round(Number(document.getElementById('loadAngleAccelRpmS').value));
+            if (![startRpm, stopRpm, stepRpm, intervalSec, sampleWindowSec, samplePeriodMs, accelRpmS].every(Number.isFinite) ||
+                startRpm < 0 || stopRpm < 0 || startRpm > 12000 || stopRpm > 12000 || startRpm === stopRpm ||
+                stepRpm < 1 || intervalSec < 2 || sampleWindowSec <= 0 || sampleWindowSec > intervalSec ||
+                samplePeriodMs < 20 || accelRpmS < 1) {
+                throw new Error('请检查速度范围、步进量、采样窗口和间隔设置');
+            }
+            const direction = stopRpm > startRpm ? 1 : -1;
+            const speeds = [startRpm];
+            while (speeds[speeds.length - 1] !== stopRpm) {
+                const next = speeds[speeds.length - 1] + direction * stepRpm;
+                speeds.push(direction > 0 ? Math.min(next, stopRpm) : Math.max(next, stopRpm));
+                if (speeds.length > 1024) throw new Error('速度点超过固件上限 1024');
+            }
+            for (let index = speeds.length - 2; index >= 0; index--) {
+                speeds.push(speeds[index]);
+                if (speeds.length > 1024) throw new Error('往返校准点超过固件上限 1024');
+            }
+            if (speeds.length < 2) throw new Error('拟合至少需要两个速度点');
+            return {startRpm, stopRpm, stepRpm, intervalSec, sampleWindowSec, samplePeriodMs, accelRpmS, speeds};
+        }
+
+        function loadAngleDelay(ms) {
+            return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, ms)));
+        }
+
+        async function stopLoadAngleMotion() {
+            if (state.connected) await writeRegister(0x11F, 0);
+        }
+
+        async function waitForLoadAngleSpeed(targetRpm, accelRpmS, intervalMs) {
+            if (targetRpm === 0) {
+                await stopLoadAngleMotion();
+                await loadAngleDelay(300);
+                return;
+            }
+            await writeRegisterAndWaitAck(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0);  // 关闭闭环
+            // 关键修正：测速控制/负载角校准的起步动作，必须先给 startMotion() 一个有限且合理的 pulseCount。
+            // 如果不先写 0x11D，就会让 firmware 在 startMotion() 里拿到旧值/脏值，出现超大脉冲数和起步卡死。
+            const pulseCount = targetRpm / 60 * 360 / Number(document.getElementById('stepAngle').value || 1.8) * Number(document.getElementById('microsteps').value || 32) * Number(document.getElementById('loadAngleIntervalSec').value);;
+            await writeRegisterAndWaitAck(0x11A, Math.min(10, targetRpm));
+            await writeRegisterAndWaitAck(0x11B, targetRpm);
+            await writeRegisterAndWaitAck(0x11C, accelRpmS);
+            await writeRegisterAndWaitAck(0x11D, pulseCount);
+            await writeRegisterAndWaitAck(0x11E, 2);
+            await writeRegisterAndWaitAck(0x123, 200);
+            await writePidParameters();
+            await writeRegisterAndWaitAck(0x11F, 1);
+
+            const timeoutMs = Math.max(15000, Math.min(120000, (targetRpm / accelRpmS * 2 + 5) * 1000));
+            const deadline = performance.now() + timeoutMs;
+            const tolerance = Math.max(6, Math.min(24, targetRpm * 0.12));
+            const avgWindowMs = Math.max(1500, Math.min(5000, targetRpm * 30));
+            const avgPeriodMs = 80;
+            const speedHistory = [];
+            let stableReads = 0;
+            let lastMeasuredRpm = 0;
+            const startWindowAt = performance.now();
+            while (performance.now() < deadline && !state.loadAngleCalibrationCancelled) {
+                const measuredRpm = Math.abs(readSigned32(await readRegisterValue(CUSTOM_REGS.SPEED_RPM)));
+                const now = performance.now();
+                speedHistory.push({time: now, rpm: measuredRpm});
+                while (speedHistory.length > 0 && now - speedHistory[0].time > avgWindowMs) {
+                    speedHistory.shift();
+                }
+                const averagedMeasuredRpm = speedHistory.length === 0
+                    ? measuredRpm
+                    : speedHistory.reduce((sum, sample) => sum + sample.rpm, 0) / speedHistory.length;
+                lastMeasuredRpm = averagedMeasuredRpm;
+                const withinTolerance = Math.abs(averagedMeasuredRpm - targetRpm) <= tolerance;
+                stableReads = withinTolerance ? stableReads + 1 : 0;
+                const statusText = `目标 ${targetRpm} RPM / 平均 ${averagedMeasuredRpm.toFixed(1)} RPM / 容差 ±${tolerance.toFixed(1)} RPM / 稳定 ${stableReads}/3`;
+                document.getElementById('loadAngleStatus').textContent = `等待稳定：${statusText}`;
+                if (stableReads >= 3) return;
+                await loadAngleDelay(Math.max(avgPeriodMs, 200));
+            }
+            if (state.loadAngleCalibrationCancelled) throw new Error('已停止校准');
+            throw new Error(`转速 ${targetRpm} RPM 未能在限定时间内稳定（平均 ${lastMeasuredRpm.toFixed(1)} RPM，目标 ${targetRpm} RPM，容差 ±${tolerance.toFixed(1)} RPM）`);
+        }
+
+        function readSigned32(value) {
+            return value | 0;
+        }
+
+        async function collectLoadAngleMean(config) {
+            const windowMs = config.sampleWindowSec * 1000;
+            const startAt = performance.now();
+            const endAt = startAt + windowMs;
+            const samples = [];
+            let nextAt = startAt;
+            while (performance.now() < endAt && !state.loadAngleCalibrationCancelled) {
+                const errorMdeg = readSigned32(await readRegisterValue(CUSTOM_REGS.FOLLOW_ERROR_DEG));
+                samples.push(-errorMdeg);
+                nextAt += config.samplePeriodMs;
+                await loadAngleDelay(Math.max(0, nextAt - performance.now()));
+            }
+            if (state.loadAngleCalibrationCancelled) throw new Error('已停止校准');
+            if (samples.length < 3) throw new Error('采样窗口内有效样本不足，至少需要 3 个');
+            let sum = 0;
+            let min = Infinity;
+            let max = -Infinity;
+            for (const sample of samples) {
+                sum += sample;
+                min = Math.min(min, sample);
+                max = Math.max(max, sample);
+            }
+            return Math.round((sum - min - max) / (samples.length - 2));
+        }
+
+        async function captureLoadAnglePoints(config) {
+            const points = [];
+            const windowMs = config.sampleWindowSec * 1000;
+            const intervalMs = config.intervalSec * 1000;
+            const centeredDelayMs = (intervalMs - windowMs) / 2;
+            for (let index = 0; index < config.speeds.length; index++) {
+                if (state.loadAngleCalibrationCancelled) throw new Error('已停止校准');
+                const speedRpm = config.speeds[index];
+                await stopLoadAngleMotion();
+                await waitForLoadAngleSpeed(speedRpm, config.accelRpmS, intervalMs);
+                const holdStart = performance.now();
+                await loadAngleDelay(centeredDelayMs);
+                const angleMdeg = speedRpm === 0 ? 0 : await collectLoadAngleMean(config);
+                points.push({speedRpm, angleMdeg, angleDeg: angleMdeg / 1000, fitAngleDeg: null});
+                document.getElementById('loadAngleProgress').textContent = `${index + 1} / ${config.speeds.length}`;
+                document.getElementById('loadAngleStatus').textContent = `采样中：${speedRpm} RPM，${index + 1}/${config.speeds.length}`;
+                drawLoadAngleChart(points, Math.max(config.startRpm, config.stopRpm, 1));
+                await loadAngleDelay(Math.max(0, holdStart + intervalMs - performance.now()));
+            }
+            await stopLoadAngleMotion();
+            return points;
+        }
+
+        async function uploadLoadAnglePoints(points) {
+            await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_UPLOAD_COUNT, points.length);
+            for (let index = 0; index < points.length; index++) {
+                const point = points[index];
+                await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_POINT_INDEX, index);
+                await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_POINT_SPEED_RPM, point.speedRpm);
+                await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_POINT_MDEG, point.angleMdeg >>> 0);
+                await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_POINT_COMMIT, 1);
+                document.getElementById('loadAngleStatus').textContent = `上传均值点：${index + 1}/${points.length}`;
+            }
+            await writeRegisterAndWaitAck(CUSTOM_REGS.LOAD_ANGLE_FIT, 1);
+            const fitSaved = await readRegisterValue(CUSTOM_REGS.LOAD_ANGLE_FIT);
+            if ((fitSaved >>> 0) !== 1) throw new Error('固件拟合或 Flash 保存失败');
+        }
+
+        async function startLoadAngleCalibration() {
+            if (!state.connected) {
+                document.getElementById('loadAngleStatus').textContent = '请先连接串口';
+                return;
+            }
+            let config;
+            try {
+                config = loadAngleSweepConfig();
+            } catch (error) {
+                document.getElementById('loadAngleStatus').textContent = error.message;
+                return;
+            }
+            state.loadAngleCalibrationRunning = true;
+            state.loadAngleCalibrationCancelled = false;
+            const startButton = document.getElementById('startLoadAngleCalibrationBtn');
+            const cancelButton = document.getElementById('cancelLoadAngleCalibrationBtn');
+            startButton.disabled = true;
+            cancelButton.disabled = false;
+            document.getElementById('closeLoadAngleDialogBtn').disabled = true;
+            document.getElementById('loadAngleProgress').textContent = `0 / ${config.speeds.length}`;
+            document.getElementById('loadAngleEquation').textContent = '固件拟合函数：等待本轮采样上传与拟合';
+            try {
+                const points = await captureLoadAnglePoints(config);
+                document.getElementById('loadAngleStatus').textContent = '上传采样均值并由固件拟合...';
+                await uploadLoadAnglePoints(points);
+                document.getElementById('loadAngleStatus').textContent = '拟合完成，读取固件查询值...';
+                await refreshLoadAngleCalibration();
+                document.getElementById('loadAngleStatus').textContent = '采样完成；曲线查询值及拟合系数均来自固件';
+            } catch (error) {
+                await stopLoadAngleMotion().catch(() => {});
+                document.getElementById('loadAngleStatus').textContent = `校准失败：${error.message}`;
+                log(`[负载角校准] ${error.message}`);
+            } finally {
+                state.loadAngleCalibrationRunning = false;
+                startButton.disabled = false;
+                cancelButton.disabled = true;
+                document.getElementById('closeLoadAngleDialogBtn').disabled = false;
+            }
+        }
+
+        async function openLoadAngleCalibration() {
+            const dialog = document.getElementById('loadAngleDialog');
+            if (!dialog.open) dialog.showModal();
+            if (!state.connected) {
+                document.getElementById('loadAngleStatus').textContent = '请先连接串口以读取固件数据';
+                drawLoadAngleChart([], 3000);
+                return;
+            }
+            try {
+                await refreshLoadAngleCalibration();
+            } catch (error) {
+                document.getElementById('loadAngleStatus').textContent = `读取失败：${error.message}`;
+                drawLoadAngleChart([], 3000);
+            }
+        }
+
+        async function readRegister(reg) {
+            if (!state.connected || !state.writer) {
+                log('[WARN] 尚未连接串口，无法读取寄存器');
+                return null;
+            }
+            const frame = buildFrame(0x01, reg, 0);
+            if (state.autoTuneActive) state.tuneLastCommand = `READ 0x${reg.toString(16).padStart(4, '0')} cmd=0x01`;
+            await state.writer.write(frame);
+            log(`[TX] READ reg=0x${reg.toString(16).padStart(4, '0')} cmd=0x01`);
+            return frame;
+        }
+
+        function clearPendingReadWaiters(reg) {
+            const waiters = state.registerReadWaiters.get(reg);
+            if (!waiters || waiters.length === 0) return;
+            for (const waiter of waiters) {
+                window.clearTimeout(waiter.timeout);
+                try {
+                    waiter.reject(new Error(`READ 0x${reg.toString(16).padStart(4, '0')} 等待 cmd=0x81 回包被新请求覆盖`));
+                } catch (error) {
+                    // 忽略重复结束的等待器
+                }
+            }
+            state.registerReadWaiters.delete(reg);
+        }
+
+        async function readRegisterValue(reg, timeoutMs = 1500, retries = 2) {
+            if (!state.connected || !state.writer) {
+                throw new Error('串口未连接，无法读取寄存器');
+            }
+            if (retries !== 0) {
+                log(`[WARN] READ 0x${reg.toString(16).padStart(4, '0')} 需要严格串行，忽略重试参数并按单次等待处理`);
+            }
+            return await new Promise((resolve, reject) => {
+                const waiters = state.registerReadWaiters.get(reg) || [];
+                if (waiters.length > 0) {
+                    reject(new Error(`READ 0x${reg.toString(16).padStart(4, '0')} 仍有未收回的 cmd=0x81 等待，拒绝重叠请求`));
+                    return;
+                }
+                const waiter = {
+                    resolve,
+                    reject,
+                    timeout: window.setTimeout(() => {
+                        state.registerReadWaiters.delete(reg);
+                        reject(new Error(`READ 0x${reg.toString(16).padStart(4, '0')} 等待 cmd=0x81 回包超时 ${timeoutMs}ms`));
+                    }, timeoutMs)
+                };
+                state.registerReadWaiters.set(reg, [waiter]);
+                readRegister(reg).catch((error) => {
+                    window.clearTimeout(waiter.timeout);
+                    state.registerReadWaiters.delete(reg);
+                    reject(error);
+                });
+            });
+        }
+
+        async function writeRegister(reg, value) {
+            if (!state.connected || !state.writer) {
+                log('[WARN] 尚未连接串口，无法写入寄存器');
+                return;
+            }
+            const frame = buildFrame(0x02, reg, value >>> 0);
+            if (state.autoTuneActive) state.tuneLastCommand = `WRITE 0x${reg.toString(16).padStart(4, '0')} value=${value} cmd=0x02`;
+            await state.writer.write(frame);
+            log(`[TX] WRITE reg=0x${reg.toString(16).padStart(4, '0')} cmd=0x02 value=${value}`);
+        }
+
+        async function armPositionFollowMode() {
+            if (!state.connected) return;
+            const startRpm = clamp(Math.round(Number(document.getElementById('startRpmSelect').value || 120)), 1, 12000);
+            const maxRpm = clamp(Math.round(Number(document.getElementById('maxRpmSelect').value || 1200)), 1, 12000);
+            const accelRpm = clamp(Math.round(Number(document.getElementById('accelRpmSelect').value || 6000)), 1, 12000);
+            const angleMaxRpm = clamp(Math.round(Number(document.getElementById('angleMaxRpmInput').value || 1200)), 1, 12000);
+            const angleAccelRpm = clamp(Math.round(Number(document.getElementById('angleAccelRpmSInput').value || 6000)), 1, 12000);
+            await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 1);
+            await writeRegister(0x11A, startRpm);
+            await writeRegister(0x11B, maxRpm);
+            await writeRegister(0x11C, accelRpm);
+            await writeRegister(CUSTOM_REGS.ANGLE_MAX_RPM, angleMaxRpm);
+            await writeRegister(CUSTOM_REGS.ANGLE_ACCEL_RPM_S, angleAccelRpm);
+            document.getElementById('closedLoopEnableInput').checked = true;
+        }
+
+        async function connectSerial() {
+            try {
+                if (!('serial' in navigator)) {
+                    log('[WARN] 当前浏览器不支持 Web Serial API，请使用 Chrome / Edge');
+                    return;
+                }
+
+                const portObj = await navigator.serial.requestPort();
+                const baud = Number(document.getElementById('baudRate').value || 115200);
+                await portObj.open({baudRate: baud});
+
+                state.port = portObj;
+                state.connected = true;
+                state.reader = portObj.readable.getReader();
+                state.writer = portObj.writable.getWriter();
+
+                setConnBadge('已连接', true);
+                protoBadge.textContent = 'TMC 兼容';
+                log('[INFO] 串口已连接，开始监听返回数据');
+                void readLoop();
+                await loadMotorSettingsFromFirmware();
+                await armPositionFollowMode();
+                if (state.pendingTargetAngle !== null) void flushTargetAngleWrites();
+            } catch (err) {
+                log('[ERROR] 串口连接失败：' + (err && err.message ? err.message : String(err)));
+                setConnBadge('未连接', false);
+            }
+        }
+
+        async function readLoop() {
+            if (!state.reader) return;
+            try {
+                while (true) {
+                    const {value, done} = await state.reader.read();
+                    if (done) break;
+                    if (!value || value.length === 0) continue;
+                    appendRxBytes(value);
+                }
+            } catch (err) {
+                log('[ERROR] 串口读取出现错误：' + err.message);
+                setConnBadge('未连接', false);
+            }
+        }
+
+        function updateDialVisual() {
+            const targetPointerGroup = document.getElementById('dialTargetPointerGroup');
+            const actualPointerGroup = document.getElementById('dialActualPointerGroup');
+            const valueText = document.getElementById('posValue');
+            const currentPosDisplay = document.getElementById('currentPosDisplay');
+            const targetPosReadout = document.getElementById('targetPosReadout');
+            const currentPosReadout = document.getElementById('currentPosReadout');
+
+            const targetDisplayAngle = normalize360Angle(state.targetAngle);
+            const currentDisplayAngle = normalize360Angle(state.currentAngle);
+
+            targetPointerGroup.setAttribute('transform', `rotate(${targetDisplayAngle} 50 50)`);
+            actualPointerGroup.setAttribute('transform', `rotate(${currentDisplayAngle} 50 50)`);
+            valueText.textContent = `${Math.round(targetDisplayAngle)}°`;
+            currentPosDisplay.value = `${Math.round(currentDisplayAngle)}°`;
+            currentPosReadout.textContent = `${Math.round(currentDisplayAngle)}°`;
+            targetPosReadout.textContent = `${Math.round(targetDisplayAngle)}°`;
+        }
+
+        function setCurrentAngle(angle) {
+            state.currentAngle = normalize360Angle(angle);
+            updateDialVisual();
+        }
+
+        function setTargetAngle(angle) {
+            state.targetAngle = normalize360Angle(angle);
+            document.getElementById('targetPosInput').value = Math.round(state.targetAngle);
+            updateDialVisual();
+        }
+
+        async function ensureMotionDefaultsForAngleControl() {
+            if (!state.connected) return;
+            const startRpm = clamp(Math.round(Number(document.getElementById('startRpmSelect').value || 120)), 1, 12000);
+            const maxRpm = clamp(Math.round(Number(document.getElementById('maxRpmSelect').value || 1200)), 1, 12000);
+            const accelRpm = clamp(Math.round(Number(document.getElementById('accelRpmSelect').value || 6000)), 1, 12000);
+            const angleMaxRpm = clamp(Math.round(Number(document.getElementById('angleMaxRpmInput').value || 1200)), 1, 12000);
+            const angleAccelRpm = clamp(Math.round(Number(document.getElementById('angleAccelRpmSInput').value || 6000)), 1, 12000);
+            await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 1);
+            await writeRegister(0x11A, startRpm);
+            await writeRegister(0x11B, maxRpm);
+            await writeRegister(0x11C, accelRpm);
+            await writeRegister(CUSTOM_REGS.ANGLE_MAX_RPM, angleMaxRpm);
+            await writeRegister(CUSTOM_REGS.ANGLE_ACCEL_RPM_S, angleAccelRpm);
+            document.getElementById('closedLoopEnableInput').checked = true;
+        }
+
+        function queueTargetAngleWrite() {
+            if (state.autoTuneActive) return;
+            const target = normalize360Angle(Number(document.getElementById('targetPosInput').value || 0));
+            setTargetAngle(target);
+            state.targetPosition = target;
+            state.pendingTargetAngle = target;
+            if (state.connected) void flushTargetAngleWrites();
+        }
+
+        async function flushTargetAngleWrites() {
+            if (state.targetWriteInFlight || !state.connected) return;
+            state.targetWriteInFlight = true;
+            try {
+                await ensureMotionDefaultsForAngleControl();
+                while (state.connected && !state.autoTuneActive && state.pendingTargetAngle !== null) {
+                    const target = state.pendingTargetAngle;
+                    state.pendingTargetAngle = null;
+                    await writeRegister(CUSTOM_REGS.TARGET_ANGLE_DEG, Math.round(target * 1000));
+                }
+            } catch (error) {
+                log('[ERROR] 目标角度写入失败：' + error.message);
+            } finally {
+                state.targetWriteInFlight = false;
+            }
+        }
+
+        function bindDialDrag() {
+            const dial = document.getElementById('dial');
+            let dragging = false;
+            let lastAngle = 0;
+
+            function normalizeToAngle(clientX, clientY) {
+                const rect = dial.getBoundingClientRect();
+                const cx = rect.left + rect.width / 2;
+                const cy = rect.top + rect.height / 2;
+                const dx = clientX - cx;
+                const dy = clientY - cy;
+                let rad = Math.atan2(dy, dx);
+                let deg = (rad * 180 / Math.PI) + 90;
+                if (deg < -180) deg += 360;
+                if (deg > 180) deg -= 360;
+                return deg;
+            }
+
+            dial.addEventListener('pointerdown', (e) => {
+                if (state.autoTuneActive) return;
+                dragging = true;
+                dial.setPointerCapture(e.pointerId);
+                lastAngle = normalizeToAngle(e.clientX, e.clientY);
+                state.dragging = true;
+            });
+
+            dial.addEventListener('pointermove', (e) => {
+                if (!dragging) return;
+                const angle = normalizeToAngle(e.clientX, e.clientY);
+                let delta = angle - lastAngle;
+                if (delta > 180) delta -= 360;
+                if (delta < -180) delta += 360;
+                const nextTarget = normalize360Angle(state.targetAngle + delta);
+                state.targetAngle = nextTarget;
+                document.getElementById('targetPosInput').value = Math.round(nextTarget);
+                updateDialVisual();
+                queueTargetAngleWrite();
+                lastAngle = angle;
+            });
+
+            dial.addEventListener('pointerup', () => {
+                if (dragging) {
+                    dragging = false;
+                    state.dragging = false;
+                    queueTargetAngleWrite();
+                }
+            });
+
+            dial.addEventListener('pointerleave', () => {
+                if (dragging) {
+                    dragging = false;
+                    state.dragging = false;
+                    queueTargetAngleWrite();
+                }
+            });
+        }
+
+        async function sendTargetPosition() {
+            if (state.autoTuneActive) return;
+            const target = normalize360Angle(Number(document.getElementById('targetPosInput').value || 0));
+            setTargetAngle(target);
+            state.targetPosition = target;
+            log('[INFO] 发送目标位置：' + target + '°');
+            queueTargetAngleWrite();
+        }
+
+        async function applyAllConfig() {
+            const config = {
+                microsteps: normalizeTmcMicrosteps(clamp(Math.round(Number(document.getElementById('microsteps').value || 32)), 2, 256)),
+                interpMicrosteps: Number(document.getElementById('interpMicrosteps').value || 0) >= 256 ? 256 : 0,
+                stepAngleDeg: Number(document.getElementById('stepAngle').value || 1.8),
+                runCurrent: clamp(Number(document.getElementById('runCurrent').value || 0.8), 0, 1.2),
+                holdCurrent: clamp(Number(document.getElementById('holdCurrent').value || 0.2), 0, 1.2),
+                silent: Number(document.getElementById('silentMode').value || 1)
+            };
+
+            if (![config.microsteps, config.stepAngleDeg, config.runCurrent, config.holdCurrent].every(Number.isFinite)) {
+                throw new Error('电机参数包含无效数值');
+            }
+            document.getElementById('microsteps').value = String(config.microsteps);
+            document.getElementById('interpMicrosteps').value = String(config.interpMicrosteps);
+            document.getElementById('runCurrent').value = config.runCurrent.toFixed(2);
+            document.getElementById('holdCurrent').value = config.holdCurrent.toFixed(2);
+            if (!state.connected) throw new Error('请先连接下位机');
+            setMotorSettingsStatus('正在通过 TMC UART 写入并等待寄存器读回确认…');
+            const writes = [
+                ['微步数', CUSTOM_REGS.MICROSTEPS, config.microsteps],
+                ['插值', CUSTOM_REGS.INTERPOLATION, config.interpMicrosteps],
+                ['步距角', CUSTOM_REGS.MOTOR_STEP_ANGLE_MDEG, Math.round(config.stepAngleDeg * 1000)],
+                ['运行电流', CUSTOM_REGS.RUN_CURRENT_A, Math.round(config.runCurrent * 1000)],
+                ['保持电流', CUSTOM_REGS.HOLD_CURRENT_A, Math.round(config.holdCurrent * 1000)],
+                ['静音/性能模式', CUSTOM_REGS.SILENT_MODE, config.silent]
+            ];
+            const failures = [];
+            let consecutiveFailures = 0;
+            for (const [name, register, value] of writes) {
+                setMotorSettingsStatus(`正在写入 ${name}，等待 PA4 TMC UART 确认…`);
+                try {
+                    await writeRegisterAndWaitAck(register, value);
+                    consecutiveFailures = 0;
+                    log(`[TMC UART] ${name} 写入及寄存器读回确认成功`);
+                } catch (error) {
+                    failures.push(`${name}: ${error.message}`);
+                    consecutiveFailures++;
+                    log(`[TMC UART] ${name} 写入/读回失败：${error.message}`);
+                    /* 连续三个都失败就不必再把剩下的一个个等到超时：
+                     * 这是 UART 整条不通（模块损坏 / PA4 没接好）的特征，
+                     * 继续等只会让按钮“卡死”十几秒并刷屏。 */
+                    if (consecutiveFailures >= 3) {
+                        log('[ERROR] 连续 3 个参数写入失败，停止本次剩余写入；请先确认 2209 模块与 PA4 连接');
+                        break;
+                    }
+                }
+            }
+            if (failures.length > 0) {
+                throw new Error(`UART 参数未全部确认（已停止后续写入）：${failures.join('；')}`);
+            }
+            setMotorSettingsStatus('应用成功：全部参数均收到 TMC UART 写入及寄存器读回确认', 'ok');
+            log('[INFO] 已应用电机基础参数：' + JSON.stringify(config));
+        }
+
+        async function loadMotorSettingsFromFirmware() {
+            if (!state.connected) throw new Error('串口未连接');
+            setMotorSettingsStatus('正在通过 TMC UART 读取驱动器当前参数…');
+            const parameters = [
+                ['微步数', CUSTOM_REGS.MICROSTEPS],
+                ['插值', CUSTOM_REGS.INTERPOLATION],
+                ['步距角', CUSTOM_REGS.MOTOR_STEP_ANGLE_MDEG],
+                ['运行电流', CUSTOM_REGS.RUN_CURRENT_A],
+                ['保持电流', CUSTOM_REGS.HOLD_CURRENT_A],
+                ['静音/性能模式', CUSTOM_REGS.SILENT_MODE]
+            ];
+            const values = new Map();
+            const failures = [];
+            for (const [name, register] of parameters) {
+                try {
+                    const value = await readRegisterValue(register);
+                    if (value === 0xFFFFFFFF) throw new Error('TMC UART 无有效寄存器回包');
+                    values.set(register, value);
+                } catch (error) {
+                    failures.push(`${name}: ${error.message}`);
+                    log(`[TMC UART] 读取${name}失败：${error.message}；驱动可能不支持 TMC UART`);
+                }
+            }
+            /* 回填前夹紧：微步只能是 2~256。即使固件某天回了怪值，也不许它变成
+             * 4294967295 这种会让后续步数换算爆炸的数字。 */
+            if (values.has(CUSTOM_REGS.MICROSTEPS)) {
+                const loadedMicrosteps = normalizeTmcMicrosteps(clamp(Math.round(values.get(CUSTOM_REGS.MICROSTEPS)), 2, 256));
+                state.microsteps = loadedMicrosteps;
+                document.getElementById('microsteps').value = String(loadedMicrosteps);
+            }
+            if (values.has(CUSTOM_REGS.INTERPOLATION)) document.getElementById('interpMicrosteps').value = values.get(CUSTOM_REGS.INTERPOLATION) >= 256 ? '256' : '0';
+            if (values.has(CUSTOM_REGS.MOTOR_STEP_ANGLE_MDEG)) document.getElementById('stepAngle').value = values.get(CUSTOM_REGS.MOTOR_STEP_ANGLE_MDEG) === 900 ? '0.9' : '1.8';
+            /* 电流同样夹在 0~1.2A：超过安全上限的值即便存在 Flash 里，也不许出现在界面上再被写回去 */
+            if (values.has(CUSTOM_REGS.RUN_CURRENT_A)) document.getElementById('runCurrent').value = clamp(values.get(CUSTOM_REGS.RUN_CURRENT_A) / 1000, 0, 1.2).toFixed(2);
+            if (values.has(CUSTOM_REGS.HOLD_CURRENT_A)) document.getElementById('holdCurrent').value = clamp(values.get(CUSTOM_REGS.HOLD_CURRENT_A) / 1000, 0, 1.2).toFixed(2);
+            if (values.has(CUSTOM_REGS.SILENT_MODE)) document.getElementById('silentMode').value = values.get(CUSTOM_REGS.SILENT_MODE) ? '1' : '0';
+            updateMotionDurationEstimate();
+            if (failures.length > 0) {
+                setMotorSettingsStatus(`TMC UART 读取未完全成功：${failures.join('；')}`, 'error');
+                log(`[TMC UART] 上电参数读取部分/全部失败 (${failures.length}/${parameters.length})`);
+            } else {
+                setMotorSettingsStatus('TMC 参数读取成功：PA4 UART 寄存器读回；步距角来自 MCU 配置', 'ok');
+                log('[TMC UART] 已通过 PA4 读取驱动器参数；步距角为 MCU 配置项');
+            }
+        }
+
+        async function saveMotorSettingsToFlash() {
+            if (!state.connected) throw new Error('请先连接串口');
+            let uartApplyError = null;
+            try {
+                await applyAllConfig();
+            } catch (error) {
+                uartApplyError = error;
+            }
+            setMotorSettingsStatus(uartApplyError
+                ? 'TMC UART 未全部确认，仍在保存 MCU Flash 参数…'
+                : 'UART 参数已确认，正在写入 MCU Flash…', uartApplyError ? 'error' : 'info');
+            await writeRegisterAndWaitAck(CUSTOM_REGS.SAVE_MOTOR_CONFIG, 1, 3000);
+            const saved = await readRegisterValue(CUSTOM_REGS.SAVE_MOTOR_CONFIG, 1500, 0);
+            if ((saved >>> 0) !== 1) throw new Error('MCU Flash 写入失败');
+            if (uartApplyError) {
+                setMotorSettingsStatus(`MCU Flash 保存成功，但 TMC UART 参数未全部确认：${uartApplyError.message}`, 'error');
+                log(`[WARN] Flash 已保存；TMC UART 应用未完全确认：${uartApplyError.message}`);
+            } else {
+                setMotorSettingsStatus('写入成功：TMC UART 参数已确认，MCU Flash 保存已回读确认', 'ok');
+            }
+            log('[INFO] 电机参数已写入 MCU Flash');
+        }
+
+        async function eraseMotorSettingsFromFlash() {
+            if (!state.connected) throw new Error('请先连接串口');
+            if (!window.confirm('清除 MCU Flash 里保存的电机参数，并恢复内置安全默认值（32 细分 / 插值 256 / 1.8° / 0.8 A / 0.2 A / 静音）？')) {
+                return;
+            }
+            setMotorSettingsStatus('正在清除 MCU Flash 电机参数…');
+            /* 0x5AA5 是固件约定的擦除魔数：写入全 0 记录 → magic 不匹配 → 下次上电直接走内置默认值。
+             * 固件在擦除成功后还会把运行中的 config_ 一并恢复成内置默认，
+             * 所以这里【不需要】再走一遍 applyAllConfig 去“写回”参数——
+             * 2209 损坏 / PA4 不通时那六次写入必然全部超时，既拖时间又把已完成的擦除报成失败。 */
+            await writeRegisterAndWaitAck(CUSTOM_REGS.SAVE_MOTOR_CONFIG, 0x5AA5, 5000);
+            const status = await readRegisterValue(CUSTOM_REGS.SAVE_MOTOR_CONFIG, 1500, 0);
+            if ((status >>> 0) !== 1) throw new Error('MCU Flash 清除未确认');
+            log('[INFO] MCU Flash 电机参数已擦除；固件已将运行配置恢复为内置默认值');
+            try {
+                /* 回读核对：固件读寄存器失败时会回报本地 config_（刚被重置成默认值），
+                 * 不会吐 0xFFFFFFFF，所以 UART 坏掉也能正常回显。 */
+                await loadMotorSettingsFromFirmware();
+                setMotorSettingsStatus('已清除 Flash 电机参数：当前配置为安全默认值（32 细分 / 插值 256 / 1.8° / 0.8 A / 0.2 A / 静音）', 'ok');
+            } catch (error) {
+                document.getElementById('microsteps').value = '32';
+                document.getElementById('interpMicrosteps').value = '256';
+                document.getElementById('stepAngle').value = '1.8';
+                document.getElementById('runCurrent').value = '0.8';
+                document.getElementById('holdCurrent').value = '0.2';
+                document.getElementById('silentMode').value = '1';
+                updateMotionDurationEstimate();
+                setMotorSettingsStatus(`MCU Flash 已清除，但回读失败：${error.message}`, 'error');
+            }
+        }
+
+        function getPidParameters() {
+            return {
+                posKp: Number(document.getElementById('posKp').value || 0),
+                posKi: Number(document.getElementById('posKi').value || 0),
+                posKd: Number(document.getElementById('posKd').value || 0),
+                velKp: Number(document.getElementById('velKp').value || 0),
+                velKi: Number(document.getElementById('velKi').value || 0),
+                velKd: Number(document.getElementById('velKd').value || 0)
+            };
+        }
+
+        async function writePidParameters(params = getPidParameters()) {
+            const registers = [
+                [CUSTOM_REGS.POSITION_KP, params.posKp, 30000],
+                [CUSTOM_REGS.POSITION_KI, params.posKi, 3000],
+                [CUSTOM_REGS.POSITION_KD, params.posKd, 30000],
+                [CUSTOM_REGS.VELOCITY_KP, params.velKp, 30000],
+                [CUSTOM_REGS.VELOCITY_KI, params.velKi, 3000],
+                [CUSTOM_REGS.VELOCITY_KD, params.velKd, 30000]
+            ];
+            for (const [register, gain, maxGain] of registers) {
+                await writeRegister(register, Math.round(clamp(gain, 0, maxGain) * 1000));
+            }
+        }
+
+        async function writePidParameter(input) {
+            if (!state.connected || state.autoTuneActive) return;
+            const registerByInput = {
+                posKp: [CUSTOM_REGS.POSITION_KP, 30000],
+                posKi: [CUSTOM_REGS.POSITION_KI, 3000],
+                posKd: [CUSTOM_REGS.POSITION_KD, 30000],
+                velKp: [CUSTOM_REGS.VELOCITY_KP, 30000],
+                velKi: [CUSTOM_REGS.VELOCITY_KI, 3000],
+                velKd: [CUSTOM_REGS.VELOCITY_KD, 30000]
+            };
+            const parameter = registerByInput[input.id];
+            if (!parameter) return;
+            const [register, maxGain] = parameter;
+            const gain = clamp(Number(input.value) || 0, 0, maxGain);
+            try {
+                await writeRegister(register, Math.round(gain * 1000));
+            } catch (error) {
+                log('[ERROR] PID 参数写入失败：' + error.message);
+            }
+        }
+
+        function readAllConfig() {
+            log('[INFO] 发送读取全部参数请求');
+            const regs = [
+                OFFICIAL_REGS.IHOLD_IRUN,
+                OFFICIAL_REGS.CHOPCONF,
+                OFFICIAL_REGS.GCONF,
+                OFFICIAL_REGS.DRV_CONF,
+                OFFICIAL_REGS.TSTEP,
+                OFFICIAL_REGS.DRV_STATUS,
+                CUSTOM_REGS.CLOSED_LOOP_ENABLE,
+                CUSTOM_REGS.RUN_CURRENT_A,
+                CUSTOM_REGS.HOLD_CURRENT_A,
+                CUSTOM_REGS.ANGLE_MAX_RPM,
+                CUSTOM_REGS.ANGLE_ACCEL_RPM_S,
+                CUSTOM_REGS.ENCODER_RAW,
+                CUSTOM_REGS.ENCODER_ANGLE_MDEG,
+                CUSTOM_REGS.MAGNETIC_HIGH,
+                CUSTOM_REGS.MAGNETIC_LOW,
+                CUSTOM_REGS.ENCODER_ZERO,
+                CUSTOM_REGS.POSITION_KP,
+                CUSTOM_REGS.POSITION_KI,
+                CUSTOM_REGS.POSITION_KD,
+                CUSTOM_REGS.VELOCITY_KP,
+                CUSTOM_REGS.VELOCITY_KI,
+                CUSTOM_REGS.VELOCITY_KD
+            ];
+            regs.forEach(async (reg) => {
+                await readRegister(reg);
+            });
+        }
+
+        async function stopMotor() {
+            stopWaveCapture();
+            if (state.autoTuneActive) {
+                state.autoTuneCancelled = true;
+                appendTuneLog('收到停止命令，正在安全终止整定');
+            }
+            log('[WARN] 发送停止命令，释放闭环保持');
+            if (state.connected) {
+                await writeRegister(0x11F, 0);
+            }
+        }
+
+        async function zeroEncoder() {
+            const tuning = state.autoTuneActive;
+            if (tuning) state.autoTuneCancelled = true;
+            state.targetAngle = 0;
+            state.targetPosition = 0;
+            document.getElementById('targetPosInput').value = '0';
+            updateDialVisual();
+            log('[INFO] 已发送电机归零目标：0°');
+            if (tuning && state.connected) {
+                await writeRegister(CUSTOM_REGS.TARGET_ANGLE_DEG, 0);
+            } else {
+                queueTargetAngleWrite();
+            }
+        }
+
+        function appendTuneLog(message) {
+            const logElement = document.getElementById('tuneLog');
+            const line = document.createElement('p');
+            line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logElement.appendChild(line);
+            while (logElement.children.length > 500) {
+                logElement.removeChild(logElement.firstElementChild);
+            }
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+
+        function createPulseTuneProfiles(maxSpeedRpm, accelRpmS, turnsPerDirection, fullRun) {
+            const slowSpeedRpm = Math.max(5, Math.round(maxSpeedRpm * 0.25));
+            const slowAccelRpmS = Math.max(10, Math.round(accelRpmS * 0.35));
+            const fastAccelRpmS = Math.min(12000, Math.max(slowAccelRpmS, accelRpmS));
+            const steadyTurns = fullRun ? turnsPerDirection / 2 : 0.25;
+            const reversalTurns = fullRun ? 0.25 : 0.125;
+            const profiles = [
+                {direction: 0, startRpm: Math.max(2, slowSpeedRpm / 2), maxRpm: slowSpeedRpm, accelRpmS: slowAccelRpmS, turns: steadyTurns, label: '正向慢速'},
+                {direction: 0, startRpm: slowSpeedRpm, maxRpm: maxSpeedRpm, accelRpmS: fastAccelRpmS, turns: steadyTurns, label: '正向快速'},
+                {direction: 1, startRpm: Math.max(2, slowSpeedRpm / 2), maxRpm: slowSpeedRpm, accelRpmS: slowAccelRpmS, turns: steadyTurns, label: '反向慢速'},
+                {direction: 1, startRpm: slowSpeedRpm, maxRpm: maxSpeedRpm, accelRpmS: fastAccelRpmS, turns: steadyTurns, label: '反向快速'}
+            ];
+            for (let index = 0; index < 4; index++) {
+                profiles.push({
+                    direction: index % 2 === 0 ? 0 : 1,
+                    mode: index % 2 === 0 ? 6 : 7,
+                    startRpm: Math.max(5, Math.round(maxSpeedRpm * 0.5)),
+                    maxRpm: maxSpeedRpm,
+                    accelRpmS: Math.min(12000, Math.max(fastAccelRpmS, accelRpmS * 2)),
+                    turns: reversalTurns,
+                    label: `快速往返 ${index + 1}`
+                });
+            }
+            return profiles;
+        }
+
+        function waitForTuneMotionCompletion(timeoutMs) {
+            return new Promise((resolve, reject) => {
+                state.tuneMotionObserved = false;
+                state.tuneTrialStartedAt = performance.now();
+                state.tuneLastMotionTelemetryAt = 0;
+                state.tuneLastMotionStatus = null;
+                state.tuneLastMotionStatusCmd = null;
+                state.tuneTrialStage = '等待固件运动状态变为运行';
+                const profile = state.tuneTrialProfile;
+                const profileDescription = profile
+                    ? `${profile.label}, mode=${profile.mode ?? profile.direction}, dir=${profile.direction}, rpm=${profile.startRpm}->${profile.maxRpm}, accel=${profile.accelRpmS}, turnsPerDirection=${profile.turns}, pulses=${profile.pulseCount}`
+                    : 'profile=unknown';
+                appendTuneLog(`[诊断] ${profileDescription}；等待 0x011F: 1->0，超时=${timeoutMs}ms`);
+                state.tuneMotionResolver = resolve;
+                state.tuneMotionTimeout = window.setTimeout(async () => {
+                    state.tuneMotionTimeout = null;
+                    const stageAtTimeout = state.tuneTrialStage;
+                    const commandAtTimeout = state.tuneLastCommand;
+                    let liveStatus = '读取失败';
+                    let scheduledSteps = '读取失败';
+                    let commandedRpm = '读取失败';
+                    try {
+                        state.tuneTrialStage = '超时诊断：主动读取 0x011F';
+                        const value = await readRegisterValue(0x11F, 750, 0);
+                        liveStatus = `${value | 0} (cmd=0x81)`;
+                    } catch (error) {
+                        liveStatus = error.message;
+                    }
+                    try {
+                        state.tuneTrialStage = '超时诊断：读取已提交 STEP 数 0x0134';
+                        scheduledSteps = String(await readRegisterValue(CUSTOM_REGS.MOTION_SCHEDULED_STEPS, 750, 0));
+                    } catch (error) {
+                        scheduledSteps = error.message;
+                    }
+                    try {
+                        state.tuneTrialStage = '超时诊断：读取命令速度 0x0135';
+                        const rawCommandedSpeed = await readRegisterValue(CUSTOM_REGS.MOTION_COMMAND_SPEED_MRPM, 750, 0);
+                        commandedRpm = `${(rawCommandedSpeed | 0) / 1000.0}RPM`;
+                    } catch (error) {
+                        commandedRpm = error.message;
+                    }
+                    if (state.tuneMotionResolver === null) return;
+
+                    const now = performance.now();
+                    const elapsedMs = Math.round(now - state.tuneTrialStartedAt);
+                    const telemetryAge = state.tuneLastMotionTelemetryAt > 0
+                        ? `${Math.round(now - state.tuneLastMotionTelemetryAt)}ms`
+                        : '本试验未收到';
+                    const lastStatus = state.tuneLastMotionStatus === null
+                        ? '未收到'
+                        : `${state.tuneLastMotionStatus} (cmd=0x${state.tuneLastMotionStatusCmd.toString(16).padStart(2, '0')})`;
+                    const reason = state.tuneMotionObserved
+                        ? '已观察到运行状态，但在期限内没有观察到停止状态'
+                        : '未观察到运行状态；需检查启动命令应答、固件运动启动及 0x011F 状态遥测';
+                    const message = `等待固件运动完成状态超时：阶段=${stageAtTimeout}；${reason}；试验=${profileDescription}；已等待=${elapsedMs}ms/${timeoutMs}ms；最后 0x011F 状态=${lastStatus}，状态遥测距今=${telemetryAge}，超时后主动读取=${liveStatus}；STEP 已提交=${scheduledSteps}/${profile.pulseCount}；命令速度=${commandedRpm}，编码器实测速度=${Number(state.motionSpeedRpm || 0).toFixed(2)}RPM，跟随误差=${Number(state.motionFollowErrorDeg || 0).toFixed(3)}°；超时前最近命令=${commandAtTimeout}`;
+                    state.tuneMotionResolver = null;
+                    appendTuneLog(`[超时诊断] ${message}`);
+                    reject(new Error(message));
+                }, timeoutMs);
+            });
+        }
+
+        async function runPulseTuneTrial(profile, stepsPerRevolution) {
+            const isAlternating = profile.mode === 6 || profile.mode === 7;
+            const totalTurns = profile.turns * (isAlternating ? 2 : 1);
+            const pulseCount = Math.max(2, Math.round(totalTurns * stepsPerRevolution));
+            const accelTimeMs = Math.max(0, (profile.maxRpm - profile.startRpm) / profile.accelRpmS * 1000);
+            const timeoutMs = Math.max(5000, totalTurns * 60 / profile.maxRpm * 3000 + accelTimeMs * (isAlternating ? 6 : 3) + 3000);
+            state.tuneTrialProfile = {...profile, pulseCount};
+            state.tuneTrialStage = '配置运动参数';
+            appendTuneLog(`[试验] ${profile.label} 参数：方向=${profile.direction === 0 ? '正向' : '反向'}，起始=${profile.startRpm}RPM，最高=${profile.maxRpm}RPM，加速度=${profile.accelRpmS}RPM/s，脉冲数=${pulseCount}，完成超时=${Math.round(timeoutMs)}ms`);
+            await writeRegister(0x11A, Math.round(profile.startRpm));
+            await writeRegister(0x11B, Math.round(profile.maxRpm));
+            await writeRegister(0x11C, Math.round(profile.accelRpmS));
+            await writeRegister(0x11D, pulseCount);
+            await writeRegister(0x11E, profile.mode ?? profile.direction);
+            state.tuneTrialStage = '启动前读取故障位图 0x0108';
+            const faultFlags = await readRegisterValue(CUSTOM_REGS.FAULT_STATUS, 1000, 1);
+            const encoderFault = (faultFlags & 0x01) !== 0;
+            const magneticFault = (faultFlags & 0x02) !== 0;
+            const outputStopped = (faultFlags & 0x04) !== 0;
+            appendTuneLog(`[启动门控] 0x0108=0x${faultFlags.toString(16).padStart(8, '0')}；编码器故障=${encoderFault ? 1 : 0}，磁场报警=${magneticFault ? 1 : 0}，输出停止=${outputStopped ? 1 : 0}`);
+            if (encoderFault || magneticFault) {
+                throw new Error(`固件拒绝启动：${encoderFault ? '编码器故障 ' : ''}${magneticFault ? '磁场报警 ' : ''}(0x0108=0x${faultFlags.toString(16)})`);
+            }
+            state.tuneTrialActive = true;
+            state.tuneTrialStage = '启动固件评分采集';
+            const motionCompleted = waitForTuneMotionCompletion(timeoutMs);
+            let score = Number.POSITIVE_INFINITY;
+            try {
+                state.tuneTrialStage = '发送评分采集命令 0x0131=1';
+                await writeRegister(CUSTOM_REGS.PID_TUNE_CONTROL, 1);
+                state.tuneTrialStage = '发送运动启动命令 0x011F=1';
+                await writeRegister(0x11F, 1);
+                state.tuneTrialStage = '等待固件运行状态与完成状态';
+                appendTuneLog(`${profile.label}：${isAlternating ? `${profile.turns.toFixed(2)} 圈/方向，往返` : `${profile.turns.toFixed(2)} 圈`}，${profile.maxRpm.toFixed(0)} RPM，${profile.accelRpmS.toFixed(0)} RPM/s`);
+                await motionCompleted;
+                state.tuneTrialStage = '读取固件评分样本数 0x0133';
+                const sampleCount = await readRegisterValue(CUSTOM_REGS.PID_TUNE_SAMPLE_COUNT);
+                state.tuneTrialStage = '读取固件评分 0x0132';
+                const scoreMilliDegrees = await readRegisterValue(CUSTOM_REGS.PID_TUNE_SCORE_MDEG);
+                if (sampleCount < 4 || scoreMilliDegrees === 0xFFFFFFFF) {
+                    throw new Error(`固件评分样本不足（${sampleCount}）`);
+                }
+                score = scoreMilliDegrees / 1000.0;
+                return {score, sampleCount};
+            } finally {
+                state.tuneTrialStage = '关闭固件评分采集';
+                state.tuneTrialActive = false;
+                await writeRegister(CUSTOM_REGS.PID_TUNE_CONTROL, 0).catch((error) => {
+                    appendTuneLog(`关闭固件评分采集失败：${error.message}`);
+                });
+                if (state.tuneMotionTimeout !== null) {
+                    window.clearTimeout(state.tuneMotionTimeout);
+                    state.tuneMotionTimeout = null;
+                }
+                state.tuneMotionResolver = null;
+                state.tuneTrialProfile = null;
+                state.tuneTrialStage = '';
+            }
+            if (state.autoTuneCancelled) return null;
+            return {score, sampleCount: 0};
+        }
+
+        function getTuneActionProfiles() {
+            const maxSpeedRpm = clamp(Number(document.getElementById('tuneMaxSpeed').value || 60), 5, 6000);
+            const accelRpmS = clamp(Number(document.getElementById('tuneAccel').value || 180), 10, 3000);
+            const turnsPerDirection = clamp(Number(document.getElementById('tuneTestTurns').value || 5), 1, 5);
+            return createPulseTuneProfiles(maxSpeedRpm, accelRpmS, turnsPerDirection, true);
+        }
+
+        function renderTuneActionRows(reset = true) {
+            const container = document.getElementById('tuneActionList');
+            if (!container) return;
+            state.tuneActionProfiles = getTuneActionProfiles();
+            container.replaceChildren();
+            state.tuneActionProfiles.forEach((profile, index) => {
+                const row = document.createElement('div');
+                row.className = 'tune-action-row';
+                const turnsDescription = profile.mode === 6 || profile.mode === 7
+                    ? `${profile.turns} 圈/方向，往返`
+                    : `${profile.turns} 圈`;
+                row.innerHTML = `<div class="tune-action-name">${String(index + 1).padStart(2, '0')} · ${profile.label}</div><div class="tune-action-result" id="tuneActionResult${index}">${profile.direction === 0 ? '正向' : '反向'} · ${profile.startRpm}→${profile.maxRpm} RPM · ${profile.accelRpmS} RPM/s · ${turnsDescription} · 等待执行</div><button class="tune-action-button" id="tuneActionButton${index}" type="button">执行</button>`;
+                container.appendChild(row);
+                row.querySelector('button').addEventListener('click', () => {
+                    void executeTuneAction(index);
+                });
+            });
+            if (!reset) return;
+            document.getElementById('tuneResults').textContent = '尚未完成动作评分';
+        }
+
+        function setTuneActionState(index, status, result, completed = false) {
+            const resultElement = document.getElementById(`tuneActionResult${index}`);
+            const button = document.getElementById(`tuneActionButton${index}`);
+            if (!resultElement || !button) return;
+            resultElement.textContent = `${status} · ${result}`;
+            button.disabled = completed || state.autoTuneActive || state.tuneActionBusy;
+            button.textContent = completed ? '已完成' : '执行';
+        }
+
+        async function readTuneGainsFromHardware() {
+            const registers = [
+                [CUSTOM_REGS.POSITION_KP, 'posKp'], [CUSTOM_REGS.POSITION_KI, 'posKi'],
+                [CUSTOM_REGS.POSITION_KD, 'posKd'], [CUSTOM_REGS.VELOCITY_KP, 'velKp'],
+                [CUSTOM_REGS.VELOCITY_KI, 'velKi'], [CUSTOM_REGS.VELOCITY_KD, 'velKd']
+            ];
+            const gains = {};
+            for (const [register, key] of registers) {
+                gains[key] = (await readRegisterValue(register)) / 1000;
+            }
+            writeTuneGainsToInputs(gains);
+            return gains;
+        }
+
+        function formatTuneGains(gains) {
+            return `P:${gains.posKp.toFixed(2)}/${gains.posKi.toFixed(2)}/${gains.posKd.toFixed(2)} V:${gains.velKp.toFixed(2)}/${gains.velKi.toFixed(2)}/${gains.velKd.toFixed(2)}`;
+        }
+
+        async function runPulseTuneTrialWithRetries(profile, stepsPerRevolution, actionIndex = -1) {
+            for (let attempt = 0; ; attempt++) {
+                try {
+                    return await runPulseTuneTrial(profile, stepsPerRevolution);
+                } catch (error) {
+                    if (state.autoTuneCancelled) return null;
+                    const isMotionTimeout = error.message.includes('等待固件运动完成状态超时');
+                    if (!state.autoTuneActive || !isMotionTimeout || attempt >= 2) throw error;
+
+                    if (actionIndex >= 0) {
+                        setTuneActionState(actionIndex, '超时，正在恢复', `自动重试 ${attempt + 1}/2`);
+                    }
+                    appendTuneLog(`[自动重试] ${profile.label} 第 ${attempt + 1}/2 次：停止当前动作后重跑`);
+                    await writeRegister(0x11F, 0);
+                    let stopped = false;
+                    const stopDeadline = performance.now() + 2000;
+                    while (!stopped && performance.now() < stopDeadline) {
+                        try {
+                            stopped = (await readRegisterValue(0x11F, 500, 0)) === 0;
+                        } catch {
+                            stopped = false;
+                        }
+                        if (!stopped) await new Promise((resolve) => window.setTimeout(resolve, 100));
+                    }
+                    if (!stopped) throw new Error(`自动重试前无法确认运动已停止：${error.message}`);
+                    await new Promise((resolve) => window.setTimeout(resolve, 300));
+                }
+            }
+        }
+
+        async function runTuneAction(index, options = {}) {
+            if (state.tuneActionBusy || (state.autoTuneActive && !options.fromAuto)) return null;
+            if (!state.connected) {
+                setTuneActionState(index, '失败，可重试', '串口未连接');
+                appendTuneLog(`${state.tuneActionProfiles[index].label}：未连接串口`);
+                return null;
+            }
+            const profile = state.tuneActionProfiles[index];
+            const button = document.getElementById(`tuneActionButton${index}`);
+            if (!profile || !button) return null;
+
+            state.tuneActionBusy = true;
+            state.tuneActionProfiles.forEach((_, actionIndex) => {
+                const actionButton = document.getElementById(`tuneActionButton${actionIndex}`);
+                if (actionButton) actionButton.disabled = true;
+            });
+            button.textContent = '运行中';
+            setTuneActionState(index, '运行中', '读取当前 PID 并采样');
+            let savedConfig = null;
+            try {
+                const microsteps = await readRegisterValue(CUSTOM_REGS.MICROSTEPS);
+                savedConfig = {
+                    closedLoopEnabled: await readRegisterValue(CUSTOM_REGS.CLOSED_LOOP_ENABLE),
+                    startRpm: await readRegisterValue(0x11A),
+                    maxRpm: await readRegisterValue(0x11B),
+                    accelRpmS: await readRegisterValue(0x11C)
+                };
+                const gains = await readTuneGainsFromHardware();
+                await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 1);
+                document.getElementById('closedLoopEnableInput').checked = true;
+                const trialResult = await runPulseTuneTrialWithRetries(profile, getMotorStepsPerRevolution(microsteps), index);
+                if (!trialResult) return null;
+                const details = `评分=${trialResult.score.toFixed(3)}°，样本=${trialResult.sampleCount}，${formatTuneGains(gains)}`;
+                setTuneActionState(index, '已完成', details, true);
+                appendTuneLog(`[动作完成] ${profile.label}：${details}`);
+                return trialResult.score;
+            } catch (error) {
+                setTuneActionState(index, '失败，可重试', error.message);
+                appendTuneLog(`[动作失败] ${profile.label}：${error.message}`);
+                throw error;
+            } finally {
+                if (savedConfig && state.connected && !state.autoTuneActive) {
+                    try {
+                        await writeRegister(0x11F, 0);
+                        await writeRegister(0x11A, savedConfig.startRpm);
+                        await writeRegister(0x11B, savedConfig.maxRpm);
+                        await writeRegister(0x11C, savedConfig.accelRpmS);
+                        await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, savedConfig.closedLoopEnabled);
+                        document.getElementById('closedLoopEnableInput').checked = savedConfig.closedLoopEnabled !== 0;
+                    } catch (error) {
+                        appendTuneLog(`恢复动作前配置失败：${error.message}`);
+                    }
+                }
+                state.tuneActionBusy = false;
+                if (state.autoTuneActive) {
+                    state.tuneActionProfiles.forEach((_, actionIndex) => {
+                        const actionButton = document.getElementById(`tuneActionButton${actionIndex}`);
+                        if (actionButton && !actionButton.textContent.includes('已完成')) actionButton.disabled = true;
+                    });
+                } else {
+                    state.tuneActionProfiles.forEach((_, actionIndex) => {
+                        const actionButton = document.getElementById(`tuneActionButton${actionIndex}`);
+                        if (actionButton && !actionButton.textContent.includes('已完成')) actionButton.disabled = false;
+                    });
+                }
+            }
+        }
+
+        function writeTuneGainsToInputs(gains) {
+            for (const [key, inputId] of Object.entries({
+                posKp: 'posKp', posKi: 'posKi', posKd: 'posKd',
+                velKp: 'velKp', velKi: 'velKi', velKd: 'velKd'
+            })) {
+                document.getElementById(inputId).value = Number(gains[key]).toFixed(3);
+            }
+        }
+
+        async function startAutoTune() {
+            if (state.autoTuneActive) {
+                state.autoTuneCancelled = true;
+                if (state.tuneMotionResolver) state.tuneMotionResolver();
+                document.getElementById('startTuneBtn').textContent = '正在停止';
+                renderTuneActionRows(false);
+                state.tuneActionProfiles.forEach((_, index) => {
+                    const button = document.getElementById(`tuneActionButton${index}`);
+                    if (button) button.disabled = true;
+                });
+                appendTuneLog('请求取消整定');
+                return;
+            }
+            if (state.tuneActionBusy) {
+                appendTuneLog('单项动作正在运行，请稍候');
+                return;
+            }
+            renderTuneActionRows(true);
+            if (!state.connected) {
+                appendTuneLog('未连接串口，无法启动整定');
+                return;
+            }
+
+            state.autoTuneActive = true;
+            state.autoTuneCancelled = false;
+            state.pendingTargetAngle = null;
+            state.tuneActionProfiles.forEach((_, index) => {
+                const button = document.getElementById(`tuneActionButton${index}`);
+                if (button) button.disabled = true;
+            });
+            document.getElementById('startTuneBtn').textContent = '停止整定';
+            document.getElementById('tuneState').textContent = '运行中';
+            document.getElementById('tuneLogBadge').textContent = '整定中';
+            document.getElementById('tuneResults').textContent = '正在读取硬件参数';
+            appendTuneLog('开始多速度、多加速度的正反向脉冲闭环整定');
+
+            const maxSpeedRpm = clamp(Number(document.getElementById('tuneMaxSpeed').value || 60), 5, 6000);
+            const accelRpmS = clamp(Number(document.getElementById('tuneAccel').value || 180), 10, 3000);
+            const stepRatio = clamp(Number(document.getElementById('tuneGainStep').value || 0.25), 0.05, 0.5);
+            let bestGains = null;
+            let bestScore = Number.POSITIVE_INFINITY;
+            let finalScore = Number.POSITIVE_INFINITY;
+            let savedConfig = null;
+            let tuneOutcome = '已完成';
+            try {
+                const microsteps = await readRegisterValue(CUSTOM_REGS.MICROSTEPS);
+                state.microsteps = microsteps;
+                document.getElementById('microsteps').value = microsteps;
+                savedConfig = {
+                    closedLoopEnabled: await readRegisterValue(CUSTOM_REGS.CLOSED_LOOP_ENABLE),
+                    startRpm: await readRegisterValue(0x11A),
+                    maxRpm: await readRegisterValue(0x11B),
+                    accelRpmS: await readRegisterValue(0x11C)
+                };
+                bestGains = await readTuneGainsFromHardware();
+
+                if (performance.now() - state.lastEncoderTelemetryAt > 1000) {
+                    await readRegisterValue(CUSTOM_REGS.ENCODER_ANGLE_MDEG);
+                    if (performance.now() - state.lastEncoderTelemetryAt > 1000) {
+                        throw new Error('没有收到实时编码器角度遥测');
+                    }
+                }
+
+                await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 1);
+                document.getElementById('closedLoopEnableInput').checked = true;
+                appendTuneLog(`开始候选 PID 搜索：${formatTuneGains(bestGains)}；编码器细分=${microsteps}`);
+                const candidateProfiles = createPulseTuneProfiles(maxSpeedRpm, accelRpmS, 5, false).slice(0, 4);
+                const actionIndexForProfile = (profile) => state.tuneActionProfiles.findIndex((item) => item.label === profile.label);
+                const scoreProfiles = async (gains, profiles) => {
+                    await writePidParameters(gains);
+                    let totalScore = 0;
+                    for (const profile of profiles) {
+                        if (state.autoTuneCancelled) return Number.POSITIVE_INFINITY;
+                        const actionIndex = actionIndexForProfile(profile);
+                        try {
+                            const trial = await runPulseTuneTrialWithRetries(profile, getMotorStepsPerRevolution(microsteps), actionIndex);
+                            if (!trial || state.autoTuneCancelled) return Number.POSITIVE_INFINITY;
+                            totalScore += trial.score;
+                            if (actionIndex >= 0) {
+                                setTuneActionState(actionIndex, '候选 PID 评分', `评分=${trial.score.toFixed(3)}°，样本=${trial.sampleCount}，${formatTuneGains(gains)}`);
+                            }
+                        } catch (error) {
+                            if (actionIndex >= 0) setTuneActionState(actionIndex, '失败，可重试', error.message);
+                            throw error;
+                        }
+                    }
+                    return totalScore / profiles.length;
+                };
+
+                bestScore = await scoreProfiles(bestGains, candidateProfiles);
+                const gainKeys = ['posKp', 'posKi', 'posKd', 'velKp', 'velKi', 'velKd'];
+                for (const key of gainKeys) {
+                    if (state.autoTuneCancelled) break;
+                    const center = bestGains[key];
+                    const maxGain = key === 'posKp' || key === 'posKd' ? 30000 : 3000;
+                    const candidates = [
+                        Math.max(0, center * (1 - stepRatio)),
+                        Math.min(maxGain, center * (1 + stepRatio))
+                    ];
+                    if (center < 0.001) candidates[1] = Math.min(maxGain, Math.max(0.01, stepRatio * 0.1));
+
+                    for (const candidateValue of candidates) {
+                        if (state.autoTuneCancelled) break;
+                        const candidate = {...bestGains, [key]: candidateValue};
+                        const score = await scoreProfiles(candidate, candidateProfiles);
+                        if (score < bestScore) {
+                            bestScore = score;
+                            bestGains = candidate;
+                            appendTuneLog(`${key}=${candidateValue.toFixed(3)} 成为当前最佳，短行程评分 ${score.toFixed(3)}`);
+                        }
+                    }
+                    await writePidParameters(bestGains);
+                }
+
+                if (state.autoTuneCancelled) {
+                    tuneOutcome = '已停止';
+                    appendTuneLog('整定已取消；动作按钮状态已重置');
+                } else {
+                    appendTuneLog(`候选 PID 搜索完成：${formatTuneGains(bestGains)}；开始逐项全场景验证`);
+                    let totalFinalScore = 0;
+                    let completedProfiles = 0;
+                    for (let index = 0; index < state.tuneActionProfiles.length; index++) {
+                        if (state.autoTuneCancelled) break;
+                        try {
+                            const score = await runTuneAction(index, {fromAuto: true});
+                            if (score === null) break;
+                            totalFinalScore += score;
+                            completedProfiles++;
+                        } catch (error) {
+                            tuneOutcome = '失败，可重试失败项';
+                            document.getElementById('tuneResults').textContent = `${state.tuneActionProfiles[index].label} 失败：${error.message}`;
+                            break;
+                        }
+                    }
+                    if (!state.autoTuneCancelled && completedProfiles === state.tuneActionProfiles.length) {
+                        finalScore = totalFinalScore / completedProfiles;
+                        state.bestTuneGains = {...bestGains};
+                        writeTuneGainsToInputs(bestGains);
+                        document.getElementById('tuneResults').textContent = `位置 PID Kp=${bestGains.posKp.toFixed(3)} Ki=${bestGains.posKi.toFixed(3)} Kd=${bestGains.posKd.toFixed(3)}\n速度 PID Kp=${bestGains.velKp.toFixed(3)} Ki=${bestGains.velKi.toFixed(3)} Kd=${bestGains.velKd.toFixed(3)}\n短行程最佳评分=${bestScore.toFixed(3)}°；全场景验证评分=${finalScore.toFixed(3)}°`;
+                        appendTuneLog('全部动作通过；最佳 PID 已即时写入，每组评分和 PID 已记录');
+                    } else if (state.autoTuneCancelled) {
+                        tuneOutcome = '已停止';
+                    }
+                }
+            } catch (error) {
+                tuneOutcome = '已中止';
+                state.tuneTrialActive = false;
+                appendTuneLog(`整定中止：${error.message}`);
+                document.getElementById('tuneResults').textContent = `整定未完成：${error.message}`;
+            } finally {
+                state.tuneTrialActive = false;
+                state.autoTuneActive = false;
+                document.getElementById('startTuneBtn').textContent = '开始整定';
+                document.getElementById('tuneState').textContent = state.autoTuneCancelled ? '已停止' : tuneOutcome;
+                document.getElementById('tuneLogBadge').textContent = state.autoTuneCancelled ? '已停止' : tuneOutcome;
+                if (state.connected) {
+                    if (bestGains && Number.isFinite(bestScore)) {
+                        try {
+                            await writePidParameters(bestGains);
+                        } catch (error) {
+                            appendTuneLog(`恢复最佳参数失败：${error.message}`);
+                        }
+                    }
+                    try {
+                        await writeRegister(0x11F, 0);
+                    } catch (error) {
+                        appendTuneLog(`发送停止命令失败：${error.message}`);
+                    }
+                    try {
+                        if (savedConfig) {
+                            await writeRegister(0x11A, savedConfig.startRpm);
+                            await writeRegister(0x11B, savedConfig.maxRpm);
+                            await writeRegister(0x11C, savedConfig.accelRpmS);
+                            await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, savedConfig.closedLoopEnabled);
+                            document.getElementById('closedLoopEnableInput').checked = savedConfig.closedLoopEnabled !== 0;
+                        }
+                    } catch (error) {
+                        appendTuneLog(`恢复运动配置失败：${error.message}`);
+                    }
+                }
+                if (state.autoTuneCancelled) renderTuneActionRows(true);
+                else state.tuneActionProfiles.forEach((_, index) => {
+                    const button = document.getElementById(`tuneActionButton${index}`);
+                    if (button && button.textContent !== '已完成') button.disabled = false;
+                });
+            }
+        }
+
+        async function executeTuneAction(index) {
+            try {
+                await runTuneAction(index, {manual: true});
+            } catch (error) {
+                document.getElementById('tuneResults').textContent = `${state.tuneActionProfiles[index].label} 失败：${error.message}`;
+            }
+        }
+
+        function buildRpmOptions(selectId, minValue, maxValue, stepValue, offset) {
+            const select = document.getElementById(selectId);
+            const options = [];
+            for (let value = minValue; value <= maxValue; value += stepValue) {
+                if (value <= 1000) {
+                    if (value < 25) continue;
+                    options.push(value);
+                } else if (value === 1000 || value > 1000) {
+                    options.push(value);
+                }
+            }
+            if (offset !== undefined) {
+                const fallback = options.includes(offset) ? offset : options[0];
+                select.innerHTML = options.map((value) => `<option value="${value}">${value}</option>`).join('');
+                select.value = String(fallback);
+            } else {
+                select.innerHTML = options.map((value) => `<option value="${value}">${value}</option>`).join('');
+            }
+        }
+
+        function buildMotionControlOptions() {
+            const startSelect = document.getElementById('startRpmSelect');
+            const maxSelect = document.getElementById('maxRpmSelect');
+            const accelSelect = document.getElementById('accelRpmSelect');
+
+            const startValues = [];
+            for (let v = 0; v <= 600; v += 60) {
+                startValues.push(v);
+            }
+            startSelect.innerHTML = startValues.map((v) => `<option value="${v}">${v}</option>`).join('');
+            startSelect.value = '120';
+
+            const maxValues = [];
+            for (let v = 25; v <= 1000; v += 75) {
+                maxValues.push(v);
+            }
+            for (let v = 1000; v <= 10000; v += 1000) {
+                maxValues.push(v);
+            }
+            const maxUnique = [...new Set(maxValues.filter((v) => v >= 25 && v <= 10000))];
+            maxSelect.innerHTML = maxUnique.map((v) => `<option value="${v}">${v}</option>`).join('');
+            maxSelect.value = '1000';
+
+            const accelValues = [];
+            for (let v = 300; v <= 2400; v += 300) {
+                accelValues.push(v);
+            }
+            accelSelect.innerHTML = accelValues.map((v) => `<option value="${v}">${v}</option>`).join('');
+            accelSelect.value = '600';
+        }
+
+        function getMotorStepsPerRevolution(microsteps = Number(document.getElementById('microsteps').value || 32),
+                                            stepAngleDeg = Number(document.getElementById('stepAngle').value || 1.8)) {
+            return Math.round(360 / stepAngleDeg) * microsteps;
+        }
+
+        function getEffectivePulseCount() {
+            return Number(document.getElementById('pulseCountInput').value || 51200);
+        }
+
+        function updateMotionDurationEstimate() {
+            const pulseCount = Math.max(2, getEffectivePulseCount());
+            const startRpm = Number(document.getElementById('startRpmSelect').value || 0);
+            const maxRpm = Number(document.getElementById('maxRpmSelect').value || 0);
+            const accelRpm = Number(document.getElementById('accelRpmSelect').value || 0);
+            const stepsPerRevolution = getMotorStepsPerRevolution();
+            const accelSeconds = accelRpm > 0 && maxRpm > startRpm ? (maxRpm - startRpm) / accelRpm : 0;
+            const accelPulses = ((startRpm + maxRpm) * 0.5) * accelSeconds / 60 * stepsPerRevolution;
+            const physicalSeconds = accelPulses < pulseCount && maxRpm > 0
+                ? accelSeconds + (pulseCount - accelPulses) / (maxRpm / 60 * stepsPerRevolution)
+                : pulseCount / Math.max(1, startRpm / 60 * stepsPerRevolution);
+            document.getElementById('motionDurationEstimate').textContent =
+                `脉冲数：${pulseCount}，理论时间（固定 256 细分，${maxRpm} RPM）：约 ${physicalSeconds.toFixed(1)} s；STEP 基准：${stepsPerRevolution} 个/圈`;
+        }
+
+        updateMotionDurationEstimate();
+
+        function pushWaveSample() {
+            if (!state.waveCaptureActive || state.wavePaused) return;
+            const now = performance.now();
+            const sample = {
+                t: now,
+                rpm: Number(state.motionSpeedRpm || 0),
+                followError: Number(state.motionFollowErrorDeg || 0)
+            };
+            state.waveHistory.push(sample);
+            const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 10000), 10000, 10000);
+            const cutoff = now - windowMs;
+            state.waveHistory = state.waveHistory.filter((entry) => entry.t >= cutoff);
+            if (state.waveHistory.length > 2000) {
+                state.waveHistory = state.waveHistory.slice(-2000);
+            }
+        }
+
+        function startWaveCapture() {
+            if (state.motionWaveTimer !== null) {
+                window.clearInterval(state.motionWaveTimer);
+            }
+            state.waveHistory = [];
+            state.motionSpeedRpm = 0;
+            state.motionFollowErrorDeg = 0;
+            state.wavePaused = false;
+            state.wavePausedAt = 0;
+            state.waveCaptureStartedAt = performance.now();
+            state.waveMotionObserved = false;
+            state.waveFrozenAt = 0;
+            state.waveCaptureActive = true;
+            document.getElementById('pauseWaveBtn').textContent = '暂停查看';
+            state.motionWaveTimer = window.setInterval(() => {
+                if (!state.waveCaptureActive) return;
+                pushWaveSample();
+                drawWaveform();
+                if (document.getElementById('wavePopup').classList.contains('visible')) {
+                    drawWaveform('motionWavePopupCanvas');
+                }
+            }, 40);
+        }
+
+        function stopWaveCapture() {
+            if (!state.waveCaptureActive) return;
+            state.waveFrozenAt = state.wavePaused ? state.wavePausedAt : performance.now();
+            state.waveCaptureActive = false;
+            state.wavePaused = false;
+            state.wavePausedAt = 0;
+            if (state.motionWaveTimer !== null) {
+                window.clearInterval(state.motionWaveTimer);
+                state.motionWaveTimer = null;
+            }
+            document.getElementById('pauseWaveBtn').textContent = '暂停查看';
+        }
+
+        function drawWaveform(canvasId = 'motionWaveCanvas') {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const width = canvas.width;
+            const height = canvas.height;
+            const leftPad = 48;
+            const rightPad = 52;
+            const plotLeft = leftPad;
+            const plotRight = width - rightPad;
+            const plotTop = 18;
+            const plotBottom = height - 24;
+            const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 10000), 10000, 10000);
+            if (!state.waveCaptureActive && state.waveHistory.length === 0) return;
+            const now = state.wavePaused ? state.wavePausedAt :
+                state.waveCaptureActive ? performance.now() : state.waveFrozenAt;
+
+            ctx.clearRect(0, 0, width, height);
+            ctx.fillStyle = 'rgba(2,6,23,0.82)';
+            ctx.fillRect(0, 0, width, height);
+
+            ctx.strokeStyle = 'rgba(148,163,184,0.24)';
+            ctx.lineWidth = 1;
+            const gridCount = Math.floor(windowMs / 100);
+            for (let i = 0; i <= gridCount; i++) {
+                const x = plotLeft + ((plotRight - plotLeft) * i) / gridCount;
+                const isMajorGrid = i % 10 === 0;
+                ctx.strokeStyle = isMajorGrid ? 'rgba(148,163,184,0.32)' : 'rgba(148,163,184,0.14)';
+                ctx.lineWidth = isMajorGrid ? 1 : 0.7;
+                ctx.beginPath();
+                ctx.moveTo(x, plotTop);
+                ctx.lineTo(x, plotBottom);
+                ctx.stroke();
+            }
+            ctx.textBaseline = 'middle';
+            ctx.font = '11px sans-serif';
+            for (let i = 0; i <= 12; i++) {
+                const y = plotTop + ((plotBottom - plotTop) / 12) * i;
+                const isMajorGrid = i % 3 === 0;
+                const rpmTick = 3000 - (i * 500);
+                const errorTick = 30 - (i * 5);
+                ctx.strokeStyle = isMajorGrid ? 'rgba(148,163,184,0.36)' : 'rgba(148,163,184,0.2)';
+                ctx.lineWidth = isMajorGrid ? 1 : 0.7;
+                ctx.beginPath();
+                ctx.moveTo(plotLeft, y);
+                ctx.lineTo(plotRight, y);
+                ctx.stroke();
+                ctx.fillStyle = 'rgba(226,232,240,0.78)';
+                ctx.textAlign = 'right';
+                ctx.fillText(String(rpmTick), plotLeft - 6, y);
+                ctx.textAlign = 'left';
+                ctx.fillText(`${errorTick > 0 ? '+' : ''}${errorTick}°`, plotRight + 6, y);
+            }
+
+            const speedLine = (rpm) => {
+                return plotBottom - ((rpm + 3000) / 6000) * (plotBottom - plotTop);
+            };
+            const points = state.waveHistory.length ? state.waveHistory : [{t: now - windowMs, rpm: 0, followError: 0}];
+            const filtered = points.filter((entry) => now - entry.t <= windowMs);
+            const followErrorRange = 30;
+            const followErrorLine = (error) => {
+                return plotBottom - ((error + followErrorRange) / (2 * followErrorRange)) * (plotBottom - plotTop);
+            };
+            const speedReadoutId = canvasId === 'motionWavePopupCanvas' ? 'wavePopupSpeedReadout' : 'waveSpeedReadout';
+            const errorReadoutId = canvasId === 'motionWavePopupCanvas' ? 'wavePopupErrorReadout' : 'waveErrorReadout';
+            document.getElementById(speedReadoutId).textContent = `${Number(state.motionSpeedRpm || 0).toFixed(2)} RPM`;
+            document.getElementById(errorReadoutId).textContent = `${Number(state.motionFollowErrorDeg || 0).toFixed(3)}°`;
+
+            ctx.strokeStyle = 'rgba(56,189,248,0.7)';
+            ctx.fillStyle = '#e2e8f0';
+            ctx.font = '12px sans-serif';
+            ctx.textBaseline = 'alphabetic';
+            ctx.textAlign = 'left';
+            ctx.fillText('RPM', 10, 14);
+            ctx.textAlign = 'right';
+            ctx.fillText('瞬时位置误差°', width - 4, 14);
+            ctx.textAlign = 'left';
+
+            ctx.strokeStyle = '#38bdf8';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(plotLeft + 8, plotTop + 12);
+            ctx.lineTo(plotLeft + 28, plotTop + 12);
+            ctx.stroke();
+            ctx.fillStyle = '#38bdf8';
+            ctx.fillText('编码器速度 RPM', plotLeft + 34, plotTop + 16);
+            ctx.strokeStyle = '#22c55e';
+            ctx.beginPath();
+            ctx.moveTo(plotLeft + 170, plotTop + 12);
+            ctx.lineTo(plotLeft + 190, plotTop + 12);
+            ctx.stroke();
+            ctx.fillStyle = '#22c55e';
+            ctx.fillText('瞬时跟随误差 °', plotLeft + 196, plotTop + 16);
+
+            ctx.beginPath();
+            ctx.moveTo(plotLeft, plotTop);
+            ctx.lineTo(plotLeft, plotBottom);
+            ctx.lineTo(plotRight, plotBottom);
+            ctx.stroke();
+
+            if (filtered.length > 1) {
+                ctx.beginPath();
+                filtered.forEach((entry, i) => {
+                    const x = plotLeft + ((now - entry.t) / windowMs) * (plotRight - plotLeft);
+                    const y = speedLine(entry.rpm);
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                });
+                ctx.strokeStyle = '#38bdf8';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(plotLeft, plotTop, plotRight - plotLeft, plotBottom - plotTop);
+                ctx.clip();
+                filtered.forEach((entry, i) => {
+                    const x = plotLeft + ((now - entry.t) / windowMs) * (plotRight - plotLeft);
+                    const y = followErrorLine(entry.followError);
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                });
+                ctx.strokeStyle = '#22c55e';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                ctx.restore();
+            }
+
+            ctx.fillStyle = 'rgba(148,163,184,0.75)';
+            ctx.textAlign = 'right';
+            ctx.fillText('10 s / 100 ms grid', plotRight, height - 6);
+            ctx.textAlign = 'left';
+        }
+
+        function toggleWavePopup(forceOpen) {
+            const popup = document.getElementById('wavePopup');
+            if (!popup) return;
+            const nextVisible = typeof forceOpen === 'boolean' ? forceOpen : !popup.classList.contains('visible');
+            popup.classList.toggle('visible', nextVisible);
+            if (nextVisible && (state.waveCaptureActive || state.waveHistory.length > 0)) {
+                drawWaveform('motionWavePopupCanvas');
+            }
+        }
+
+        function toggleWavePopupMaximize() {
+            const popup = document.getElementById('wavePopup');
+            const button = document.getElementById('maximizeWavePopupBtn');
+            if (!popup || !button) return;
+            const isMaximized = popup.classList.toggle('maximized');
+            button.textContent = isMaximized ? '还原' : '最大化';
+            if (state.waveCaptureActive || state.waveHistory.length > 0) {
+                drawWaveform('motionWavePopupCanvas');
+            }
+        }
+
+        function bindWavePopupDrag() {
+            const popup = document.getElementById('wavePopup');
+            const header = document.getElementById('wavePopupHeader');
+            if (!popup || !header) return;
+
+            let dragState = null;
+
+            header.addEventListener('mousedown', (event) => {
+                if (popup.classList.contains('maximized')) return;
+                dragState = {
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    left: popup.offsetLeft,
+                    top: popup.offsetTop
+                };
+            });
+
+            window.addEventListener('mousemove', (event) => {
+                if (!dragState) return;
+                const dx = event.clientX - dragState.startX;
+                const dy = event.clientY - dragState.startY;
+                popup.style.left = `${dragState.left + dx}px`;
+                popup.style.top = `${dragState.top + dy}px`;
+                popup.style.right = 'auto';
+                popup.style.bottom = 'auto';
+            });
+
+            window.addEventListener('mouseup', () => {
+                dragState = null;
+            });
+        }
+
+        async function startMotionTest() {
+            if (state.autoTuneActive) {
+                appendTuneLog('整定期间不能启动开环运动');
+                return;
+            }
+            if (!state.connected) {
+                log('[WARN] 尚未连接串口，无法启动测速运动');
+                return;
+            }
+            const startRpm = Number(document.getElementById('startRpmSelect').value || 120);
+            const maxRpm = Number(document.getElementById('maxRpmSelect').value || 1000);
+            const accelRpm = Number(document.getElementById('accelRpmSelect').value || 600);
+            const motionMode = Number(document.getElementById('motionModeSelect').value || 0);
+            const pulseCount = Math.max(2, Math.round(getEffectivePulseCount()));
+            const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 10000), 10000, 10000);
+            const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 200), 200, 20000);
+            document.getElementById('waveWindowMsInput').value = String(windowMs);
+            document.getElementById('stepPulseWidthNsInput').value = String(stepPulseWidthNs);
+
+            await writeRegister(0x11A, startRpm);
+            await writeRegister(0x11B, maxRpm);
+            await writeRegister(0x11C, accelRpm);
+            await writeRegister(0x11D, pulseCount);
+            await writeRegister(0x11E, motionMode);
+            await writeRegister(0x123, stepPulseWidthNs);
+            await writeRegister(0x122, windowMs);
+            await writePidParameters();
+            await writeRegister(0x11F, 1);
+            startWaveCapture();
+            log(`[INFO] 脉冲运动：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms step=${stepPulseWidthNs}ns`);
+        }
+
+        async function stopMotionTest() {
+            stopWaveCapture();
+            if (state.connected) {
+                await writeRegister(0x11F, 0);
+            }
+            state.motionSpeedRpm = 0;
+            log('[WARN] 发送停止测速命令');
+        }
+
+        async function sendManualMotionCommand(reg, message) {
+            if (state.autoTuneActive) {
+                if (reg === 0x125) {
+                    state.autoTuneCancelled = true;
+                } else {
+                    appendTuneLog('整定期间已屏蔽其他手动运动命令');
+                    return;
+                }
+            }
+            if (!state.connected) {
+                log('[WARN] 尚未连接串口，无法发送电机测试命令');
+                return;
+            }
+            if (reg === 0x124 || reg === 0x125) {
+                stopWaveCapture();
+            }
+            await writeRegister(reg, 1);
+            if (reg === 0x126) startWaveCapture();
+            log('[INFO] ' + message);
+        }
+
+        function toggleWavePause() {
+            if (!state.wavePaused) {
+                state.wavePaused = true;
+                state.wavePausedAt = performance.now();
+            } else {
+                const resumeAt = performance.now();
+                const elapsed = resumeAt - state.wavePausedAt;
+                state.waveHistory = state.waveHistory.map((entry) => ({...entry, t: entry.t + elapsed}));
+                state.wavePaused = false;
+                state.wavePausedAt = 0;
+            }
+            const btn = document.getElementById('pauseWaveBtn');
+            btn.textContent = state.wavePaused ? '继续查看' : '暂停查看';
+            log(`[INFO] 波形${state.wavePaused ? '已暂停' : '已恢复'}`);
+        }
+
+        function bindControls() {
+            document.getElementById('connectBtn').addEventListener('click', connectSerial);
+            document.getElementById('readAllBtn').addEventListener('click', readAllConfig);
+            document.getElementById('loadAngleCalibrationBtn').addEventListener('click', openLoadAngleCalibration);
+            document.getElementById('closeLoadAngleDialogBtn').addEventListener('click', () => {
+                document.getElementById('loadAngleDialog').close();
+            });
+            document.getElementById('loadAngleDialog').addEventListener('cancel', (event) => {
+                if (state.loadAngleCalibrationRunning) event.preventDefault();
+            });
+            document.getElementById('startLoadAngleCalibrationBtn').addEventListener('click', startLoadAngleCalibration);
+            document.getElementById('cancelLoadAngleCalibrationBtn').addEventListener('click', async () => {
+                if (!state.loadAngleCalibrationRunning) return;
+                state.loadAngleCalibrationCancelled = true;
+                document.getElementById('loadAngleStatus').textContent = '正在停止当前运动...';
+                await stopLoadAngleMotion();
+            });
+            document.getElementById('refreshLoadAngleCalibrationBtn').addEventListener('click', async () => {
+                if (state.loadAngleCalibrationRunning) return;
+                try {
+                    await refreshLoadAngleCalibration();
+                    document.getElementById('loadAngleStatus').textContent = '数据来自固件校准表与拟合结果';
+                } catch (error) {
+                    document.getElementById('loadAngleStatus').textContent = `读取失败：${error.message}`;
+                }
+            });
+            document.getElementById('viewCalibrationTableBtn').addEventListener('click', openCalibrationTableViewer);
+            document.getElementById('closeCalibrationTableBtn').addEventListener('click', closeCalibrationTableViewer);
+            document.getElementById('calibrationTableDialog').addEventListener('cancel', () => {
+                void closeCalibrationTableViewer();
+            });
+            document.getElementById('calibrationTableSelect').addEventListener('change', async () => {
+                const kind = document.getElementById('calibrationTableSelect').value;
+                if (kind === 'fast') {
+                    const pageInput = document.getElementById('calibrationTablePageInput');
+                    const page = clamp(Math.max(1, Number(pageInput.value || 1)), 1, 256);
+                    pageInput.value = String(page);
+                    await requestCalibrationTableDump('fast', page - 1);
+                    return;
+                }
+                renderCalibrationTablePage();
+            });
+            document.getElementById('calibrationTablePageInput').addEventListener('change', async () => {
+                const kind = document.getElementById('calibrationTableSelect').value;
+                if (kind === 'fast') {
+                    const page = clamp(Math.max(1, Number(document.getElementById('calibrationTablePageInput').value || 1)), 1, 256);
+                    document.getElementById('calibrationTablePageInput').value = String(page);
+                    await requestCalibrationTableDump('fast', page - 1);
+                    return;
+                }
+                renderCalibrationTablePage();
+            });
+            document.getElementById('calibrationTablePrevBtn').addEventListener('click', async () => {
+                const input = document.getElementById('calibrationTablePageInput');
+                input.value = String(Math.max(1, Number(input.value || 1) - 1));
+                const kind = document.getElementById('calibrationTableSelect').value;
+                if (kind === 'fast') {
+                    await requestCalibrationTableDump('fast', Number(input.value) - 1);
+                    return;
+                }
+                renderCalibrationTablePage();
+            });
+            document.getElementById('calibrationTableNextBtn').addEventListener('click', async () => {
+                const input = document.getElementById('calibrationTablePageInput');
+                input.value = String(Number(input.value || 1) + 1);
+                const kind = document.getElementById('calibrationTableSelect').value;
+                if (kind === 'fast') {
+                    await requestCalibrationTableDump('fast', Number(input.value) - 1);
+                    return;
+                }
+                renderCalibrationTablePage();
+            });
+            document.getElementById('calibrationRawLookupBtn').addEventListener('click', () => void runCalibrationLookup('forward'));
+            document.getElementById('calibrationCorrectedLookupBtn').addEventListener('click', () => void runCalibrationLookup('reverse'));
+            document.getElementById('calibrationRawInput').addEventListener('change', () => {
+                if (state.calibrationLookupInFlight) return;
+                void runCalibrationLookup('forward');
+            });
+            document.getElementById('calibrationCorrectedInput').addEventListener('change', () => {
+                if (state.calibrationLookupInFlight) return;
+                void runCalibrationLookup('reverse');
+            });
+            document.getElementById('calibrationRawInput').addEventListener('input', () => {
+                if (state.calibrationLookupInFlight) return;
+                updateCalibrationLookupDisplays();
+            });
+            document.getElementById('calibrationCorrectedInput').addEventListener('input', () => {
+                if (state.calibrationLookupInFlight) return;
+                updateCalibrationLookupDisplays();
+            });
+            document.getElementById('exportCalibrationTableBtn').addEventListener('click', exportCalibrationTable);
+            document.getElementById('writeAllBtn').addEventListener('click', async () => {
+                const button = document.getElementById('writeAllBtn');
+                button.disabled = true;
+                try {
+                    await applyAllConfig();
+                } catch (error) {
+                    setMotorSettingsStatus(`应用失败：${error.message}`, 'error');
+                    log(`[ERROR] 应用电机参数失败：${error.message}`);
+                } finally {
+                    button.disabled = false;
+                }
+            });
+            document.getElementById('saveMotorSettingsBtn').addEventListener('click', async () => {
+                const button = document.getElementById('saveMotorSettingsBtn');
+                button.disabled = true;
+                try {
+                    await saveMotorSettingsToFlash();
+                } catch (error) {
+                    setMotorSettingsStatus(`写入失败：${error.message}`, 'error');
+                    log(`[ERROR] 电机参数保存失败：${error.message}`);
+                } finally {
+                    button.disabled = false;
+                }
+            });
+            document.getElementById('eraseMotorSettingsBtn').addEventListener('click', async () => {
+                const button = document.getElementById('eraseMotorSettingsBtn');
+                button.disabled = true;
+                try {
+                    await eraseMotorSettingsFromFlash();
+                } catch (error) {
+                    setMotorSettingsStatus(`清除失败：${error.message}`, 'error');
+                    log(`[ERROR] 清除电机参数失败：${error.message}`);
+                } finally {
+                    button.disabled = false;
+                }
+            });
+            document.getElementById('sendTargetBtn').addEventListener('click', sendTargetPosition);
+            document.getElementById('zeroBtn').addEventListener('click', zeroEncoder);
+            document.getElementById('stopBtn').addEventListener('click', stopMotor);
+            document.getElementById('startMotionBtn').addEventListener('click', startMotionTest);
+            document.getElementById('stopMotionBtn').addEventListener('click', stopMotionTest);
+            document.getElementById('motorEnableBtn').addEventListener('click', () => sendManualMotionCommand(0x124, '电机使能：EN=0'));
+            document.getElementById('motorDisableBtn').addEventListener('click', () => sendManualMotionCommand(0x125, '电机失能：EN=1'));
+            document.getElementById('singleStepBtn').addEventListener('click', async () => {
+                // 从页面下拉框读取参数
+                const startRpm = Number(document.getElementById('startRpmSelect').value);
+                const maxRpm = Number(document.getElementById('maxRpmSelect').value);
+                const accelRpm = Number(document.getElementById('accelRpmSelect').value);
+                const motionMode = Number(document.getElementById('motionModeSelect').value);
+
+                // 下发运动相关参数寄存器
+                await writeRegister(0x11A, startRpm);
+                await writeRegister(0x11B, maxRpm);
+                await writeRegister(0x11C, accelRpm);
+                await writeRegister(0x11E, motionMode);
+                const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 200), 200, 20000);
+                await writeRegister(0x123, stepPulseWidthNs);
+
+                // 再触发单步正向脉冲命令寄存器
+                await sendManualMotionCommand(0x126, '半圈正向脉冲：DIR=1（已同步速度/加速度参数）');
+            });
+            document.getElementById('pauseWaveBtn').addEventListener('click', toggleWavePause);
+            document.getElementById('popWaveBtn').addEventListener('click', () => toggleWavePopup());
+            document.getElementById('maximizeWavePopupBtn').addEventListener('click', toggleWavePopupMaximize);
+            document.getElementById('closeWavePopupBtn').addEventListener('click', () => toggleWavePopup(false));
+            ['startRpmSelect', 'maxRpmSelect', 'accelRpmSelect', 'pulseCountInput', 'microsteps'].forEach((id) => {
+                document.getElementById(id).addEventListener('change', updateMotionDurationEstimate);
+            });
+            document.getElementById('calibrateEncoderBtn').addEventListener('click', async () => {
+                if (!state.connected) {
+                    log('[WARN] 尚未连接串口，无法执行磁编码器校准');
+                    return;
+                }
+                await writeRegister(CUSTOM_REGS.CALIBRATE_ENCODER, 1);
+                log('[INFO] 已发送磁编码器校准触发命令');
+            });
+            document.getElementById('tuneBtn').addEventListener('click', startAutoTune);
+            document.getElementById('startTuneBtn').addEventListener('click', startAutoTune);
+            ['tuneMaxSpeed', 'tuneAccel', 'tuneTestTurns'].forEach((id) => {
+                document.getElementById(id).addEventListener('change', () => {
+                    if (!state.autoTuneActive && !state.tuneActionBusy) renderTuneActionRows(true);
+                });
+            });
+            document.getElementById('waveWindowMsInput').addEventListener('change', function () {
+                const value = clamp(Number(this.value || 10000), 10000, 10000);
+                this.value = String(value);
+                if (state.connected) {
+                    writeRegister(0x122, value);
+                }
+            });
+
+            document.getElementById('targetPosInput').addEventListener('change', function () {
+                state.targetAngle = normalize360Angle(Number(this.value || 0));
+                updateDialVisual();
+                queueTargetAngleWrite();
+            });
+
+            document.getElementById('targetPosInput').addEventListener('input', function () {
+                state.targetAngle = normalize360Angle(Number(this.value || 0));
+                updateDialVisual();
+                queueTargetAngleWrite();
+            });
+
+            document.getElementById('angleMaxRpmInput').addEventListener('change', async function () {
+                const value = clamp(Math.round(Number(this.value) || 1), 1, 12000);
+                this.value = String(value);
+                state.angleMaxRpm = value;
+                if (state.connected) await writeRegister(CUSTOM_REGS.ANGLE_MAX_RPM, value);
+            });
+
+            document.getElementById('angleAccelRpmSInput').addEventListener('change', async function () {
+                const value = clamp(Math.round(Number(this.value) || 1), 1, 12000);
+                this.value = String(value);
+                state.angleAccelRpmS = value;
+                if (state.connected) await writeRegister(CUSTOM_REGS.ANGLE_ACCEL_RPM_S, value);
+            });
+
+            document.getElementById('closedLoopEnableInput').addEventListener('change', async function () {
+                if (state.connected) {
+                    await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, this.checked ? 1 : 0);
+                }
+            });
+
+            ['posKp', 'posKi', 'posKd', 'velKp', 'velKi', 'velKd'].forEach((id) => {
+                document.getElementById(id).addEventListener('input', (event) => {
+                    void writePidParameter(event.currentTarget);
+                });
+            });
+        }
+
+        function handleCustomTelemetry(frame) {
+            if (frame.reg === 0x120) {
+                state.motionSpeedRpm = frame.value | 0;
+            }
+            if (frame.reg === 0x121) {
+                const followErrorDeg = (frame.value | 0) / 1000.0;
+                state.motionFollowErrorDeg = followErrorDeg;
+            }
+            if (frame.reg === 0x122) {
+                const windowValue = clamp(Number(frame.value || 10000), 10000, 10000);
+                document.getElementById('waveWindowMsInput').value = String(windowValue);
+            }
+            if (frame.reg === 0x11F && (frame.cmd === 0x10 || frame.cmd === 0x81 || frame.cmd === 0x82) && state.waveCaptureActive) {
+                if ((frame.value | 0) !== 0) {
+                    state.waveMotionObserved = true;
+                } else if (state.waveMotionObserved || performance.now() - state.waveCaptureStartedAt >= 800) {
+                    stopWaveCapture();
+                }
+            }
+            if (frame.reg === 0x11F && (frame.cmd === 0x10 || frame.cmd === 0x81) && state.tuneTrialActive) {
+                const motionStatus = frame.value | 0;
+                const previousStatus = state.tuneLastMotionStatus;
+                state.tuneLastMotionTelemetryAt = performance.now();
+                state.tuneLastMotionStatus = motionStatus;
+                state.tuneLastMotionStatusCmd = frame.cmd;
+                if (previousStatus !== motionStatus) {
+                    const elapsedMs = Math.round(performance.now() - state.tuneTrialStartedAt);
+                    appendTuneLog(`[状态] 0x011F=${motionStatus} cmd=0x${frame.cmd.toString(16)}；距试验启动 ${elapsedMs}ms；速度=${Number(state.motionSpeedRpm || 0).toFixed(2)}RPM，误差=${Number(state.motionFollowErrorDeg || 0).toFixed(3)}°`);
+                }
+                if (motionStatus !== 0) {
+                    state.tuneMotionObserved = true;
+                    state.tuneTrialStage = '已观察到固件运行状态，等待停止状态';
+                } else if (state.tuneMotionObserved) {
+                    state.tuneTrialStage = '已观察到固件停止状态';
+                    if (state.tuneMotionTimeout !== null) {
+                        window.clearTimeout(state.tuneMotionTimeout);
+                        state.tuneMotionTimeout = null;
+                    }
+                    const resolveMotion = state.tuneMotionResolver;
+                    state.tuneMotionResolver = null;
+                    if (resolveMotion) resolveMotion();
+                }
+            }
+        }
+
+        bindDialDrag();
+        bindWavePopupDrag();
+        bindControls();
+        buildMotionControlOptions();
+        renderTuneActionRows();
+        renderRegisterMap();
+        updateDialVisual();
+        updateFaultStatus();
+        updateTelemetryDisplay();
+
+        setInterval(() => {
+            updateTelemetryDisplay();
+        }, 200);
+
+        const originalHandleIncomingFrame = handleIncomingFrame;
+        handleIncomingFrame = function (frame) {
+            originalHandleIncomingFrame(frame);
+            handleCustomTelemetry(frame);
+        };
+    

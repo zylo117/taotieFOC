@@ -1,0 +1,114 @@
+total_req_steps: 256000
+v_peak_sq: 33423360000.000000
+v_peak: 182820.562500
+accel_total_steps_: 127999
+decel_total_steps_: 128001
+cruise_total_steps_: 0
+
+cruise_total_steps_: 2207006
+
+total_req_steps: 2560000
+accel_total_steps_: 175217
+decel_total_steps_: 177777
+cruise_total_steps_: 2207006
+
+total_req_steps: 256000
+accel_total_steps_: 175217
+decel_total_steps_: 177777
+v_peak_sq: 33423360000.000000
+v_peak: 182820.562500
+accel_total_steps_: 127999
+decel_total_steps_: 128001
+cruise_total_steps_: 0
+
+/**
+ * @brief 底层汇编周期延时；参数单位：CPU内核周期
+ * @param cycles 等待多少CPU周期，最小>=2
+ * @note 汇编本身不感知主频；只是消耗指定CPU周期
+ * @warning 中断会拉长延时；短时序使用需要关中断
+ */
+void delay_cycles(uint32_t cycles)
+{
+    if (cycles == 0U)
+    {
+        return;
+    }
+    __asm__ volatile (
+
+
+    "1: subs %0, #1\n"
+        "bne 1b\n"
+    ::
+
+    "r"(cycles):"cc"
+    );
+}
+
+/**
+ * @brief 纳秒延时，运行时自适应 system_core_clock 内核主频
+ * @param nns 需要延时多少纳秒
+ * @param core_clk_hz 系统内核时钟频率，单位Hz(如240000000)
+ * @retval none
+ * @note 内部换算：ns → CPU周期，向上取整；
+ *       适合 >=20ns；极短延时受函数调用开销影响；中断会破坏延时
+ */
+void delay_ns(uint64_t nns)
+{
+    if (nns == 0U)
+    {
+        return;
+    }
+    /*
+     * 公式：需要周期 = (nns * core_clk_hz) / 1000000000
+     * + 999999999 实现向上取整；必须uint64_t防止乘法溢出
+     */
+    uint64_t total_cycles = ((uint64_t)nns * system_core_clock + 999999999ULL) / 1000000000ULL;
+
+    /* 限制上限，防止传入超大ns数值 */
+    if (total_cycles > UINT32_MAX)
+    {
+        total_cycles = UINT32_MAX;
+    }
+    delay_cycles((uint32_t)total_cycles);
+}
+
+这是at32f403a平台的闭环步进电机驱动的代码，中间件是freertos，其中closed_loop_controller的rampUpdate实现了单向运动，其中还有编码器位置的读取，以及上位机数据的回传。现在我要适配3d打印klipper，它通过en/dir/step(pc13/14/15)来控制，en是上位机要求上电和断电用的，不需要放在定期更新中，而dir是电平检测，step是脉冲触发。因为步进电机需要跑600mm/s的速度（2gt 20齿同步轮）256细分，所以输入频率非常高，即便现在的rampupdate以20khz运行也不能保证不丢步或延迟。
+
+我听说用at32的外部中断EXTI可以自动判断有没有脉冲，我想能不能EXTI开机后全程后台高优先级，第一时间捕捉step脉冲信号和当时的dir方向电平，加入到缓冲队列中，然后rampUpdate（目前已经以20Khz频率运行）中也同样加多一个代码块，在检测到缓冲队列不是空的时候，按顺序用对应的方向运行缓冲中的脉冲，这样也比较好兼容编码器数据的读取以及后续的位置/速度pid闭环。
+
+这样有些问题，1.会不会造成执行缓冲队列的时候，外部中断的脉冲信号无法加入缓冲队列而导致丢步？如何保证不丢步？2.即便不因为1而丢步了，会不会因为执行rampupdate的时候导致期间堆积的脉冲无法执行而产生运动延迟？还是说这就是无法避免的？3.我不明白
+
+我现在改了闭环步进电机的电路，at32f403a用了25M晶振，倍频10，主频是250Mhz。
+PA15 是外部输入的 DIR，PB3 是外部输入的 STEP，你帮我改成开机映射那里修改了PA15和PB3，映射到TMR2的通道1和2。
+我现在的思路是用TMR定时器高速捕获外部输入的STEP信号的上升沿，且获取那时候的DIR电平，然后将它们压入buffer。随后20Khz的TMR4 ISR 进行消费，读取编码器数据，把buffer里面的step和dir的时间点按顺序读取起来，并进行位置环和速度环的pid闭环foc补偿，然后再按顺序将补偿后的step/dir执行起来。
+然后实现
+1.TMR2 初始化代码：CH1 PA15 IC 捕获 DIR；CH2 PB3 IC 捕获 STEP；CH3 PB10 OC 输出 STEP；CH4 PB11 OC 输出 DIR；
+2. DMA 双通道成对捕获环形 buffer 初始化；
+3. TMR4 ISR 消费环形 buffer，解析 step + 同步 dir 事件，喂给闭环控制器；
+4. 32bit TMR2 CNT 计数值和 ns 时间戳互相转换、回绕安全工具函数。
+之前的执行是用的
+将上述修改改到main.cpp和闭环控制器，并用C:\Users\Jessi\.platformio\penv\Scripts\pio.exe进行编译并修复错误
+
+
+
+    // at32的定时器的外部时钟频率fTMRxCLK（我简称fT）是cpu频率除以2，250Mhz就是125Mhz
+    // PSC决定了定时器计数频率，越大计数越快，fC = fT/(PSC+1)
+    // ARR指计数到多少就重置，指数到多少归零（周期），事件触发间隔T = (PSC+1)*(ARR+1) / fT
+    // CCR指数到多少触发通道动作（翻转 / 高低电平）
+    // 这里一定要搞明白，再SWITCH模式下，翻转状态是会继承的
+    // 也就是你下一次计数重置并不会重置翻转状态，而是继承
+    // 也就是SWITCH模式下CCR设置多少，占空比都是50%
+
+现在硬件定时器控制步进电机的step/dir信号的测试已经完成，你根据main_test_tmr中的实现，对应修复掉以前固件中软件拉高拉低gpio并延迟纳秒的操作，并适配各个驱动的发脉冲接口，并且实现20k freertos软件定时器中触发并规划好这期间需要执行的脉冲和方向及其时间点（必须遵照main_test_tmr的#sym:PWM_SEQ_ONE_SHOT_MODE 1的实现)，特别是方向的处理，假如20khz中某次触发下，发现需要dir换向，则分割成
+
+
+现在修改左上角的转盘，现在是蓝色指针给用户调角度，然后在同圆盘中心新增一个黄色指针，指向电机旋转的实时角度。当蓝色指针被用户拨动到某个角度后，间隔很短的一个时间（比如0.1秒避免实时操作过载）
+
+1. 位置环和速度环的pid取值范围可能要重新考虑一下，似乎太低了，位置环p要设置得很大才会快速响应
+而速度环pid修改直接没效。2.自动整定经常提示：”整定中止：有效反馈不足或电机未移动（样本 89），已停止整定“。3.整定状态应该是不可以被选的，不是下拉框而是文本显示。4.网页上位机日志界面会周期性卡顿，是不是等待转盘导致的卡死？
+
+我看张大头的闭环PID是18000/10/18000，为什么你的那么低？算法应该是差不多的才对。另外，你的pid算法应该要做到和细分数无关，因为我搭载不同驱动，或者外部用不同的细分就会有不同的脉冲，你的pid算法应该要做到和细分数无关或者自己适应，不能说改了细分之前的pid就无效了。网页布局也改改，### 电机基础参数和打横并列放置，整个### 驱动参数配置也不要用滚动条
+
+在我代码基础上，点击网页上位机磁编码器校准就调用闭环控制器的calibrateEncoder函数。帮我完善calibrateEncoder函数，先归零到角度0（要注意现在的电机运动是定时器去做的，是异步，并非调用运动函数的下一瞬间就算运动完成），归零后循环进行以下步骤：
+1. 采样200个点的编码器角度，去掉最大值最小值，剩下200点求平均。
+2. 
