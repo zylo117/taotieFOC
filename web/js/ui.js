@@ -26,6 +26,27 @@
             connBadge.style.setProperty('border-color', isOk ? 'rgba(34,197,94,0.3)' : 'rgba(245,158,11,0.3)');
         }
 
+        // 主动读一次堵转状态（0x15D/0x15E）并刷新显示。
+        // 遥测里 0x108 的 bit3 也会更新 state.stallDetected，但那是 0.7s 才轮一次，
+        // 所以"清除堵转锁存"按钮点完要立刻回读一次，让界面马上变成"未触发"。
+        async function refreshStallStatus() {
+            if (!state.connected) return;
+            try {
+                const detected = (await readRegisterValue(CUSTOM_REGS.STALL_DETECTED, 750, 0)) | 0;
+                const events = (await readRegisterValue(CUSTOM_REGS.STALL_EVENTS, 750, 0)) >>> 0;
+                state.stallDetected = detected !== 0;
+                const element = document.getElementById('stallStatus');
+                if (element) {
+                    element.textContent = state.stallDetected
+                        ? `已触发（累计 ${events} 次）：固件已停机并失能，需点“清除堵转锁存”`
+                        : '未触发';
+                }
+                updateFaultStatus();
+            } catch (error) {
+                // 读不到就维持遥测显示，不要因为一次诊断读失败打断用户操作
+            }
+        }
+
         function updateFaultStatus() {
             const hasFault = state.encoderFault || state.magneticFault || state.outputStopped || state.stallDetected;
             const summary = state.stallDetected ? '堵转锁存' : state.encoderFault ? '编码器读取失败' : state.magneticFault ? '磁场报警' : state.outputStopped ? '已停止输出' : '正常';

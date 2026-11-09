@@ -1,4 +1,4 @@
-﻿// Lag-angle (lag angle) calibration: sweep, sampling, fit upload (module 8).
+// Lag-angle (lag angle) calibration: sweep, sampling, fit upload (module 8).
 // Depends on: state, CUSTOM_REGS, writeRegister/writeRegisterAndWaitAck/readRegisterValue, log, drawLagAngleChart.
 // Load order: ... -> ui -> waveform -> lagangle -> ...
 
@@ -38,7 +38,7 @@
                 context.moveTo(left, tickY);
                 context.lineTo(right, tickY);
                 context.stroke();
-                context.fillText(`${angle.toFixed(2)}掳`, 6, tickY + 4);
+                context.fillText(`${angle.toFixed(2)}°`, 6, tickY + 4);
             }
             const speedTicks = 6;
             for (let tick = 0; tick <= speedTicks; tick++) {
@@ -71,21 +71,21 @@
                 }
             } else {
                 context.fillStyle = '#94a3b8';
-                context.fillText('灏氭棤鍥轰欢鏍″噯鐐?, left + 12, top + 24);
+                context.fillText('尚无固件校准点', left + 12, top + 24);
             }
             context.fillStyle = '#cbd5e1';
-            context.fillText('閫熷害 (RPM)', (left + right) / 2 - 30, rect.height - 8);
+            context.fillText('速度 (RPM)', (left + right) / 2 - 30, rect.height - 8);
             context.save();
             context.translate(15, (top + bottom) / 2);
             context.rotate(-Math.PI / 2);
-            context.fillText('婊炲悗瑙?(掳)', -34, 0);
+            context.fillText('滞后角 (°)', -34, 0);
             context.restore();
         }
 
         async function refreshLagAngleCalibration() {
-            if (!state.connected) throw new Error('涓插彛鏈繛鎺?);
+            if (!state.connected) throw new Error('串口未连接');
             const fitted = await readRegisterValue(CUSTOM_REGS.LAG_ANGLE_FIT);
-            if ((fitted >>> 0) !== 1) throw new Error('鍥轰欢涓病鏈夊凡淇濆瓨鐨勬湁鏁堟嫙鍚?);
+            if ((fitted >>> 0) !== 1) throw new Error('固件中没有已保存的有效拟合');
             const count = await readRegisterValue(CUSTOM_REGS.LAG_ANGLE_POINT_COUNT);
             const safeCount = Math.min(1024, count >>> 0);
             const points = [];
@@ -106,10 +106,10 @@
             const exponent = (await readRegisterValue(CUSTOM_REGS.LAG_ANGLE_FIT_EXPONENT) | 0) / 1000000;
             document.getElementById('lagAngleProgress').textContent = `${safeCount} / ${safeCount}`;
             document.getElementById('lagAngleEquation').textContent =
-                `鍥轰欢骞傚緥鎷熷悎锛氭粸鍚庤 = ${intercept.toFixed(3)}掳 + ${coefficient.toFixed(8)} 脳 RPM^${exponent.toFixed(4)}`;
+                `固件幂律拟合：滞后角 = ${intercept.toFixed(3)}° + ${coefficient.toFixed(8)} × RPM^${exponent.toFixed(4)}`;
             state.lagAngleMaxSpeedRpm = Math.max(1, ...points.map((point) => point.speedRpm));
             drawLagAngleChart(points, state.lagAngleMaxSpeedRpm);
-            document.getElementById('lagAngleStatus').textContent = `宸茶鍙?${safeCount} 涓浐浠朵繚瀛樼偣鍙婃嫙鍚堟煡璇㈠€糮;
+            document.getElementById('lagAngleStatus').textContent = `已读取 ${safeCount} 个固件保存点及拟合查询值`;
         }
 
         function lagAngleSweepConfig() {
@@ -120,30 +120,36 @@
             const sampleWindowSec = Number(document.getElementById('lagAngleSampleWindowSec').value);
             const samplePeriodMs = Number(document.getElementById('lagAngleSamplePeriodMs').value);
             const accelRpmS = Math.round(Number(document.getElementById('lagAngleAccelRpmS').value));
-            // 閫熷害瀹瑰樊锛?锛夛細瀹為檯杞€熶笌鐩爣鍋忓樊瓒呰繃杩欎釜姣斾緥灏卞垽鈥滄湭杈炬爣鈥濓紝瑙﹀彂閲嶈瘯銆?            // 榛樿 12%锛氭棦涓嶄細鍥犱负缂栫爜鍣ㄥ櫔澹拌鍒わ紝鍙堣兘鍙婃椂鍙戠幇鐢垫満鐪熺殑璺戜笉鍒般€?            const toleranceEl = document.getElementById('lagAngleTolerancePct');
+            // 速度容差（%）：实际转速与目标偏差超过这个比例就判“未达标”，触发重试。
+            // 默认 12%：既不会因为编码器噪声误判，又能及时发现电机真的跑不到。
+            const toleranceEl = document.getElementById('lagAngleTolerancePct');
             const tolerancePct = toleranceEl ? Number(toleranceEl.value) || 12 : 12;
             if (![startRpm, stopRpm, stepRpm, intervalSec, sampleWindowSec, samplePeriodMs, accelRpmS].every(Number.isFinite) ||
                 startRpm < 0 || stopRpm < 0 || startRpm > 12000 || stopRpm > 12000 || startRpm === stopRpm ||
                 stepRpm < 1 || intervalSec < 2 || sampleWindowSec <= 0 || sampleWindowSec > intervalSec ||
                 samplePeriodMs < 20 || accelRpmS < 1) {
-                throw new Error('璇锋鏌ラ€熷害鑼冨洿銆佹杩涢噺銆侀噰鏍风獥鍙ｅ拰闂撮殧璁剧疆');
+                throw new Error('请检查速度范围、步进量、采样窗口和间隔设置');
             }
             const direction = stopRpm > startRpm ? 1 : -1;
-            // 鍥轰欢 side 鐨?LagAngle::MAX_POINTS 宸茬粡浠?1024 闄嶅埌 32锛堢渷 14.9KB RAM銆?            // 鍚姩鎷熷悎浠?1.6s 闄嶅埌 50ms锛夈€傜偣鏁拌秴闄愭椂 beginUpload 浼氱洿鎺ヨ繑鍥?false锛?            // 鍚庨潰姣忎釜 setPoint 閮介潤榛樺け璐ワ紝鏈€鍚庡彧鎶ヤ竴鍙モ€滄嫙鍚堝け璐モ€濓紝寰堥毦鏌ャ€?            // 鎵€浠ュ湪鍓嶇灏卞崱浣忥紝骞剁洿鎺ュ憡璇夌敤鎴锋杩涜璋冨埌澶氬皯銆?            const firmwareMaxPoints = 128;
-            const maxSingleLegPoints = Math.ceil(firmwareMaxPoints / 2);   // 鍗曠▼ 64锛屽線杩?2*64-1 = 127
+            // 固件 side 的 LagAngle::MAX_POINTS 已经从 1024 降到 32（省 14.9KB RAM、
+            // 启动拟合从 1.6s 降到 50ms）。点数超限时 beginUpload 会直接返回 false，
+            // 后面每个 setPoint 都静默失败，最后只报一句“拟合失败”，很难查。
+            // 所以在前端就卡住，并直接告诉用户步进要调到多少。
+            const firmwareMaxPoints = 128;
+            const maxSingleLegPoints = Math.ceil(firmwareMaxPoints / 2);   // 单程 64，往返 2*64-1 = 127
             const speeds = [startRpm];
             while (speeds[speeds.length - 1] !== stopRpm) {
                 const next = speeds[speeds.length - 1] + direction * stepRpm;
                 speeds.push(direction > 0 ? Math.min(next, stopRpm) : Math.max(next, stopRpm));
                 if (speeds.length > maxSingleLegPoints) {
                     const suggested = Math.max(stepRpm, Math.ceil(Math.abs(stopRpm - startRpm) / (maxSingleLegPoints - 1)));
-                    throw new Error(`鍗曠▼閫熷害鐐?${speeds.length} 涓紝寰€杩斿悗瓒呰繃鍥轰欢涓婇檺 ${firmwareMaxPoints} 鐐癸紱璇锋妸閫熷害姝ヨ繘鏀瑰埌 ${suggested} RPM 鎴栨洿澶);
+                    throw new Error(`单程速度点 ${speeds.length} 个，往返后超过固件上限 ${firmwareMaxPoints} 点；请把速度步进改到 ${suggested} RPM 或更大`);
                 }
             }
             for (let index = speeds.length - 2; index >= 0; index--) {
                 speeds.push(speeds[index]);
             }
-            if (speeds.length < 2) throw new Error('鎷熷悎鑷冲皯闇€瑕佷袱涓€熷害鐐?);
+            if (speeds.length < 2) throw new Error('拟合至少需要两个速度点');
             return {startRpm, stopRpm, stepRpm, intervalSec, sampleWindowSec, samplePeriodMs, accelRpmS, tolerancePct, speeds};
         }
 
@@ -161,8 +167,10 @@
                 await lagAngleDelay(300);
                 return;
             }
-            await writeRegisterAndWaitAck(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0);  // 鍏抽棴闂幆
-            // 鍏抽敭淇锛氭祴閫熸帶鍒?婊炲悗瑙掓牎鍑嗙殑璧锋鍔ㄤ綔锛屽繀椤诲厛缁?startMotion() 涓€涓湁闄愪笖鍚堢悊鐨?pulseCount銆?            // 濡傛灉涓嶅厛鍐?0x11D锛屽氨浼氳 firmware 鍦?startMotion() 閲屾嬁鍒版棫鍊?鑴忓€硷紝鍑虹幇瓒呭ぇ鑴夊啿鏁板拰璧锋鍗℃銆?            const pulseCount = targetRpm / 60 * 360 / Number(document.getElementById('stepAngle').value || 1.8) * Number(document.getElementById('microsteps').value || 32) * Number(document.getElementById('lagAngleIntervalSec').value);;
+            await writeRegisterAndWaitAck(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0);  // 关闭闭环
+            // 关键修正：测速控制/滞后角校准的起步动作，必须先给 startMotion() 一个有限且合理的 pulseCount。
+            // 如果不先写 0x11D，就会让 firmware 在 startMotion() 里拿到旧值/脏值，出现超大脉冲数和起步卡死。
+            const pulseCount = targetRpm / 60 * 360 / Number(document.getElementById('stepAngle').value || 1.8) * Number(document.getElementById('microsteps').value || 32) * Number(document.getElementById('lagAngleIntervalSec').value);;
             await writeRegisterAndWaitAck(0x11A, Math.min(10, targetRpm));
             await writeRegisterAndWaitAck(0x11B, targetRpm);
             await writeRegisterAndWaitAck(0x11C, accelRpmS);
@@ -194,13 +202,13 @@
                 lastMeasuredRpm = averagedMeasuredRpm;
                 const withinTolerance = Math.abs(averagedMeasuredRpm - targetRpm) <= tolerance;
                 stableReads = withinTolerance ? stableReads + 1 : 0;
-                const statusText = `鐩爣 ${targetRpm} RPM / 骞冲潎 ${averagedMeasuredRpm.toFixed(1)} RPM / 瀹瑰樊 卤${tolerance.toFixed(1)} RPM / 绋冲畾 ${stableReads}/3`;
-                document.getElementById('lagAngleStatus').textContent = `绛夊緟绋冲畾锛?{statusText}`;
+                const statusText = `目标 ${targetRpm} RPM / 平均 ${averagedMeasuredRpm.toFixed(1)} RPM / 容差 ±${tolerance.toFixed(1)} RPM / 稳定 ${stableReads}/3`;
+                document.getElementById('lagAngleStatus').textContent = `等待稳定：${statusText}`;
                 if (stableReads >= 3) return;
                 await lagAngleDelay(Math.max(avgPeriodMs, 200));
             }
-            if (state.lagAngleCalibrationCancelled) throw new Error('宸插仠姝㈡牎鍑?);
-            throw new Error(`杞€?${targetRpm} RPM 鏈兘鍦ㄩ檺瀹氭椂闂村唴绋冲畾锛堝钩鍧?${lastMeasuredRpm.toFixed(1)} RPM锛岀洰鏍?${targetRpm} RPM锛屽宸?卤${tolerance.toFixed(1)} RPM锛塦);
+            if (state.lagAngleCalibrationCancelled) throw new Error('已停止校准');
+            throw new Error(`转速 ${targetRpm} RPM 未能在限定时间内稳定（平均 ${lastMeasuredRpm.toFixed(1)} RPM，目标 ${targetRpm} RPM，容差 ±${tolerance.toFixed(1)} RPM）`);
         }
 
         function readSigned32(value) {
@@ -219,8 +227,8 @@
                 nextAt += config.samplePeriodMs;
                 await lagAngleDelay(Math.max(0, nextAt - performance.now()));
             }
-            if (state.lagAngleCalibrationCancelled) throw new Error('宸插仠姝㈡牎鍑?);
-            if (samples.length < 3) throw new Error('閲囨牱绐楀彛鍐呮湁鏁堟牱鏈笉瓒筹紝鑷冲皯闇€瑕?3 涓?);
+            if (state.lagAngleCalibrationCancelled) throw new Error('已停止校准');
+            if (samples.length < 3) throw new Error('采样窗口内有效样本不足，至少需要 3 个');
             let sum = 0;
             let min = Infinity;
             let max = -Infinity;
@@ -232,40 +240,61 @@
             return Math.round((sum - min - max) / (samples.length - 2));
         }
 
-        // ===== 杩炵画鎵€燂細鍚姩 / 鍙橀€?/ 绛夎揪鏍?=====
-        // 鏃ф祦绋嬫瘡鐐归兘瑕?stopLagAngleMotion() + 閲嶆柊鍚姩锛屾瘡娆′粠 0 鍔犻€燂紝
-        // 涓€娈典竴娈垫祴鏋佹參銆傜幇鍦ㄥ浐浠舵敮鎸侀€熷害妯″紡杩炵画杩愯锛?x11D = 0 鈫?鏃犻檺璺戯級
-        // 鍜岃繍琛屾椂鍙橀€燂紙鏀?0x11B 鍗崇敓鏁堬級锛屾墍浠ヨ繖閲屽彧鍚姩涓€娆°€?        async function startLagAngleSweep(targetRpm, accelRpmS) {
+        // ===== 连续扫速：启动 / 变速 / 等达标 =====
+        // 旧流程每点都要 stopLagAngleMotion() + 重新启动，每次从 0 加速，
+        // 一段一段测极慢。现在固件支持速度模式连续运行（0x11D = 0 → 无限跑）
+        // 和运行时变速（改 0x11B 即生效），所以这里只启动一次。
+        async function startLagAngleSweep(targetRpm, accelRpmS) {
             await writeRegisterAndWaitAck(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0);
-            // 銆愬繀椤婚潪闆躲€戝浐浠?startMotion() 閲屾湁鍏滃簳锛?            //   if (motion_max_rpm_ <= 0) motion_max_rpm_ = angle_max_rpm_ ?: 1200;
-            // 鎵€浠ユ牎鍑嗕粠 0 RPM 寮€濮嬫椂锛屽鏋滅洿鎺ユ妸 0x11B 鍐欐垚 0锛?            // 鍥轰欢浼氭嬁鈥滅綉椤甸棴鐜渶澶ч€熷害鈥濓紙姣斿 250锛夊綋鐩爣 -> 鐢垫満鐩存帴鍐插埌 250锛?            // 鑰岀綉椤佃繕浠ヤ负鍦ㄦ祴 50 RPM 鐨勭偣銆?            // 杩欓噷寮哄埗鏈€灏?10 RPM 璧锋锛? RPM 閭ｄ釜鐐规湰鏉ュ氨涓嶉噰鏍凤紙婊炲悗瑙?0锛夈€?            const safeRpm = Math.max(10, Math.round(targetRpm));
+            // 【必须非零】固件 startMotion() 里有兜底：
+            //   if (motion_max_rpm_ <= 0) motion_max_rpm_ = angle_max_rpm_ ?: 1200;
+            // 所以校准从 0 RPM 开始时，如果直接把 0x11B 写成 0，
+            // 固件会拿“网页闭环最大速度”（比如 250）当目标 -> 电机直接冲到 250，
+            // 而网页还以为在测 50 RPM 的点。
+            // 这里强制最小 10 RPM 起步；0 RPM 那个点本来就不采样（滞后角=0）。
+            const safeRpm = Math.max(10, Math.round(targetRpm));
             await writeRegisterAndWaitAck(0x11A, Math.min(10, safeRpm));
             await writeRegisterAndWaitAck(0x11B, safeRpm);
             await writeRegisterAndWaitAck(0x11C, accelRpmS);
-            await writeRegisterAndWaitAck(0x11D, 0);   // 鈽?0 = 鏃犻檺璺戯紝涓嶅仠鏈?            await writeRegisterAndWaitAck(0x11E, 2);   // 閫熷害姝ｈ浆
+            await writeRegisterAndWaitAck(0x11D, 0);   // ★ 0 = 无限跑，不停机
+            await writeRegisterAndWaitAck(0x11E, 2);   // 速度正转
             await writeRegisterAndWaitAck(0x123, 200);
             await writePidParameters();
             await writeRegisterAndWaitAck(0x11F, 1);
         }
 
-        // 鍙敼鐩爣閫熷害锛屼笉纰板叾瀹冨瘎瀛樺櫒
-        // 鍚屾牱瑕侀槻 0锛氬啓 0 浼氳鍥轰欢 startMotion 鐨勫厹搴曢€昏緫鎷库€滈棴鐜渶澶ч€熷害鈥濆綋鐩爣銆?        async function changeLagAngleSweepSpeed(targetRpm) {
+        // 只改目标速度，不碰其它寄存器
+        // 同样要防 0：写 0 会让固件 startMotion 的兜底逻辑拿“闭环最大速度”当目标。
+        async function changeLagAngleSweepSpeed(targetRpm) {
             await writeRegisterAndWaitAck(0x11B, Math.max(10, Math.round(targetRpm)));
         }
 
-        // 绛夎浆閫?*绋冲畾**鍦ㄥ宸寖鍥村唴锛岃繑鍥?true/false锛堜笉鎶涘紓甯革級
+        // 等转速**稳定**在容差范围内，返回 true/false（不抛异常）
         //
-        // 銆愬叧閿€戜笉鑳藉彧鍒や竴娆♀€滆繘鍏ュ宸€濆氨杩斿洖锛?        //   鐩爣 600RPM銆佸宸?12%锛埪?2锛夋椂锛岄€熷害鍒氬埌 528 灏辨弧瓒虫潯浠讹紝
-        //   浣嗛偅鏃惰繕鍦ㄥ姞閫熶笂鍗囨锛屾帴涓嬫潵 1 绉掔殑閲囨牱绐楀彛浼氳鐩?528鈫?00 鏁翠釜杩囩▼锛?        //   娴嬪嚭鏉ョ殑婊炲悗瑙掑搴旂殑鍏跺疄鏄€滄瘮鏍囩鍋忎綆鐨勪竴鎴浆閫熲€濓紝鏃舵満涔熷涓嶄笂銆?        //   蹇呴』鈥滆繛缁?kStableSamples 娆★紙80ms x 6 = 480ms锛夐兘鍦ㄥ宸唴鈥濇墠绠楃湡绋炽€?        // 绛夎浆閫熷埌浣嶏紝杩斿洖 true/false銆?        //
-        // 銆愰噸瑕佷慨姝ｃ€戞棭鏈熺増鏈畬鍏ㄤ緷璧?0x120锛堝嵆鏃惰浆閫燂級鍒ゆ柇锛屼竴鏃﹂仴娴嬫病鍒版垨寤惰繜澶э紝
-        // 灏变細姘歌繙鍒も€滄湭杈炬爣鈥?-> 閲嶈瘯 3 娆?-> 璺宠繃杩欎釜鐐?-> 涓嬩竴涓偣鏇撮珮 ->
-        // 琛ㄧ幇涓衡€滅數鏈轰竴鐩村湪鍔犻€熴€侀€熷害杩滆秴鐩爣鈥濓紙瀹炴祴鐩爣 250 鍗磋窇鍒?500+锛夈€?        //
-        // 鐜板湪鐨勭瓥鐣ワ細
-        //   涓诲垽鎹?= 鐞嗚鍔犻€熸椂闂达紙accel 娈?+ 绋冲畾娈碉級锛屽埌鐐瑰氨璁や负鍒颁綅锛?        //   杈呭姪   = 鏈熼棿濡傛灉鏀跺埌 0x120 涓旇繛缁?6 娆″湪瀹瑰樊鍐咃紝鎻愬墠杩斿洖锛堢渷鏃堕棿锛夈€?        // 杩欐牱鍗充娇閬ユ祴瀹屽叏娌″埌锛屾壂閫熶篃鑳芥寜棰勬湡璺戝畬锛屼笉浼氳嚜宸辨姮楂樼洰鏍囥€?        async function waitForSpeedReached(targetRpm, tolerancePct, timeoutMs) {
+        // 【关键】不能只判一次“进入容差”就返回：
+        //   目标 600RPM、容差 12%（±72）时，速度刚到 528 就满足条件，
+        //   但那时还在加速上升段，接下来 1 秒的采样窗口会覆盖 528→600 整个过程，
+        //   测出来的滞后角对应的其实是“比标签偏低的一截转速”，时机也对不上。
+        //   必须“连续 kStableSamples 次（80ms x 6 = 480ms）都在容差内”才算真稳。
+        // 等转速到位，返回 true/false。
+        //
+        // 【重要修正】早期版本完全依赖 0x120（即时转速）判断，一旦遥测没到或延迟大，
+        // 就会永远判“未达标” -> 重试 3 次 -> 跳过这个点 -> 下一个点更高 ->
+        // 表现为“电机一直在加速、速度远超目标”（实测目标 250 却跑到 500+）。
+        //
+        // 现在的策略：
+        //   主判据 = 理论加速时间（accel 段 + 稳定段），到点就认为到位；
+        //   辅助   = 期间如果收到 0x120 且连续 6 次在容差内，提前返回（省时间）。
+        // 这样即使遥测完全没到，扫速也能按预期跑完，不会自己抬高目标。
+        async function waitForSpeedReached(targetRpm, tolerancePct, timeoutMs) {
             const start = performance.now();
             const deadline = start + timeoutMs;
             const tolerance = Math.max(5, targetRpm * tolerancePct / 100);
-            // 銆愮ǔ瀹氬垽瀹氭斁瀹姐€戝師鏉ユ槸鈥滆繛缁?6 娆￠兘蹇呴』绮剧‘钀藉湪瀹瑰樊鍐呪€?鈥斺€?            // 缂栫爜鍣ㄦ祴閫熸湰韬湁 卤2~5 RPM 鍣０锛屼綆閫熸椂锛?0RPM銆佸宸?6锛夊緢瀹规槗琚櫔澹?            // 鎵撴柇涓€娆★紝stableCount 褰掗浂閲嶆潵锛岃〃鐜颁负鈥滄槑鏄庡埌浜嗗張璇存病鍒扳€濄€?            // 鏀规垚鈥? 娆￠噷鑷冲皯 6 娆″湪瀹瑰樊鍐呪€濓紙鍏佽 2 娆℃姈鍔級锛岄瞾妫掑緱澶氥€?            const kWindowSamples = 8;
+            // 【稳定判定放宽】原来是“连续 6 次都必须精确落在容差内” ——
+            // 编码器测速本身有 ±2~5 RPM 噪声，低速时（50RPM、容差 6）很容易被噪声
+            // 打断一次，stableCount 归零重来，表现为“明明到了又说没到”。
+            // 改成“8 次里至少 6 次在容差内”（允许 2 次抖动），鲁棒得多。
+            const kWindowSamples = 8;
             const kRequiredInBand = 6;
             let stableCount = 0;
             let windowCount = 0;
@@ -277,25 +306,29 @@
                 if (actual > 0 && Math.abs(actual - targetRpm) <= tolerance) {
                     stableCount++;
                 }
-                // 婊戝姩绐楀彛锛? 涓噰鏍烽噷鑷冲皯 6 涓湪甯﹀唴灏卞垽绋冲畾锛堝厑璁?2 娆″櫔澹版姈鍔級
+                // 滑动窗口：8 个采样里至少 6 个在带内就判稳定（允许 2 次噪声抖动）
                 windowCount++;
                 if (windowCount >= kWindowSamples) {
                     if (stableCount >= kRequiredInBand) {
-                        log(`[婊炲悗瑙抅 ${targetRpm}RPM 閬ユ祴纭鍒颁綅锛堝疄娴?${actual.toFixed(1)}锛?{kWindowSamples} 娆′腑 ${stableCount} 娆″湪甯﹀唴锛塦);
+                        log(`[滞后角] ${targetRpm}RPM 遥测确认到位（实测 ${actual.toFixed(1)}，${kWindowSamples} 次中 ${stableCount} 次在带内）`);
                         return true;
                     }
-                    // 绐楀彛娓呯┖閲嶆柊缁熻
+                    // 窗口清空重新统计
                     windowCount = 0;
                     stableCount = 0;
                 }
                 await lagAngleDelay(80);
             }
-            // 銆愬厹搴曚笌鍛婅銆?            // 閬ユ祴瀹屽叏娌″埌锛坢axActual == 0锛夋椂娌℃湁渚濇嵁鍒ゆ柇閫熷害锛屽彧鑳芥寜鏃堕棿鎺ㄨ繘锛?            // 浣嗗繀椤绘槑纭憡璀︹€斺€斿惁鍒欌€滅洰鏍?50 鍗磋窇鍒?250鈥濊繖绉嶆儏鍐典細琚潤榛樻斁杩囥€?            // 閬ユ祴姝ｅ父浣嗛€熷害涓嶅湪瀹瑰樊鍐?鈫?杩斿洖 false锛岃璋冪敤鏂归噸璇曪紝
-            // 閲嶈瘯 3 娆￠兘涓嶈灏变腑姝㈡暣涓壂閫燂紙鑰屼笉鏄嚜娆烘浜哄湴缁х画锛夈€?            if (maxActual <= 0.5) {
-                log(`[婊炲悗瑙抅 ${targetRpm}RPM 閬ユ祴瀹屽叏缂哄け锛坢axActual=0锛夛紝鎸夋椂闂存帹杩涳紱璇锋鏌?0x120 閬ユ祴閾捐矾`);
+            // 【兜底与告警】
+            // 遥测完全没到（maxActual == 0）时没有依据判断速度，只能按时间推进，
+            // 但必须明确告警——否则“目标 50 却跑到 250”这种情况会被静默放过。
+            // 遥测正常但速度不在容差内 → 返回 false，让调用方重试，
+            // 重试 3 次都不行就中止整个扫速（而不是自欺欺人地继续）。
+            if (maxActual <= 0.5) {
+                log(`[滞后角] ${targetRpm}RPM 遥测完全缺失（maxActual=0），按时间推进；请检查 0x120 遥测链路`);
                 return true;
             }
-            log(`[婊炲悗瑙抅 ${targetRpm}RPM 鏈揪鏍囷細閬ユ祴鏈€澶?${maxActual.toFixed(1)}锛屽宸?卤${tolerance.toFixed(1)}`);
+            log(`[滞后角] ${targetRpm}RPM 未达标：遥测最大 ${maxActual.toFixed(1)}，容差 ±${tolerance.toFixed(1)}`);
             return false;
         }
 
@@ -307,71 +340,87 @@
             const tolerancePct = Number(config.tolerancePct) > 0 ? Number(config.tolerancePct) : 12;
             const maxRetries = 3;
             let consecutiveFailures = 0;
-            let directionReversed = false;   // 寰€杩旓細鍙垏涓€娆℃柟鍚?
-            // 銆愬彧鍚姩涓€娆°€戠敤绗竴涓?*闈為浂**閫熷害鍚姩锛?            // 0 RPM 閭ｄ釜鐐逛笉鍙備笌杩愬姩锛堟病鏈夎浆閫熷氨娌℃湁婊炲悗瑙掞級锛屼笅闈㈠惊鐜噷鐩存帴璁?0 骞惰烦杩囥€?            // 濡傛灉鎷?0 鍘诲惎鍔紝0x11B 浼氳閽冲埌 10锛岃€屽墠绔互涓哄湪娴?0 -> 閫熷害瀵逛笉涓婂氨鎶ラ敊銆?            const startupRpm = config.speeds.find((s) => s > 0) ?? 10;
+            let directionReversed = false;   // 往返：只切一次方向
+
+            // 【只启动一次】用第一个**非零**速度启动：
+            // 0 RPM 那个点不参与运动（没有转速就没有滞后角），下面循环里直接记 0 并跳过。
+            // 如果拿 0 去启动，0x11B 会被钳到 10，而前端以为在测 0 -> 速度对不上就报错。
+            const startupRpm = config.speeds.find((s) => s > 0) ?? 10;
             await startLagAngleSweep(startupRpm, config.accelRpmS);
             await lagAngleDelay(500);
 
             for (let index = 0; index < config.speeds.length; index++) {
-                if (state.lagAngleCalibrationCancelled) throw new Error('宸插仠姝㈡牎鍑?);
+                if (state.lagAngleCalibrationCancelled) throw new Error('已停止校准');
                 const speedRpm = config.speeds[index];
 
-                // 銆愬線杩旀崲鍚戙€戠涓€娆″嚭鐜扳€滈€熷害姣斾笂涓€涓偣灏忊€濊鏄庤繘鍏ヤ笅闄嶆銆?                // 鍥轰欢閫熷害妯″紡鍙 0x11E锛?=姝ｈ浆 3=鍙嶈浆锛夛紝鏀瑰畠浼氬厛鍒瑰埌 0 鍐嶅弽鍚戝姞閫燂紝
-                // 鎵€浠ヨ繖閲屽垏瀹岃鐣欎竴娈垫崲鍚戞椂闂达紝鍐嶅幓绛夌洰鏍囪浆閫熴€?                if (!directionReversed && index > 0 && speedRpm < config.speeds[index - 1]) {
+                // 【往返换向】第一次出现“速度比上一个点小”说明进入下降段。
+                // 固件速度模式只认 0x11E（2=正转 3=反转），改它会先刹到 0 再反向加速，
+                // 所以这里切完要留一段换向时间，再去等目标转速。
+                if (!directionReversed && index > 0 && speedRpm < config.speeds[index - 1]) {
                     document.getElementById('lagAngleStatus').textContent =
-                        `鍒拌揪鏈€楂樼偣锛屽垏鎹㈠弽鍚戯紙鍏堝埞鍒?0锛?..`;
+                        `到达最高点，切换反向（先刹到 0）...`;
                     await writeRegisterAndWaitAck(0x11E, 3);
                     directionReversed = true;
                     await lagAngleDelay(800);
                 }
 
-                // 0 RPM锛氫笉鍚姩銆佷笉绛夊緟銆佷笉閲囨牱锛堟粸鍚庤瀹氫箟涓?0锛?                if (speedRpm === 0) {
+                // 0 RPM：不启动、不等待、不采样（滞后角定义为 0）
+                if (speedRpm === 0) {
                     points.push({speedRpm: 0, angleMdeg: 0, angleDeg: 0, fitAngleDeg: null});
                     document.getElementById('lagAngleProgress').textContent = `${index + 1} / ${config.speeds.length}`;
-                    document.getElementById('lagAngleStatus').textContent = `0 RPM 鐩存帴璁?0锛堜笉閲囨牱锛塦;
+                    document.getElementById('lagAngleStatus').textContent = `0 RPM 直接记 0（不采样）`;
                     continue;
                 }
 
                 await changeLagAngleSweepSpeed(speedRpm);
-                // 銆愮姸鎬佹爮鎻愬墠鍒拌繖涓偣銆戝師鏉ユ槸鍦ㄩ噰鏍峰畬鎴愬悗鎵嶅啓锛屽鑷粹€滈噰鏍?200 鍗存樉绀?150鈥?                // 鐨勯敊浣嶁€斺€旂敤鎴风湅鍒扮殑鐘舵€佹€绘槸钀藉悗涓€鎷嶃€?                document.getElementById('lagAngleStatus').textContent =
-                    `绛夊緟绋冲畾锛?{speedRpm} RPM锛?{index + 1}/${config.speeds.length}`;
+                // 【状态栏提前到这个点】原来是在采样完成后才写，导致“采样 200 却显示 150”
+                // 的错位——用户看到的状态总是落后一拍。
+                document.getElementById('lagAngleStatus').textContent =
+                    `等待稳定：${speedRpm} RPM，${index + 1}/${config.speeds.length}`;
 
-                // 銆愬悓鐐归噸璇曘€戦€熷害涓嶈揪鏍囨渶澶氶噸璇?maxRetries 娆★紙閲嶆柊涓嬪彂鐩爣锛?                let reached = false;
+                // 【同点重试】速度不达标最多重试 maxRetries 次（重新下发目标）
+                let reached = false;
                 const prevRpm = index > 0 ? config.speeds[index - 1] : 0;
                 const settleMs = Math.max(2500,
                     Math.abs(speedRpm - prevRpm) / Math.max(1, config.accelRpmS) * 3000 + 1500);
                 for (let attempt = 0; attempt < maxRetries && !reached; attempt++) {
-                    if (state.lagAngleCalibrationCancelled) throw new Error('宸插仠姝㈡牎鍑?);
+                    if (state.lagAngleCalibrationCancelled) throw new Error('已停止校准');
                     reached = await waitForSpeedReached(speedRpm, tolerancePct, settleMs);
                     if (!reached) {
                         document.getElementById('lagAngleStatus').textContent =
-                            `${speedRpm} RPM 绗?${attempt + 1} 娆℃湭杈炬爣锛岄噸璇曚腑...`;
+                            `${speedRpm} RPM 第 ${attempt + 1} 次未达标，重试中...`;
                         await changeLagAngleSweepSpeed(speedRpm);
                     }
                 }
 
                 if (!reached) {
-                    // 銆愯繛缁?3 娆′笉杈炬爣銆戝垽瀹氬凡杈剧數鏈烘瀬闄愶紝鍋滄鎵€?                    consecutiveFailures++;
+                    // 【连续 3 次不达标】判定已达电机极限，停止扫速
+                    consecutiveFailures++;
                     document.getElementById('lagAngleStatus').textContent =
-                        `${speedRpm} RPM 鏃犳硶杈炬爣锛堣繛缁?${consecutiveFailures} 娆★級`;
+                        `${speedRpm} RPM 无法达标（连续 ${consecutiveFailures} 次）`;
                     if (consecutiveFailures >= 3) {
                         await stopLagAngleMotion();
                         throw new Error(
-                            `杩炵画 ${consecutiveFailures} 涓€熷害鐐规棤娉曡揪鏍囷紙鏈€鍚庯細${speedRpm} RPM锛屽宸?${tolerancePct}%锛夛紝宸插仠姝㈡壂閫焋);
+                            `连续 ${consecutiveFailures} 个速度点无法达标（最后：${speedRpm} RPM，容差 ${tolerancePct}%），已停止扫速`);
                     }
-                    continue;   // 璺宠繃杩欎釜鐐癸紝缁х画涓嬩竴涓?                }
+                    continue;   // 跳过这个点，继续下一个
+                }
                 consecutiveFailures = 0;
 
                 const holdStart = performance.now();
                 await lagAngleDelay(centeredDelayMs);
-                // 銆愭嫙鍚堢敤骞呭€硷紝涓嶈兘甯︾鍙枫€?                // collectLagAngleMean 璇荤殑鏄?0x121锛坒ollow_error = 瀹為檯 - 鍛戒护锛夛細
-                //   姝ｈ浆鏃舵粸鍚庤鏄礋鐨勶紙杞瓙钀藉悗锛?                //   鍙嶈浆鏃舵槸姝ｇ殑
-                // 涓よ€呭箙鍊肩浉鍚屻€佺鍙风浉鍙嶃€傚鏋滅洿鎺ヤ笂浼狅紝寰€杩斿簭鍒椾細鍦ㄥ悓涓€鐐逛笂鍑虹幇
-                // 涓€姝ｄ竴璐熶袱涓€硷紝骞傚緥鎷熷悎浼氳鎷夋垚涓€鏉℃帴杩戦浂鐨勬枩绾匡紝瀹屽叏澶辩湡銆?                // 婊炲悗瑙掔殑鐗╃悊閲忔槸銆屽箙鍊笺€嶏紝鏂瑰悜鐢辫浆閫熺鍙峰喅瀹氾紙鍥轰欢閲屽凡澶勭悊锛夈€?                const rawAngleMdeg = speedRpm === 0 ? 0 : await collectLagAngleMean(config);
+                // 【拟合用幅值，不能带符号】
+                // collectLagAngleMean 读的是 0x121（follow_error = 实际 - 命令）：
+                //   正转时滞后角是负的（转子落后）
+                //   反转时是正的
+                // 两者幅值相同、符号相反。如果直接上传，往返序列会在同一点上出现
+                // 一正一负两个值，幂律拟合会被拉成一条接近零的斜线，完全失真。
+                // 滞后角的物理量是「幅值」，方向由转速符号决定（固件里已处理）。
+                const rawAngleMdeg = speedRpm === 0 ? 0 : await collectLagAngleMean(config);
                 const angleMdeg = Math.abs(rawAngleMdeg);
                 points.push({speedRpm, angleMdeg, angleDeg: angleMdeg / 1000, fitAngleDeg: null});
                 document.getElementById('lagAngleProgress').textContent = `${index + 1} / ${config.speeds.length}`;
-                document.getElementById('lagAngleStatus').textContent = `閲囨牱涓細${speedRpm} RPM锛?{index + 1}/${config.speeds.length}`;
+                document.getElementById('lagAngleStatus').textContent = `采样中：${speedRpm} RPM，${index + 1}/${config.speeds.length}`;
                 drawLagAngleChart(points, Math.max(config.startRpm, config.stopRpm, 1));
                 await lagAngleDelay(Math.max(0, holdStart + intervalMs - performance.now()));
             }
@@ -381,7 +430,7 @@
 
         async function uploadLagAnglePoints(points) {
             if (points.length > 32) {
-                throw new Error(`鎷熷悎鐐?${points.length} 涓紝瓒呰繃鍥轰欢涓婇檺 32`);
+                throw new Error(`拟合点 ${points.length} 个，超过固件上限 32`);
             }
             await writeRegisterAndWaitAck(CUSTOM_REGS.LAG_ANGLE_UPLOAD_COUNT, points.length);
             for (let index = 0; index < points.length; index++) {
@@ -390,16 +439,16 @@
                 await writeRegisterAndWaitAck(CUSTOM_REGS.LAG_ANGLE_POINT_SPEED_RPM, point.speedRpm);
                 await writeRegisterAndWaitAck(CUSTOM_REGS.LAG_ANGLE_POINT_MDEG, point.angleMdeg >>> 0);
                 await writeRegisterAndWaitAck(CUSTOM_REGS.LAG_ANGLE_POINT_COMMIT, 1);
-                document.getElementById('lagAngleStatus').textContent = `涓婁紶鍧囧€肩偣锛?{index + 1}/${points.length}`;
+                document.getElementById('lagAngleStatus').textContent = `上传均值点：${index + 1}/${points.length}`;
             }
             await writeRegisterAndWaitAck(CUSTOM_REGS.LAG_ANGLE_FIT, 1);
             const fitSaved = await readRegisterValue(CUSTOM_REGS.LAG_ANGLE_FIT);
-            if ((fitSaved >>> 0) !== 1) throw new Error('鍥轰欢鎷熷悎鎴?Flash 淇濆瓨澶辫触');
+            if ((fitSaved >>> 0) !== 1) throw new Error('固件拟合或 Flash 保存失败');
         }
 
         async function startLagAngleCalibration() {
             if (!state.connected) {
-                document.getElementById('lagAngleStatus').textContent = '璇峰厛杩炴帴涓插彛';
+                document.getElementById('lagAngleStatus').textContent = '请先连接串口';
                 return;
             }
             let config;
@@ -417,18 +466,18 @@
             cancelButton.disabled = false;
             document.getElementById('closeLagAngleDialogBtn').disabled = true;
             document.getElementById('lagAngleProgress').textContent = `0 / ${config.speeds.length}`;
-            document.getElementById('lagAngleEquation').textContent = '鍥轰欢鎷熷悎鍑芥暟锛氱瓑寰呮湰杞噰鏍蜂笂浼犱笌鎷熷悎';
+            document.getElementById('lagAngleEquation').textContent = '固件拟合函数：等待本轮采样上传与拟合';
             try {
                 const points = await captureLagAnglePoints(config);
-                document.getElementById('lagAngleStatus').textContent = '涓婁紶閲囨牱鍧囧€煎苟鐢卞浐浠舵嫙鍚?..';
+                document.getElementById('lagAngleStatus').textContent = '上传采样均值并由固件拟合...';
                 await uploadLagAnglePoints(points);
-                document.getElementById('lagAngleStatus').textContent = '鎷熷悎瀹屾垚锛岃鍙栧浐浠舵煡璇㈠€?..';
+                document.getElementById('lagAngleStatus').textContent = '拟合完成，读取固件查询值...';
                 await refreshLagAngleCalibration();
-                document.getElementById('lagAngleStatus').textContent = '閲囨牱瀹屾垚锛涙洸绾挎煡璇㈠€煎強鎷熷悎绯绘暟鍧囨潵鑷浐浠?;
+                document.getElementById('lagAngleStatus').textContent = '采样完成；曲线查询值及拟合系数均来自固件';
             } catch (error) {
                 await stopLagAngleMotion().catch(() => {});
-                document.getElementById('lagAngleStatus').textContent = `鏍″噯澶辫触锛?{error.message}`;
-                log(`[婊炲悗瑙掓牎鍑哴 ${error.message}`);
+                document.getElementById('lagAngleStatus').textContent = `校准失败：${error.message}`;
+                log(`[滞后角校准] ${error.message}`);
             } finally {
                 state.lagAngleCalibrationRunning = false;
                 startButton.disabled = false;
@@ -441,14 +490,14 @@
             const dialog = document.getElementById('lagAngleDialog');
             if (!dialog.open) dialog.showModal();
             if (!state.connected) {
-                document.getElementById('lagAngleStatus').textContent = '璇峰厛杩炴帴涓插彛浠ヨ鍙栧浐浠舵暟鎹?;
+                document.getElementById('lagAngleStatus').textContent = '请先连接串口以读取固件数据';
                 drawLagAngleChart([], 3000);
                 return;
             }
             try {
                 await refreshLagAngleCalibration();
             } catch (error) {
-                document.getElementById('lagAngleStatus').textContent = `璇诲彇澶辫触锛?{error.message}`;
+                document.getElementById('lagAngleStatus').textContent = `读取失败：${error.message}`;
                 drawLagAngleChart([], 3000);
             }
         }
