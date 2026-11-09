@@ -149,8 +149,10 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_MODE, static_cast<uint32_t>(c.motion_mode_));
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_MOTION_COMMAND, c.motion_running_ ? 1U : 0U);
         // 实时转速：波形图按 25Hz 采样，必须和误差同档（kMedium ≈ 100Hz）才有意义。
+        // 用的是 20ms 平滑的显示值：20kHz 原始估计在 25Hz 采样下全是毛刺，
+        // 会让人把"测速噪声"当成"电机在抖"。控制环内部仍用 3ms 的那个。
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_SPEED_RPM,
-                                        static_cast<uint32_t>(static_cast<int32_t>(c.encoder_speed_rpm_)));
+                                        static_cast<uint32_t>(static_cast<int32_t>(c.encoder_speed_display_rpm_)));
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_TARGET_ANGLE_DEG,
                                         static_cast<uint32_t>(static_cast<int32_t>(c.target_angle_deg_ * 1000.0f)));
         // 外部脉冲跟随遥测：命令/已发/积压/丢步（100Hz 足够上位机画图）

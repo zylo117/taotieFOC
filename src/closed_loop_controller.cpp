@@ -270,9 +270,10 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
     driver_ = driver;
     encoder_ = encoder;
 
-    // 【上电恢复】从 Flash 读回上次保存的 PID 与角度限速。
+    // 【上电恢复】从 Flash 读回上次保存的 PID / 微步 / 脉宽。
     // 固件原来完全没有参数持久化，掉电后 PID 全丢、回到编译期默认值；
     // 现在只要用户点过一次「写入参数」，重启就能自动恢复。
+    uint16_t boot_microsteps = 0U;
     {
         PersistedMotorParams params = {};
         if (param_store_load(&params))
@@ -293,11 +294,24 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
             base_velocity_kp_ = velocity_pid_.kp;
             base_velocity_ki_ = velocity_pid_.ki;
             base_velocity_kd_ = velocity_pid_.kd;
+            // 【微步必须一起恢复】它是"一圈多少微步"的唯一来源：丢了它，
+            // getStepsPerRound() 会退回驱动器默认值（历史默认 32），
+            // 而脉冲数、滞后角表、网页行程全按 64 口径 —— 行程正好差一倍。
+            if (params.microsteps >= 1U && params.microsteps <= 256U)
+            {
+                boot_microsteps = params.microsteps;
+            }
+            if (params.step_pulse_ns >= kMinStepPulseNs && params.step_pulse_ns <= kMaxStepPulseNs)
+            {
+                step_pulse_width_ns_ = params.step_pulse_ns;
+            }
             // 角度限速/加速度不从 Flash 恢复：它们是“本次运行设定”，每次在界面上调，
             // 存进 Flash 会让一个旧值在重启后静默生效。
-            printf("[PARAM] loaded from flash: pid %.3f/%.3f/%.3f %.3f/%.3f/%.3f\r\n",
+            printf("[PARAM] loaded from flash: pid %.3f/%.3f/%.3f %.3f/%.3f/%.3f ms=%u width=%uns\r\n",
                    position_pid_.kp, position_pid_.ki, position_pid_.kd,
-                   velocity_pid_.kp, velocity_pid_.ki, velocity_pid_.kd);
+                   velocity_pid_.kp, velocity_pid_.ki, velocity_pid_.kd,
+                   static_cast<unsigned>(boot_microsteps),
+                   static_cast<unsigned>(step_pulse_width_ns_));
         }
         else
         {
@@ -344,9 +358,17 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
     if (driver_ != nullptr)
     {
         driver_->init();
+        // 恢复 Flash 里的微步设置（必须在 driver_->init() 之后：setMicrosteps 会写 CHOPCONF）。
+        if (boot_microsteps >= 1U)
+        {
+            driver_->setMicrosteps(boot_microsteps);
+        }
         driver_->setEnable(false);
         driver_->setDirection(false);
         driver_->setStepState(false);
+        printf("[PARAM] microsteps active = %u (steps/rev = %lu)\r\n",
+               static_cast<unsigned>(driver_->config().microsteps),
+               static_cast<unsigned long>(getMicroStepsPerRound(driver_)));
     }
 
     last_process_time_us_ = 0U;
@@ -929,16 +951,29 @@ float ClosedLoopController::updateSpeedEstimate(uint64_t now_ns)
 
     const float delta_deg = normalize_signed_delta_deg(
         encoder_filtered_angle_ - speed_angle_ring_[oldest]);
-    const float rpm = delta_deg * (60.0f / 360.0f) * 1.0e9f / static_cast<float>(window_ns);
-    if (!std::isfinite(rpm))
+    const float rpm_raw = delta_deg * (60.0f / 360.0f) * 1.0e9f / static_cast<float>(window_ns);
+    if (!std::isfinite(rpm_raw))
     {
         return encoder_speed_rpm_;
     }
-    encoder_speed_rpm_ = rpm;
 
-    // 滞后角表用更慢的一层：表本身是"转速 -> 滞后角"的稳态映射，
-    // 不需要跟着 20kHz 的速度噪声抖。这里用 1/8 的一阶平滑（约 8ms）。
-    lag_angle_speed_rpm_ += (rpm - lag_angle_speed_rpm_) * 0.125f;
+    // 【为什么还要再做一次 EMA】
+    // 1ms 端点差分仍把编码器的“每步振铃”当速度：实测静止时速度读数 σ≈7RPM、
+    // 匀速 100RPM 时 σ≈25RPM（对照：同时刻的位置误差只有 0.19°，说明那不是真在变速，
+    // 是转子每走一个微步的机械振铃 + 传感器噪声）。速度环拿这种反馈，
+    // 增益一大就把噪声放大成脉冲抖动 —— 这正是“速度环动一点点就抖”的另一半原因。
+    // 3ms 一阶平滑把 100Hz 量级的振铃压掉，同时只增加 3ms 延迟：
+    // 速度环本来就只做阻尼，带宽不需要高。
+    constexpr float kControlSpeedAlpha = 0.0167f;   // 50us / 3ms
+    encoder_speed_rpm_ += (rpm_raw - encoder_speed_rpm_) * kControlSpeedAlpha;
+
+    // 显示/波形用的再慢一档（20ms）：上位机 25Hz 采样看到的转速不再是一团毛刺。
+    constexpr float kDisplaySpeedAlpha = 0.0025f;   // 50us / 20ms
+    encoder_speed_display_rpm_ += (encoder_speed_rpm_ - encoder_speed_display_rpm_) * kDisplaySpeedAlpha;
+
+    // 滞后角表用的更慢（30ms）：表本身是"转速 -> 滞后角"的稳态映射。
+    constexpr float kLagSpeedAlpha = 0.0017f;
+    lag_angle_speed_rpm_ += (encoder_speed_rpm_ - lag_angle_speed_rpm_) * kLagSpeedAlpha;
     return encoder_speed_rpm_;
 }
 
@@ -947,6 +982,7 @@ void ClosedLoopController::resetSpeedEstimate()
     speed_ring_index_ = 0U;
     speed_ring_count_ = 0U;
     encoder_speed_rpm_ = 0.0f;
+    encoder_speed_display_rpm_ = 0.0f;
     lag_angle_speed_rpm_ = 0.0f;
     lag_angle_applied_deg_ = 0.0f;
     motion_lag_angle_deg_ = 0.0f;

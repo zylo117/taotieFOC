@@ -368,6 +368,9 @@ private:
     volatile bool motion_paused_;
     volatile float motion_speed_rpm_;
     volatile float encoder_speed_rpm_;
+    // 只给遥测/波形用的转速（20ms 平滑）：控制环用的是上面那个 3ms 的。
+    // 分开的原因：20kHz 速度估计在 25Hz 采样下看就是一团毛刺，和"电机在抖"分不清。
+    volatile float encoder_speed_display_rpm_ = 0.0f;
     // ===== 速度估计（滑窗差分）=====
     // 旧估计是「相邻两拍角差 / dt」再 0.9/0.1 低通。问题不在低通，而在量化：
     // 编码器 1 LSB = 0.0055°，50us 内 1 LSB 就是 110°/s = 18.3RPM。低通只能压
