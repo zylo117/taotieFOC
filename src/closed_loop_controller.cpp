@@ -223,8 +223,13 @@ ClosedLoopController::ClosedLoopController()
         : driver_(nullptr), encoder_(nullptr), protocol_(nullptr), lag_angle_point_index_(0U),
             lag_angle_point_speed_rpm_(0U), lag_angle_point_mdeg_(0), lag_angle_query_speed_rpm_(0U),
             lag_angle_fit_saved_(false),
-      base_position_kp_(60.0f), base_position_ki_(20.0f), base_position_kd_(60.0f),
-      base_velocity_kp_(30.0f), base_velocity_ki_(8.0f), base_velocity_kd_(20.0f),
+      base_position_kp_(60.0f), base_position_ki_(10.0f), base_position_kd_(0.0f),
+      // 【速度环口径：网页值 = 实际增益，不再有 ×0.01 的隐藏倍率】
+      // 历史上角度模式把 P 项乘 0.01（那时 PID 输出就是全部速度），所以 30 表示 0.3。
+      // 串级改造删掉 p_scale 以后 30 变成真·30 —— 速度环增益比设计值大 100 倍，
+      // 一改就抖、一起步就把规划的速度斜坡顶成"直接满速"，都是这一个原因。
+      // 现在统一用实际增益：0.3 才是"大约相当于当年 30"的那个点。
+      base_velocity_kp_(0.30f), base_velocity_ki_(0.0f), base_velocity_kd_(0.0f),
       adaptive_pid_enabled_(false), adaptive_config_{0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
       target_step_(0), actual_step_(0), last_actual_step_(0), command_step_(0),
       follow_error_(0.0f), measured_velocity_rps_(0.0f), target_velocity_rps_(0.0f),
@@ -579,6 +584,16 @@ void ClosedLoopController::startMotion()
 
     closed_loop_angle_mode_enabled_ = false;
 
+    // 【堵转锁存】判定堵转后必须显式清（0x15F=1）才能再启动，否则自动测试循环
+    // 会无视故障继续发脉冲 —— 电机被按住时这就等于一直灌电流发热。
+    if (stall_detected_)
+    {
+        printf("[SAFETY] startMotion rejected: stall latched (write 0x15F=1 to clear)\r\n");
+        return;
+    }
+    // 每次启动重新布防堵转判据：上一个动作结束时的静默计时不能带进新动作。
+    stall_armed_ = false;
+
     // 【必须停掉残留的 DMA 脉冲序列】step_output_.stop() 原来只在 stopMotion 里调，
     // 而实际使用中很容易“进了角度模式不点停止就直接切回规划运动”。
     // 此时 TMR2/DMA 里还排着角度模式最后几拍的脉冲序列，规划运动一开始发新序列
@@ -818,7 +833,7 @@ void ClosedLoopController::collectExternalPulseCommand()
     external_pulse_follower_.accumulateCommand(external_pulse_delta_, external_pulse_abs, prime);
 }
 
-float ClosedLoopController::refreshEncoderFeedback()
+float ClosedLoopController::refreshEncoderFeedback(uint64_t now_ns)
 {
     // 上一窗口交给 TMR2/DMA 的脉冲，到这一拍已经全部发完了（窗口 50us，下一拍在它之后）。
     // 只有把它并入"已发完步数"，下面的命令位置才能和真实脉冲对齐，
@@ -845,6 +860,10 @@ float ClosedLoopController::refreshEncoderFeedback()
 
     encoder_delta_deg = normalize_signed_delta_deg(encoder_filtered_angle_ - previous_encoder_angle);
 
+    // 速度估计放在这里：所有模式（角度/规划/外部跟随/沉降）都先经过 refreshEncoderFeedback，
+    // 所以整个控制器只有一份速度估计，不再有"每个分支各自做一次 0.9/0.1 低通"的三份实现。
+    updateSpeedEstimate(now_ns);
+
     if (motion_running_ && motion_encoder_reference_valid_)
     {
         const int16_t encoder_delta_raw = normalize_signed_delta_deg(static_cast<int32_t>(encoder_filtered_raw_) - static_cast<int32_t>(motion_encoder_previous_raw_));
@@ -869,19 +888,231 @@ float ClosedLoopController::refreshEncoderFeedback()
     return encoder_delta_deg;
 }
 
+// ===========================================================================
+// 速度估计：约 1ms 固定窗口上的滑窗差分
+//
+// 为什么不能用「相邻两拍角差 / dt + 0.9/0.1 低通」：
+//   编码器 16 位/圈 -> 1 LSB = 0.0055°。50us 内走 1 LSB 就是 110°/s = 18.3RPM，
+//   也就是说单拍微分在低速段的分辨率只有 18RPM，而低通只能压 RMS、压不掉台阶，
+//   代价还是 1ms 量级的群延迟。速度环拿这种反馈去整定，永远是"要么抖要么迟钝"。
+//
+// 现在：把最近 1ms 的角度差除以真实经过时间。量化噪声按窗口长度缩小 20 倍
+// （18.3 -> 约 0.9RPM），群延迟固定为半个窗口（0.5ms）且是线性的，速度环的
+// 增益才有明确意义。窗口里用的是滤波后的浮点角（含亚 LSB 小数），不是整数 raw。
+// ===========================================================================
+float ClosedLoopController::updateSpeedEstimate(uint64_t now_ns)
+{
+    const uint32_t now32 = static_cast<uint32_t>(now_ns);
+    speed_angle_ring_[speed_ring_index_] = encoder_filtered_angle_;
+    speed_time_ring_[speed_ring_index_] = now32;
+    const uint16_t newest = speed_ring_index_;
+    speed_ring_index_ = static_cast<uint16_t>((speed_ring_index_ + 1U) % kSpeedWindowTicks);
+    if (speed_ring_count_ < kSpeedWindowTicks)
+    {
+        speed_ring_count_++;
+    }
+
+    // 窗口还没攒够 4 拍时，单拍差分的噪声太大，宁可直接返回上一拍的值。
+    if (speed_ring_count_ < 4U)
+    {
+        return encoder_speed_rpm_;
+    }
+
+    const uint16_t oldest = static_cast<uint16_t>(
+        (speed_ring_index_ + kSpeedWindowTicks - speed_ring_count_) % kSpeedWindowTicks);
+    const uint32_t window_ns = speed_time_ring_[newest] - speed_time_ring_[oldest];
+    // 时间窗异常（首拍 / 任务被长时间阻塞）时不要把噪声当速度：保持上一拍。
+    if (window_ns < 20000U || window_ns > 5000000U)
+    {
+        return encoder_speed_rpm_;
+    }
+
+    const float delta_deg = normalize_signed_delta_deg(
+        encoder_filtered_angle_ - speed_angle_ring_[oldest]);
+    const float rpm = delta_deg * (60.0f / 360.0f) * 1.0e9f / static_cast<float>(window_ns);
+    if (!std::isfinite(rpm))
+    {
+        return encoder_speed_rpm_;
+    }
+    encoder_speed_rpm_ = rpm;
+
+    // 滞后角表用更慢的一层：表本身是"转速 -> 滞后角"的稳态映射，
+    // 不需要跟着 20kHz 的速度噪声抖。这里用 1/8 的一阶平滑（约 8ms）。
+    lag_angle_speed_rpm_ += (rpm - lag_angle_speed_rpm_) * 0.125f;
+    return encoder_speed_rpm_;
+}
+
+void ClosedLoopController::resetSpeedEstimate()
+{
+    speed_ring_index_ = 0U;
+    speed_ring_count_ = 0U;
+    encoder_speed_rpm_ = 0.0f;
+    lag_angle_speed_rpm_ = 0.0f;
+    lag_angle_applied_deg_ = 0.0f;
+    motion_lag_angle_deg_ = 0.0f;
+    last_measured_along_rps_ = 0.0f;
+    last_angle_mode_measured_rps_ = 0.0f;
+}
+
+// ===========================================================================
+// 滞后角（lag angle）：把“物理上必然的滞后”从跟随误差里剔除
+//
+// 关键澄清（这次改名要解决的就是这个误解）：
+//   步进电机稳态运行时，转子必须落后指令磁场一个角度才能产生转矩拖动负载。
+//   这个角只由转速/转矩决定，**不是丢步**，脉冲发完以后转子自己会追上来。
+//   如果把跟随误差里的这部分也交给 PID 去“补偿”，PID 就会持续多发脉冲，
+//   转子于是永远跑在“指令位置 - 滞后角”这个不存在的目标前面 —— 也就是用户
+//   观察到的“多走了 / 超前了”。
+//   正确做法是：把表值当作**已知的、不该被修正的偏差**减掉，PID 只处理残差。
+//
+// 这里的处理细节：
+//   - 速度用 lag_angle_speed_rpm_（8ms 平滑），不用 20kHz 瞬时值：表是稳态映射，
+//     跟着噪声抖只会把噪声灌进误差通道；
+//   - 低于 6RPM 线性淡出到 0：拟合截距/噪声在这个区间会让符号翻转，
+//     而低速时真实滞后角本来就只有零点零几度；
+//   - 一阶平滑 + 40°/s 的变化率限幅：换向/起步时符号会变，不能让一个 3° 的
+//     阶跃直接跳进控制环；
+//   - 表未标定时恒为 0（isFitted()==false），行为等于“不剔除”，与旧版一致。
+// ===========================================================================
+void ClosedLoopController::updateLagAngleFeedforward(float measured_rps)
+{
+    float target_deg = 0.0f;
+    if (lag_angle_.isFitted())
+    {
+        const float speed_rpm = fast_abs(lag_angle_speed_rpm_);
+        constexpr float kLagFullSpeedRpm = 6.0f;
+        const float weight = fast_clamp(speed_rpm / kLagFullSpeedRpm, 0.0f, 1.0f);
+        const auto speed_u16 = static_cast<uint16_t>(speed_rpm > 65535.0f ? 65535.0f : speed_rpm);
+        const float magnitude_deg =
+            static_cast<float>(lag_angle_.getLagAngleMilliDegrees(speed_u16)) / 1000.0f;
+        const float sign = (measured_rps >= 0.0f) ? -1.0f : 1.0f;
+        target_deg = sign * magnitude_deg * weight * lag_angle_feedforward_ratio_;
+        // 上限钳位：防止标定数据异常或速度外推把前馈打爆（1200RPM 实测约 3°）。
+        constexpr float kMaxLagAngleCompDeg = 5.0f;
+        target_deg = fast_clamp(target_deg, -kMaxLagAngleCompDeg, kMaxLagAngleCompDeg);
+    }
+
+    constexpr float kSmoothing = 0.02f;      // 20kHz 下约 2.5ms
+    constexpr float kMaxStepDeg = 0.002f;    // 40°/s
+    float next_deg = lag_angle_applied_deg_ + (target_deg - lag_angle_applied_deg_) * kSmoothing;
+    const float delta_deg = next_deg - lag_angle_applied_deg_;
+    if (delta_deg > kMaxStepDeg)
+    {
+        next_deg = lag_angle_applied_deg_ + kMaxStepDeg;
+    }
+    else if (delta_deg < -kMaxStepDeg)
+    {
+        next_deg = lag_angle_applied_deg_ - kMaxStepDeg;
+    }
+    lag_angle_applied_deg_ = next_deg;
+    // 遥测/波形用的就是“实际生效值”，不是原始表值：两者不一致时以这里为准。
+    motion_lag_angle_deg_ = lag_angle_applied_deg_;
+}
+
+int32_t ClosedLoopController::effectiveLagAngleMilliDeg() const
+{
+    return static_cast<int32_t>(motion_lag_angle_deg_ * 1000.0f);
+}
+
+// ===========================================================================
+// 堵转 / 不转保护
+//
+// 为什么需要：自动整定会连续跑几十次运动，一旦电机被按住、相线松了、电流太小，
+// 固件仍然会“按规划发脉冲”，表面数据全对，实际什么都没动 —— 整定器会把它
+// 当成一次“跟随误差极大”的试验，把 PID 越调越凶。必须由编码器给出独立判据。
+//
+// 判据：命令速度 > 8RPM（确实在发脉冲）且连续 200ms 编码器原始角变化 < 2LSB。
+//   反例校验：20RPM 时 1ms 也有 6.5LSB，200ms 就是 1300LSB，不可能落在 2LSB 内。
+// 动作：停机、关脉冲、失能（避免持续灌电流发热），并置 FAULT_STALL_DETECTED；
+//       必须显式写 0x15F=1 才能清除。
+// ===========================================================================
+void ClosedLoopController::updateStallGuard(uint64_t now_ns)
+{
+    if (stall_detected_)
+    {
+        return;
+    }
+
+    const uint32_t now32 = static_cast<uint32_t>(now_ns);
+    const float command_rps = fast_abs(current_step_speed_) / static_cast<float>(getStepsPerRound());
+    const bool commanding = motion_running_ && (command_rps * 60.0f) >= kStallMinCommandRpm;
+    if (!commanding)
+    {
+        stall_armed_ = false;
+        return;
+    }
+
+    if (!stall_armed_)
+    {
+        stall_armed_ = true;
+        stall_last_raw_ = encoder_filtered_raw_;
+        stall_quiet_since_ns_ = now32;
+        return;
+    }
+
+    const int32_t raw_step = static_cast<int32_t>(encoder_filtered_raw_) -
+                             static_cast<int32_t>(stall_last_raw_);
+    if (raw_step > kStallQuietLsb || raw_step < -kStallQuietLsb)
+    {
+        stall_last_raw_ = encoder_filtered_raw_;
+        stall_quiet_since_ns_ = now32;
+        return;
+    }
+
+    if ((now32 - stall_quiet_since_ns_) < (kStallQuietMs * 1000000U))
+    {
+        return;
+    }
+
+    stall_detected_ = true;
+    stall_events_++;
+    printf("[STALL] no encoder motion for %lums while commanding %.1fRPM (raw=%u) -> stop + disable\r\n",
+           static_cast<unsigned long>(kStallQuietMs),
+           static_cast<double>(command_rps * 60.0f),
+           static_cast<unsigned>(encoder_filtered_raw_));
+    closed_loop_angle_mode_enabled_ = false;
+    motion_running_ = false;
+    stopMotion();
+    fault_monitor_.reportStall(true);
+    if (driver_ != nullptr && stall_auto_disable_)
+    {
+        driver_->setEnable(false);
+    }
+    syncProtocolTelemetry();
+}
+
+bool ClosedLoopController::isStallDetected() const
+{
+    return stall_detected_;
+}
+
+void ClosedLoopController::clearStall()
+{
+    stall_detected_ = false;
+    stall_armed_ = false;
+    fault_monitor_.reportStall(false);
+}
+
+void ClosedLoopController::setStallAutoDisable(bool enable)
+{
+    stall_auto_disable_ = enable;
+}
+
+uint32_t ClosedLoopController::getStallEvents() const
+{
+    return stall_events_;
+}
+
+
+
 void ClosedLoopController::updateExternalPulseChannel(uint64_t now_ns, float encoder_delta_deg)
 {
     // 注意：delta_ramp_ns 在主路径稍后才算，这里自己取一次，
     // 并限幅——首拍或长时间没进 rampUpdate 时不能拿一个巨量时间去补发。
     const uint64_t external_delta_ns = now_ns - motion_last_ramp_time_ns_;
-    // 跟随分支直接 return 了，主路径里那段更新 encoder_speed_rpm_ 的代码跑不到，
-    // 但闭环补偿的速度环要的就是它，所以在这里补一次（同一个 0.9/0.1 平滑）。
-    if (external_delta_ns > 0U && external_delta_ns <= 1000000ULL && encoder_ != nullptr)
-    {
-        const float dt = static_cast<float>(external_delta_ns) / 1.0e9f;
-        const float measured_rpm = (encoder_delta_deg / 360.0f) * (60.0f / dt);
-        encoder_speed_rpm_ = encoder_speed_rpm_ * 0.9f + measured_rpm * 0.1f;
-    }
+    (void)encoder_delta_deg;
+    // 实测转速现在由 refreshEncoderFeedback() -> updateSpeedEstimate() 统一更新，
+    // 跟随分支不再单独维护一份 0.9/0.1 低通（三份实现已经合并成一份）。
     runExternalPulseFollow(external_delta_ns);
     motion_last_ramp_time_ns_ = now_ns;
     syncProtocolTelemetry();
@@ -889,14 +1120,9 @@ void ClosedLoopController::updateExternalPulseChannel(uint64_t now_ns, float enc
 
 void ClosedLoopController::updateSettleStage(uint64_t now_ns, float encoder_delta_deg)
 {
-    // 沉降阶段也刷新一次实测转速，否则上位机的"即时转速"会停在进入沉降前的旧值上
-    const uint64_t settle_dt_ns = now_ns - motion_last_ramp_time_ns_;
-    if (settle_dt_ns > 0U && encoder_ != nullptr)
-    {
-        const float dt = static_cast<float>(settle_dt_ns) / 1.0e9f;
-        const float measured_rpm = (encoder_delta_deg / 360.0f) * (60.0f / dt);
-        encoder_speed_rpm_ = encoder_speed_rpm_ * 0.9f + measured_rpm * 0.1f;
-    }
+    // 沉降阶段的速度同样由 updateSpeedEstimate() 统一维护，
+    // 否则上位机的"即时转速"会停在进入沉降前的旧值上（旧实现为此单独补了一段低通）。
+    (void)encoder_delta_deg;
 
     const uint64_t settle_elapsed_ns = now_ns - motion_settle_start_ns_;
     const uint64_t settle_min_ns = static_cast<uint64_t>(STEP_SETTLE_MIN_US) * 1000ULL;
@@ -966,8 +1192,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         return;
     }
 
-    // ② 编码器快照 + 跟随误差 + 上一窗已发完步数记账
-    const float encoder_delta_deg = refreshEncoderFeedback();
+    // ② 编码器快照 + 速度估计 + 跟随误差 + 上一窗已发完步数记账
+    const float encoder_delta_deg = refreshEncoderFeedback(now_ns);
+    // ②b 堵转/不转保护：有脉冲在发、编码器却不动 —— 先停机失能，别让驱动一直灌电流
+    updateStallGuard(now_ns);
 
     // ③ 校准状态机（每拍驱动；HOMING/MOVING 阶段会反过来修饰速度规划）
     updateEncoderCalibration(encoder_filtered_raw_);
@@ -1023,49 +1251,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
     // 获取两次rampUpdate生成之间真实流逝的纳秒
     uint64_t delta_ramp_ns = now_ns - motion_last_ramp_time_ns_;
-    if (delta_ramp_ns > 0U && encoder_ != nullptr)
-    {
-        const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
-        const float measured_rpm = (encoder_delta_deg / 360.0f) * (60.0f / dt);
-        // 平滑计算电机的实际转速
-        encoder_speed_rpm_ = encoder_speed_rpm_ * 0.9f + measured_rpm * 0.1f;
-        // encoder_speed_rpm_ = measured_rpm;
-    }
 
-    // 【滞后角前馈】实时计算，供遥测（0x151）、网页「误差不计滞后角」和补偿段共用。
-    // 必须每拍都算：补偿段只在 closed_loop_compensation_enabled_ 为真时执行，
-    // 如果把计算放在那里，用户不勾闭环补偿时网页的滞后角就永远是 0。
-    //
-    // 【符号必须带方向】和 motion_follow_error_deg_ 同号：
-    //   正向运动（落后）：follow_error = -L  ->  滞后角也取 -L
-    //   反向运动（落后）：follow_error = +L  ->  滞后角也取 +L
-    // 这样两边同号，补偿段用 follow_error - lag_angle 才能在上两种情况下都得 0。
-    // 早期版本这里存绝对值，导致反向时 effective = +L + L = 2L，
-    // PID 输出过大的负修正直接把基础速度抵消掉，表现为“反向直接卡住”。
-    motion_lag_angle_deg_ = 0.0f;
-    if (lag_angle_.isFitted())
-    {
-        const float load_speed_abs = fast_abs(encoder_speed_rpm_);
-        const auto load_speed_u16 = static_cast<uint16_t>(
-            load_speed_abs > 65535.0f ? 65535.0f : load_speed_abs);
-        const float load_magnitude_deg =
-            static_cast<float>(lag_angle_.getLagAngleMilliDegrees(load_speed_u16)) / 1000.0f;
-        motion_lag_angle_deg_ = (encoder_speed_rpm_ >= 0.0f)
-            ? -load_magnitude_deg
-            : load_magnitude_deg;
-
-        // 【前馈信任度】0~100%，默认 100%。
-        // 滞后角不只与速度有关，还和实际负载有关：表是按某个标定负载拟合的，
-        // 负载变化时真实滞后角会偏离表值。信任度降到 50~70% 可以让前馈更保守，
-        // 把偏差交给 PID（代价是响应变慢），避免表值偏高时前馈过度、PID 反向修正。
-        motion_lag_angle_deg_ *= lag_angle_feedforward_ratio_;
-
-        // 【上限钳位】防止标定数据异常（或速度外推）导致前馈爆表。
-        // 5° 远大于实际滞后角量级（1200RPM 约 3°），只做安全网用。
-        constexpr float kMaxLagAngleCompDeg = 5.0f;
-        motion_lag_angle_deg_ = fast_clamp(motion_lag_angle_deg_,
-                                           -kMaxLagAngleCompDeg, kMaxLagAngleCompDeg);
-    }
+    // 【滞后角】每拍都算，供遥测（0x151）、网页「误差不计滞后角」和补偿段共用。
+    // 必须放在补偿开关之外：用户不勾闭环补偿时，网页上的滞后角显示也应该是对的。
+    updateLagAngleFeedforward(encoder_speed_rpm_ / 60.0f);
 
     if (closed_loop_angle_mode_enabled_)
     {
@@ -1081,130 +1270,106 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         return;
     }
 
-    // 【校准期间绝不补偿】约束放在执行处，而不是只信开关：
-    // EncoderCalibrator::start() 里先把 closed_loop_compensation_enabled_ 置 false，
-    // 但紧接着 setTargetAngleDeg(0) 归零又会把它置回 true（既有行为）；而校准期间
-    // 已经禁止主机写 0x107，于是整个校准过程它都是 true。
-    // 实测后果：comp_rps_peak = 0.59 rps、每段多发 ≈1.4 微步、整圈进给 +2.85%。
-    // 校准的每一段“真角”完全由脉冲数定义，所以只要校准在跑，补偿就不运行。
+    // ===================== 规划运动的闭环补偿 =====================
+    // 结构（2026-11 重写，修掉“改一点点速度环就抖/一起步就满速”）：
+    //
+    //   v_profile ──┬──────────────► + ──► v_ref ──► + ──► 限幅/斜率 ──► compensated_rps_
+    //               │                 ▲              ▲
+    //               │        pos_corr │     vel_corr │
+    //               │     (位置环，只 │   (速度环，只 │
+    //               │      出 ±30%)  │    做阻尼)    │
+    //   滞后角 ─────┴─► 误差剔除 ──► 位置 PID         │
+    //                                    v_meas ──────┘
+    //
+    // 三条硬约束（这是本次修复的核心，不是调参能解决的）：
+    //   1) 两个环的输出各自限幅到“当前规划速度的百分之几十”，并且 setOutputLimit()
+    //      会同时收紧积分限幅 —— 任何一组错误增益都不可能再把速度指令顶穿；
+    //   2) 速度环在“沿运动方向的有符号速度”域里工作。旧代码用“速度大小 base（恒正）”
+    //      去减“带符号实测速度”，反向时误差凭空多出 2 倍速度，反向补偿一直是错的；
+    //   3) 滞后角先从误差里剔除再进 PID。滞后角是步进电机的物理必然（转子必须落后
+    //      一个力矩角才拖得动负载），不是丢步；把它当误差去追会持续多发脉冲，
+    //      表现为“越走越超前 / 停不下来”。
     if (closed_loop_compensation_enabled_ && motion_running_ && !closed_loop_angle_mode_enabled_ &&
         calibration_stage_ == CALIBRATION_IDLE &&
         encoder_ != nullptr && delta_ramp_ns > 0U && motion_max_step_s_ > 0.0f)
     {
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
+        const float direction = (motion_direction_ >= 0) ? 1.0f : -1.0f;
+        const uint32_t micro_steps_per_round = getStepsPerRound();
+        const float max_rps = motion_max_rpm_ / 60.0f;
+        const float profile_rps = current_step_speed_ / static_cast<float>(micro_steps_per_round);
+        // 把实测速度投影到“运动方向”上：正向就是它自己，反向取反。
+        // 之后所有量（参考、误差、修正）都在同一个符号域里，不再需要乘 direction。
+        const float measured_along_rps = (encoder_speed_rpm_ / 60.0f) * direction;
 
-        // 【阶段 2：滞后角前馈】电机轴永远落后于命令脉冲，这个滞后角就是滞后角，
-        // 是物理必然，不应该被 PID 当成误差去“追”——追不上会让积分项无限累积，
-        // 最后表现为脉冲暴增、电机停摆。
-        //
-        // 做法：用 lag_angle_ 表（按速度拟合的幂律模型）算出“理论上应该落后多少”，
-        // 从跟随误差里减掉，PID 只处理“超出预期的偏差”。
-        //
-        // 符号约定：
-        //   motion_follow_error_deg_ = 实际 - 命令（正向落后时为负，反向落后时为正）
-        //   motion_lag_angle_deg_   = 已带方向，与 follow_error 同号
-        //   所以这里用「减」：正向 -L - (-L) = 0，反向 +L - (+L) = 0。
+        // ---------- 1) 剔除物理滞后角 ----------
+        // 符号：motion_lag_angle_deg_ 与 motion_follow_error_deg_ 同号（见 updateLagAngleFeedforward）。
         const float effective_error_deg = motion_follow_error_deg_ - motion_lag_angle_deg_;
-
-        // 残差死区：滞后角模型不可能完全准（拟合误差 + 机械差异），
-        // 剩下的零点几度不该让积分项持续爬升。死区外的部分才送进 PID。
-        constexpr float kResidualDeadbandDeg = 0.05f;
-        float pid_error_deg = 0.0f;
-        if (fast_abs(effective_error_deg) >= kResidualDeadbandDeg)
+        // 残差死区：表值不可能完全准（拟合误差 + 负载差异 + 加减速时滞后角本来就更小），
+        // 死区外的部分才进 PID。死区太小（旧值 0.05°）时，0.1° 的表误差就会让 I 项
+        // 慢慢爬、最后多走一截；0.15° 约等于 27 个编码器 LSB，远高于噪声。
+        constexpr float kResidualDeadbandDeg = 0.15f;
+        float pid_error_deg = effective_error_deg;
+        if (pid_error_deg > kResidualDeadbandDeg)
         {
-            pid_error_deg = effective_error_deg -
-                (effective_error_deg > 0.0f ? kResidualDeadbandDeg : -kResidualDeadbandDeg);
+            pid_error_deg -= kResidualDeadbandDeg;
+        }
+        else if (pid_error_deg < -kResidualDeadbandDeg)
+        {
+            pid_error_deg += kResidualDeadbandDeg;
+        }
+        else
+        {
+            pid_error_deg = 0.0f;
         }
 
-        // 位置跟随误差为正时表示实际超前，应该减速；取反后送入位置 PID。
-        const float position_reference_rps = position_pid_.update(-pid_error_deg / 360.0f, dt);
-        const float measured_motion_rps = encoder_speed_rpm_ / 60.0f;
-        // 总期望速度 = 基础速度 + 位置环修正量
-        // 【修复 BUG 1】原来是 static const，只初始化一次：
-        // 改细分（32→64→128）后补偿量的换算比例就永远停在第一次那个值上。
-        const uint32_t micro_steps_per_round = getStepsPerRound();
-        const float base_speed_rps = current_step_speed_ / static_cast<float>(micro_steps_per_round);
-        const float total_ref_rps = base_speed_rps + position_reference_rps;
-        const float velocity_error_rps = total_ref_rps - measured_motion_rps;
-        const float velocity_correction_rps = velocity_pid_.update(velocity_error_rps, dt);
-        const float max_rps = motion_max_rpm_ / 60.0f;
+        // ---------- 2) 位置环：只输出“沿运动方向的附加速度” ----------
+        // 上限跟着规划速度走：低速时给 15RPM 的余量，高速时最多 30%。
+        const float pos_limit = fast_clamp(profile_rps * 0.30f, 0.25f, max_rps * 0.50f);
+        position_pid_.setOutputLimit(pos_limit);
+        float pos_corr = position_pid_.update(-pid_error_deg / 360.0f, dt);
+        pos_corr = fast_clamp(pos_corr, -pos_limit, pos_limit);
 
-#ifdef CLAMP_FOC_SPEED
-        const float unconstrained_rps = fast_clamp(velocity_correction_rps,
-                                                               -max_rps,
-                                                               max_rps);
-        const float directed_rps = unconstrained_rps * target_direction < 0.0f
-            ? 0.0f
-            : unconstrained_rps;
-        const float accel_limit_rps2 = angle_accel_rpm_s_ / 60.0f;
-        const float previous_rps = motion_speed_rpm_ / 60.0f;
-        const float max_delta_rps = accel_limit_rps2 * dt;
-        const float desired_rps = fast_clamp(directed_rps,
-                                             previous_rps - max_delta_rps,
-                                             previous_rps + max_delta_rps);
-#else
-#endif
+        // ---------- 3) 速度环：只做阻尼 ----------
+        // 【微分先行】D 用实测加速度（-kd·dv/dt），不跟着 v_ref 的台阶跳。
+        const float vel_limit = fast_clamp(profile_rps * 0.20f, 0.15f, max_rps * 0.35f);
+        velocity_pid_.setOutputLimit(vel_limit);
+        const float v_ref_along_rps = profile_rps + pos_corr;
+        const float measured_accel_rps2 = (measured_along_rps - last_measured_along_rps_) / dt;
+        last_measured_along_rps_ = measured_along_rps;
+        float vel_corr = velocity_pid_.update(v_ref_along_rps - measured_along_rps, dt, 1.0f,
+                                             measured_accel_rps2, true);
+        vel_corr = fast_clamp(vel_corr, -vel_limit, vel_limit);
 
-        // if (now_ns % 1000 == 0)
-        //     printf("motion_follow_error_deg_: %f, position_reference_rps: %f, "
-        //            "measured_motion_rps: %f, commanded_speed_rps: %f, velocity_error_rps: %f, velocity_correction_rps: %f "
-        //            "added_rps: %f, "
-        //            // "correction_rps: %f, correction_step_s: %f, max_correction_step_s: %f, "
-        //            "limited_correction_step_s:%f, "
-        //            "current_step_speed_:%f \n",
-        //            motion_follow_error_deg_, position_reference_rps,
-        //            measured_motion_rps, base_speed_rps, velocity_error_rps, velocity_correction_rps,
-        //            added_rps,
-        //            // correction_rps, correction_step_s, max_correction_step_s,
-        //            limited_correction_step_s,
-        //            current_step_speed_);
+        // ---------- 4) 总修正限幅 ----------
+        // 即使两个环同时顶满，也不超过规划速度的 1.5 倍；而且不允许把速度拉成反向
+        // （emitSteps 里用的是“基础速度 + 修正”的模，负过头会变成反向走）。
+        const float corr_limit = fast_clamp(profile_rps * 0.50f, 0.35f, max_rps * 0.60f);
+        float corr_rps = fast_clamp(pos_corr + vel_corr, -corr_limit, corr_limit);
+        if (profile_rps + corr_rps < 0.0f)
+        {
+            corr_rps = -profile_rps;
+        }
 
-        // current_step_speed_ = fast_clamp(current_step_speed_ + limited_correction_step_s,
-        //                                  0.0f,
-        //                                  motion_max_step_s_ * 2);
-        // current_step_speed_ = current_step_speed_ + velocity_correction_rps * target_direction * static_cast<float>(micro_steps_per_round);
-
-
-        // const float unconstrained_rps = fast_clamp(velocity_correction_rps,
-        //                                            -max_rps,
-        //                                            max_rps);
-
-        // TODO 命令的目标角度本身就有问题，先修复那个
-        // const float directed_rps =  velocity_correction_rps * target_direction < 0.0f
-        //     ? 0.0f
-        //     : velocity_correction_rps;
-        // 【关键：乘运动方向】base_speed_rps 是速度**大小**（永远正），而 position_reference_rps /
-        // velocity_correction_rps 是带物理方向的。emitSteps 里用 |base + comp| 算步数，
-        // 所以必须把 comp 转成“沿运动方向的大小增量”：
-        //   正向(dir=+1)：落后 -> PID 正 -> comp 正 -> base+comp 增大 -> 加速 ✓
-        //   反向(dir=-1)：落后 -> PID 负 -> comp = 负 x (-1) = 正 -> 同样增大 -> 加速 ✓
-        // 不乘的话反向会变成减速：实测反向时转速只有 20RPM（应该 1200+）、
-        // 跟随误差挂到 +14°，看起来像卡住。
-        const float compensated_rps =
-            (position_reference_rps + velocity_correction_rps) *
-            static_cast<float>(motion_direction_);
-
-        // 【修复 BUG 4】必须限幅。原来 compensated_rps_ = directed_rps 没有任何上限，
-        // PID 一冲高就是每窗几十上百步，电机脉冲太多直接停摆。
-        // max_rps 已在上面算好，限到“电机最高转速”之内，再叠一层加速度限制。
-        const float limited_rps = fast_clamp(compensated_rps, -max_rps, max_rps);
+        // 斜率限制：补偿量本身也不能一拍跳变（否则脉冲频率会突跳，听感/电流都不对）。
         const float max_delta_rps = (angle_accel_rpm_s_ / 60.0f) * dt;
-        const float previous_rps = compensated_rps_;
-        compensated_rps_ = fast_clamp(limited_rps, previous_rps - max_delta_rps, previous_rps + max_delta_rps);
+        compensated_rps_ = fast_clamp(corr_rps,
+                                      compensated_rps_ - max_delta_rps,
+                                      compensated_rps_ + max_delta_rps);
 
         // 【诊断快照 [VLOOP]】规划运动补偿路径（与角度模式同格式，方便对比）。
-        // 这条路径里速度环没有 p_scale（角度模式才有 0.01），所以 P 分量直接是 kp*err。
         {
             auto& d = vloop_;
-            d.err_deg = motion_follow_error_deg_;
-            d.ref_rps = total_ref_rps;
-            d.meas_rps = measured_motion_rps;
-            d.vel_err_rps = velocity_error_rps;
-            d.pos_out_rps = position_reference_rps;
-            d.vel_p = velocity_pid_.kp * velocity_error_rps;
+            d.err_deg = effective_error_deg;
+            d.ref_rps = v_ref_along_rps;
+            d.meas_rps = measured_along_rps;
+            d.vel_err_rps = v_ref_along_rps - measured_along_rps;
+            d.pos_out_rps = pos_corr;
+            d.vel_p = velocity_pid_.kp * d.vel_err_rps;
             d.vel_i = velocity_pid_.ki * velocity_pid_.integral;
             d.vel_d = velocity_pid_.kd * velocity_pid_.filtered_derivative;
             d.out_rps = compensated_rps_;
+            d.prof_vel_rps = profile_rps;
             d.step_speed_s = current_step_speed_;
             d.stamp++;
         }
@@ -1259,6 +1424,9 @@ void ClosedLoopController::stopMotion()
     motion_speed_rpm_ = 0.0f;
     encoder_speed_rpm_ = 0.0f;
     target_velocity_rps_ = 0.0f;
+    // 速度估计的滑窗 + 滞后角平滑状态一并清掉：否则下一次启动的前 1ms 里，
+    // 速度窗里还混着上一次运动的样本，速度环会先被"上一局的残留速度"骗一下。
+    resetSpeedEstimate();
     motion_steps_emitted_ = 0U;
     motion_steps_emitted_signed = 0U;
     motion_steps_delivered_signed = 0;

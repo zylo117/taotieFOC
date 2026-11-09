@@ -166,6 +166,11 @@
             if (frame.reg === CUSTOM_REGS.ENCODER_FAULT) state.encoderFault = frame.value !== 0;
             if (frame.reg === CUSTOM_REGS.MAGNETIC_FAULT) state.magneticFault = frame.value !== 0;
             if (frame.reg === CUSTOM_REGS.OUTPUT_STOP) state.outputStopped = frame.value !== 0;
+            if (frame.reg === CUSTOM_REGS.FAULT_STATUS) {
+                state.faultFlags = frame.value >>> 0;
+                // bit3 = 堵转锁存：固件已停机 + 失能，必须写 0x15F=1 才能清
+                state.stallDetected = (state.faultFlags & 0x08) !== 0;
+            }
             if (frame.reg === CUSTOM_REGS.ENCODER_RAW) state.encoderRaw = frame.value;
             if (frame.reg === CUSTOM_REGS.ENCODER_ANGLE_MDEG) {
                 state.encoderAngleDeg = (frame.value | 0) / 1000;

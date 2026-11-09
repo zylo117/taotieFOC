@@ -346,18 +346,18 @@
             // 【只下发规划运动/外部跟随那一组】故意不把角度模式的六个寄存器加进来：
             // 自动整定/应用默认值的结果属于规划运动回路，写它会误改角度模式的参数。
             // 角度增益的持久化由 0x154「写入参数到 Flash」负责（固件会两组一起存）。
-            // 【单位】输入框里填的是“实际增益”（默认 60.0 就是增益 60），
-            // 发送时乘 1000 变成固件口径。上限和固件 clampPidGain 保持一致：
-            //   比例/微分 实际 <= 30，积分 实际 <= 3
-            // 以前这里写的是 30000/3000（当成“已 ×1000 的口径”），
-            // 导致用户填 9000 也直接发 9,000,000，固件再钳到 30，看起来像“填 9000 变 30000”。
+            // 【单位】输入框里填的是“实际增益”（默认 60 就是增益 60），发送时乘 1000
+            // 变成固件口径。上限和固件 parameter_router.cpp 的 maxPidGain() 严格一致：
+            //   位置 Kp/Ki <= 1000，位置 Kd <= 100；速度 Kp/Ki <= 10，速度 Kd <= 1。
+            // 旧版这里写的是 30000/3000（把“实际增益”当成了“×1000 的口径”），
+            // 于是用户填 60 会被固件钳成 30、填 20 的 Ki 被钳成 3 —— 网页值与生效值不符。
             const registers = [
-                [CUSTOM_REGS.POSITION_KP, params.posKp, 30000],
-                [CUSTOM_REGS.POSITION_KI, params.posKi, 3000],
-                [CUSTOM_REGS.POSITION_KD, params.posKd, 30000],
-                [CUSTOM_REGS.VELOCITY_KP, params.velKp, 30000],
-                [CUSTOM_REGS.VELOCITY_KI, params.velKi, 3000],
-                [CUSTOM_REGS.VELOCITY_KD, params.velKd, 30000]
+                [CUSTOM_REGS.POSITION_KP, params.posKp, 1000],
+                [CUSTOM_REGS.POSITION_KI, params.posKi, 1000],
+                [CUSTOM_REGS.POSITION_KD, params.posKd, 100],
+                [CUSTOM_REGS.VELOCITY_KP, params.velKp, 10],
+                [CUSTOM_REGS.VELOCITY_KI, params.velKi, 10],
+                [CUSTOM_REGS.VELOCITY_KD, params.velKd, 1]
             ];
             // 【必须等 ACK】原来用 writeRegister（不等确认），看校准表后 USB 缓冲
             // 被 dump 流量占着时会丢写，导致 PID 没更新而用户毫无感知。
@@ -369,12 +369,12 @@
         async function writePidParameter(input) {
             if (!state.connected || state.autoTuneActive) return;
             const registerByInput = {
-                posKp: [CUSTOM_REGS.POSITION_KP, 30000],
-                posKi: [CUSTOM_REGS.POSITION_KI, 3000],
-                posKd: [CUSTOM_REGS.POSITION_KD, 30000],
-                velKp: [CUSTOM_REGS.VELOCITY_KP, 30000],
-                velKi: [CUSTOM_REGS.VELOCITY_KI, 3000],
-                velKd: [CUSTOM_REGS.VELOCITY_KD, 30000],
+                posKp: [CUSTOM_REGS.POSITION_KP, 1000],
+                posKi: [CUSTOM_REGS.POSITION_KI, 1000],
+                posKd: [CUSTOM_REGS.POSITION_KD, 100],
+                velKp: [CUSTOM_REGS.VELOCITY_KP, 10],
+                velKi: [CUSTOM_REGS.VELOCITY_KI, 10],
+                velKd: [CUSTOM_REGS.VELOCITY_KD, 1],
                 // 位置环超前系数 α：输入框里填的是 α 本身（1.0~5.0），发送时同样 ×1000
                 posLeadAlpha: [CUSTOM_REGS.POSITION_LEAD_ALPHA, 5]
             };

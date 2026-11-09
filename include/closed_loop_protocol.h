@@ -182,6 +182,14 @@ enum Tmc2209CustomExtensionRegister
 
     // R/W：诊断用——旁路磁编码器非线性校准表（0=正常查表，1=直接返回原始值）。
     // 用途：做“查表 / 不查表”的 A/B 对比，判断某个角度误差是不是校准表引入的。
+
+    // ===== 堵转/不转保护（自动整定与无人值守测试的安全依据）=====
+    // 0x15D RO：1 = 已判定堵转（已停机 + 失能）；用 0x15F=1 清除后才能再启动
+    TMC2209_EXT_PARAM_STALL_DETECTED = 0x15DU,
+    // 0x15E RO：累计堵转次数（掉电清零）
+    TMC2209_EXT_PARAM_STALL_EVENTS = 0x15EU,
+    // 0x15F WO：写 1 清除堵转锁存（同时解除 output_stopped_）
+    TMC2209_EXT_PARAM_STALL_CLEAR = 0x15FU,
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -245,8 +253,8 @@ private:
     bool readOfficialRegister(uint8_t reg, uint32_t* value) const;
 
     ClosedLoopDriverProtocolConfig config_;
-    // 扩展参数表长度：覆盖 0x100 ~ 0x15C，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x15CU - 0x100U + 1U;
+    // 扩展参数表长度：覆盖 0x100 ~ 0x15F，新增寄存器时同步这个常量
+    static constexpr uint16_t kCustomParameterCount = 0x15FU - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

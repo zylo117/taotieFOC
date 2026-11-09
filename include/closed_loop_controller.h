@@ -90,7 +90,10 @@ public:
     {
         FAULT_ENCODER_READ_FAILED = 1UL << 0,
         FAULT_MAGNETIC_FIELD_ALARM = 1UL << 1,
-        FAULT_OUTPUT_STOPPED = 1UL << 2
+        FAULT_OUTPUT_STOPPED = 1UL << 2,
+        // 有脉冲命令、编码器却长时间不动：堵转 / 相线没接好 / 电流太小 / 被按住。
+        // 由 updateStallGuard() 置位，停机并失能；清除必须显式写 0x15F=1。
+        FAULT_STALL_DETECTED = 1UL << 3
     };
 
     ClosedLoopController();
@@ -210,6 +213,12 @@ public:
 
     // 读取目标位置步数。
     int32_t getTargetSteps() const;
+    // 堵转状态：置位后 stopMotion + 失能，必须写 0x15F=1 清除才能再启动。
+    bool isStallDetected() const;
+    void clearStall();
+    // 启用/关闭“堵转自动失能”（默认开；整定脚本会在每个试验结束后自己失能）。
+    void setStallAutoDisable(bool enable);
+    uint32_t getStallEvents() const;
     float getEncoderZero() const;
     void setEncoderZero(float zero_angle);
     float getEncoderFilteredAngle() const;
@@ -248,7 +257,16 @@ private:
     // ExternalPulseFollower 尚未抽成独立类之前，Phase 0 先把 rampUpdate 里
     // 三段边界最清晰的逻辑抽成成员函数。后续阶段会把它们整体搬进各自的模块。
     void collectExternalPulseCommand();
-    float refreshEncoderFeedback();
+    float refreshEncoderFeedback(uint64_t now_ns);
+    // 速度估计：固定时间窗上的滑窗差分（见实现处注释，替代每拍 1 LSB 差分 + 0.9/0.1 低通）
+    float updateSpeedEstimate(uint64_t now_ns);
+    void resetSpeedEstimate();
+    // 滞后角的平滑与限速：表值不得随速度噪声/方向抖动直接灌进 PID
+    void updateLagAngleFeedforward(float measured_rps);
+    // 堵转/不转保护：有脉冲在发、轴却长时间不动就停机失能
+    void updateStallGuard(uint64_t now_ns);
+    // 实际生效的滞后角前馈量（毫度，已带方向，正=与跟随误差同号）
+    int32_t effectiveLagAngleMilliDeg() const;
     void updateExternalPulseChannel(uint64_t now_ns, float encoder_delta_deg);
     // 沉降收尾：脉冲发完 ≠ 轴到位，等编码器连续若干拍不动或超时
     void updateSettleStage(uint64_t now_ns, float encoder_delta_deg);
@@ -350,6 +368,26 @@ private:
     volatile bool motion_paused_;
     volatile float motion_speed_rpm_;
     volatile float encoder_speed_rpm_;
+    // ===== 速度估计（滑窗差分）=====
+    // 旧估计是「相邻两拍角差 / dt」再 0.9/0.1 低通。问题不在低通，而在量化：
+    // 编码器 1 LSB = 0.0055°，50us 内 1 LSB 就是 110°/s = 18.3RPM。低通只能压
+    // RMS，压不掉这个"台阶"，还把群延迟做到 1ms 量级，速度环永远在追一个既滞后又
+    // 台阶化的量 —— 这是"改一点点就抖"的另一半原因。
+    // 现在在约 1ms 的固定窗口上做差分：量化按窗口长度缩小（18.3 -> 0.9RPM），
+    // 群延迟只有半个窗口（0.5ms）而且是线性的，速度环才可以按它整定。
+    static constexpr uint16_t kSpeedWindowTicks = 20U;   // 20 x 50us = 1ms
+    float speed_angle_ring_[kSpeedWindowTicks] = {};
+    uint32_t speed_time_ring_[kSpeedWindowTicks] = {};
+    uint16_t speed_ring_index_ = 0U;
+    uint16_t speed_ring_count_ = 0U;
+    // 滞后角表用的更慢的速度（滞后角本身是慢变量，不需要 20kHz 更新）
+    volatile float lag_angle_speed_rpm_ = 0.0f;
+    // 滞后角的一阶平滑 + 变化率限幅后的“实际生效值”（度，已带方向）
+    volatile float lag_angle_applied_deg_ = 0.0f;
+    // 速度环 D 项用的上一拍“沿运动方向的速度”
+    float last_measured_along_rps_ = 0.0f;
+    // 角度模式速度环 D 项用的上一拍实测速度（与规划路径分开，切换模式时不会串）
+    float last_angle_mode_measured_rps_ = 0.0f;
     volatile float motion_position_deg_;
     volatile float motion_follow_error_deg_;
     volatile float motion_commanded_travel_deg_;
@@ -463,6 +501,20 @@ private:
     // 会把 RMS 抬到几十度，完全淹没真实跟随性能（实测短行程评分 58.7°、全场景 104.5°）。
     // 换向时设为 kTurnaroundSkipRamps，每拍递减到 0 后恢复采样。
     uint32_t motion_turnaround_skip_ramps_ = 0U;
+
+    // ===== 堵转/不转保护 =====
+    // 判据：命令速度足够大（真的在发脉冲）且编码器原始角在 N ms 内几乎不动。
+    // 阈值必须高于“静止时编码器抖动”，又低于最慢的正常转动：
+    // 20RPM 时 1ms 也有 6.5 个 LSB，所以“连续 200ms |Δraw| < 2 LSB”只可能是真的没动。
+    static constexpr uint32_t kStallQuietMs = 200U;
+    static constexpr int32_t kStallQuietLsb = 2;
+    static constexpr float kStallMinCommandRpm = 8.0f;
+    volatile bool stall_detected_ = false;
+    volatile uint32_t stall_events_ = 0U;
+    volatile bool stall_auto_disable_ = true;
+    uint32_t stall_quiet_since_ns_ = 0U;
+    uint16_t stall_last_raw_ = 0U;
+    bool stall_armed_ = false;
 
     // 滞后角前馈信任度（0.0~1.0）。
     // 滞后角只与速度有关是个简化假设：真实滞后角还取决于负载大小，而本方案

@@ -44,7 +44,7 @@
             [CUSTOM_REGS.RUN_CURRENT_A, ['0x0102', 'RUN_CURRENT_A', '运行电流，单位 A × 1000']],
             [CUSTOM_REGS.HOLD_CURRENT_A, ['0x0103', 'HOLD_CURRENT_A', '保持电流，单位 A × 1000']],
             [CUSTOM_REGS.CLOSED_LOOP_ENABLE, ['0x0107', 'CLOSED_LOOP_ENABLE', '闭环使能']],
-            [CUSTOM_REGS.FAULT_STATUS, ['0x0108', 'FAULT_STATUS', '故障位图：bit0 编码器，bit1 磁场，bit2 停输出']],
+            [CUSTOM_REGS.FAULT_STATUS, ['0x0108', 'FAULT_STATUS', '故障位图：bit0 编码器，bit1 磁场，bit2 停输出，bit3 堵转']],
             [CUSTOM_REGS.ENCODER_FAULT, ['0x0109', 'ENCODER_FAULT', '编码器故障']],
             [CUSTOM_REGS.MAGNETIC_FAULT, ['0x010A', 'MAGNETIC_FAULT', '磁场报警']],
             [CUSTOM_REGS.OUTPUT_STOP, ['0x010B', 'OUTPUT_STOP', '输出已停止']],
@@ -350,6 +350,16 @@
                 document.getElementById('tabExtFollowBtn').addEventListener('click', () => switchWorkTab('extfollow'));
             document.getElementById('readAllBtn').addEventListener('click', readAllConfig);
             document.getElementById('lagAngleCalibrationBtn').addEventListener('click', openLagAngleCalibration);
+            document.getElementById('clearStallBtn').addEventListener('click', async () => {
+                if (!state.connected) return;
+                try {
+                    await writeRegisterAndWaitAck(CUSTOM_REGS.STALL_CLEAR, 1);
+                    appendTuneLog('已清除堵转锁存（0x15F=1）');
+                    await refreshStallStatus();
+                } catch (error) {
+                    appendTuneLog(`清除堵转失败：${error.message}`);
+                }
+            });
             document.getElementById('closeLagAngleDialogBtn').addEventListener('click', () => {
                 document.getElementById('lagAngleDialog').close();
             });

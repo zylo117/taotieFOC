@@ -11,6 +11,7 @@ namespace
     constexpr uint32_t kFaultEncoderReadFailed = 1UL << 0;
     constexpr uint32_t kFaultMagneticFieldAlarm = 1UL << 1;
     constexpr uint32_t kFaultOutputStopped = 1UL << 2;
+    constexpr uint32_t kFaultStallDetected = 1UL << 3;
 }
 
 TelemetryReporter::TelemetryReporter(ClosedLoopController& owner) : owner_(owner)
@@ -38,6 +39,11 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
     if (c.fault_monitor_.outputStopped())
     {
         fault_flags |= kFaultOutputStopped;
+    }
+    // 堵转是“控制器自己判定”的故障，不在 FaultMonitor 的由来位里，单独补一位。
+    if (c.stall_detected_)
+    {
+        fault_flags |= kFaultStallDetected;
     }
 
     if (slot == TelemetryScheduler::Slot::kSlow)

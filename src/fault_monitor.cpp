@@ -21,9 +21,9 @@ void FaultMonitor::reportEncoderFault(bool active)
         owner_.driver_->setEnable(false);
         output_stopped_ = true;
     }
-    else if (!active && !magnetic_fault_active_)
+    else if (!active && !magnetic_fault_active_ && !stall_active_)
     {
-        // 两路故障都消失了才解除封锁：先恢复的那一路不能单独放行
+        // 所有故障都消失了才解除封锁：先恢复的那一路不能单独放行
         output_stopped_ = false;
     }
 }
@@ -36,7 +36,24 @@ void FaultMonitor::reportMagneticFieldAlarm(bool active)
         owner_.driver_->setEnable(false);
         output_stopped_ = true;
     }
-    else if (!active && !encoder_fault_active_)
+    else if (!active && !encoder_fault_active_ && !stall_active_)
+    {
+        output_stopped_ = false;
+    }
+}
+
+void FaultMonitor::reportStall(bool active)
+{
+    stall_active_ = active;
+    if (active)
+    {
+        if (owner_.driver_ != nullptr)
+        {
+            owner_.driver_->setEnable(false);
+        }
+        output_stopped_ = true;
+    }
+    else if (!encoder_fault_active_ && !magnetic_fault_active_)
     {
         output_stopped_ = false;
     }

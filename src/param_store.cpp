@@ -10,7 +10,8 @@
 static const uint32_t kParamFlashBase = 0x0801E000U;
 static const uint32_t kParamMagic = 0x54414F54U;   // 'TAOT'
 static const uint16_t kParamVersionV1 = 1U;
-static const uint16_t kParamVersion = 2U;
+static const uint16_t kParamVersionV2 = 2U;
+static const uint16_t kParamVersion = 3U;
 
 // v1 布局：只是为了还能读出旧记录做迁移用。**永远不要拿它写 Flash**。
 // v2 只是在末尾追加了 6 个角度模式增益，所以 v1 的字段偏移完全不变。
@@ -74,6 +75,22 @@ namespace
         out->angle_velocity_ki = 0U;
         out->angle_velocity_kd = 0U;
     }
+
+    // v3 的 PID 起手值（与实际增益一致，×1000 存储）。
+    // 【为什么迁移要直接重置】v3 把速度环的口径从“×0.01 的隐藏倍率”改成真实增益：
+    // 旧记录里的 30 在新口径下是 30（设计值 0.3），大 100 倍；位置环的输入也从
+    // “度×0.01”改成了“圈”，旧数值同样不再对应任何东西。把旧值按比例换算只会
+    // 把“用户当时没调好的数”一起搬过来，还会让人以为它有意义。
+    // 所以：显式重置为安全默认值，并打印一行提示 —— 反正接下来就要重新整定。
+    void fillPidDefaultsV3(PersistedMotorParams* out)
+    {
+        out->position_kp = 60000U;   // 60
+        out->position_ki = 10000U;   // 10
+        out->position_kd = 0U;       // 0
+        out->velocity_kp = 300U;     // 0.3
+        out->velocity_ki = 0U;       // 0
+        out->velocity_kd = 0U;       // 0
+    }
 }
 
 bool param_store_load(PersistedMotorParams* out)
@@ -105,29 +122,46 @@ bool param_store_load(PersistedMotorParams* out)
         return true;
     }
 
-    if (flash_params->version == kParamVersionV1)
+    // v1 / v2 -> v3：字段偏移完全一致，先原样搬过来，再把 PID 重置成新口径的默认值。
+    if (flash_params->version == kParamVersionV2 || flash_params->version == kParamVersionV1)
     {
-        if (flash_params_v1->checksum != computeChecksumV1(*flash_params_v1))
+        if (flash_params->version == kParamVersionV1 &&
+            flash_params_v1->checksum != computeChecksumV1(*flash_params_v1))
         {
             return false;
         }
-        // 迁移：v1 的字段偏移与 v2 相同，逐个搬过去；角度增益用推荐起步值。
+        if (flash_params->version == kParamVersionV2 &&
+            flash_params->checksum != computeChecksum(*flash_params))
+        {
+            return false;
+        }
+
         out->version = kParamVersion;
-        out->microsteps = flash_params_v1->microsteps;
-        out->run_current_ma = flash_params_v1->run_current_ma;
-        out->hold_current_ma = flash_params_v1->hold_current_ma;
-        out->step_pulse_ns = flash_params_v1->step_pulse_ns;
+        out->microsteps = flash_params->microsteps;
+        out->run_current_ma = flash_params->run_current_ma;
+        out->hold_current_ma = flash_params->hold_current_ma;
+        out->step_pulse_ns = flash_params->step_pulse_ns;
         out->angle_max_rpm = 0U;
         out->angle_accel_rpm_s = 0U;
-        out->position_kp = flash_params_v1->position_kp;
-        out->position_ki = flash_params_v1->position_ki;
-        out->position_kd = flash_params_v1->position_kd;
-        out->velocity_kp = flash_params_v1->velocity_kp;
-        out->velocity_ki = flash_params_v1->velocity_ki;
-        out->velocity_kd = flash_params_v1->velocity_kd;
-        fillAngleDefaults(out);
-        printf("[PARAM] migrated v1 -> v2: motion gains kept, angle-mode gains = defaults "
-               "(tune them, then press save)\r\n");
+        fillPidDefaultsV3(out);
+        if (flash_params->version == kParamVersionV1)
+        {
+            // v1 没有角度字段：它们本来就不再用，统一写 0
+            fillAngleDefaults(out);
+            printf("[PARAM] migrated v1 -> v3: PID reset to new scale (tune again), "
+                   "angle fields unused\r\n");
+        }
+        else
+        {
+            out->angle_position_kp = 0U;
+            out->angle_position_ki = 0U;
+            out->angle_position_kd = 0U;
+            out->angle_velocity_kp = 0U;
+            out->angle_velocity_ki = 0U;
+            out->angle_velocity_kd = 0U;
+            printf("[PARAM] migrated v2 -> v3: velocity-loop gain scale changed "
+                   "(old values were 100x), PID reset to safe defaults -- re-tune, then save\r\n");
+        }
         return true;
     }
 

@@ -126,6 +126,12 @@
             }
             state.tuneTrialActive = true;
             state.tuneTrialStage = '启动固件评分采集';
+            // 【每个试验都从干净状态开始】
+            //   0x15F=1 清堵转锁存（上一个试验如果卡住，锁存会让 startMotion 直接拒绝）
+            //   0x124=1 显式使能（EN 低有效，固件里 setEnable(true) 会拉低）
+            // 试验结束（无论成功/超时）在 finally 里 0x125=1 失能：驱动不能一直灌电流发热。
+            await writeRegister(CUSTOM_REGS.STALL_CLEAR, 1).catch(() => {});
+            await writeRegister(0x124, 1);
             const motionCompleted = waitForTuneMotionCompletion(timeoutMs);
             let score = Number.POSITIVE_INFINITY;
             try {
@@ -136,6 +142,12 @@
                 state.tuneTrialStage = '等待固件运行状态与完成状态';
                 appendTuneLog(`${profile.label}：${isAlternating ? `${profile.turns.toFixed(2)} 圈/方向，往返` : `${profile.turns.toFixed(2)} 圈`}，${profile.maxRpm.toFixed(0)} RPM，${profile.accelRpmS.toFixed(0)} RPM/s`);
                 await motionCompleted;
+                // 【堵转判据】试验“跑完了”但编码器全程没动 = 堵转/线松/电流太小。
+                // 这种数据不能拿去评分，否则整定器会把 PID 越调越凶。
+                const stall = await readRegisterValue(CUSTOM_REGS.STALL_DETECTED, 750, 0).catch(() => 0);
+                if ((stall | 0) !== 0) {
+                    throw new Error('固件判定堵转（0x015D=1），已停机失能；请检查机械/接线后点“清除堵转锁存”');
+                }
                 state.tuneTrialStage = '读取固件评分样本数 0x0133';
                 const sampleCount = await readRegisterValue(CUSTOM_REGS.PID_TUNE_SAMPLE_COUNT);
                 state.tuneTrialStage = '读取固件评分 0x0132';
@@ -158,15 +170,25 @@
                 state.tuneMotionResolver = null;
                 state.tuneTrialProfile = null;
                 state.tuneTrialStage = '';
+                // 【阶段收尾：停脉冲 + 失能】必须等到运动真的结束（上面的 await）之后再做，
+                // 提前失能会把最后几十个脉冲连同对应角度一起丢掉（"最后一点没走完"）。
+                try {
+                    await writeRegister(0x11F, 0);
+                    await new Promise((resolve) => window.setTimeout(resolve, 120));
+                    await writeRegister(0x125, 1);   // MOTOR_DISABLE：本阶段结束，断电流
+                } catch (error) {
+                    appendTuneLog(`阶段收尾（停止/失能）失败：${error.message}`);
+                }
             }
             if (state.autoTuneCancelled) return null;
             return {score, sampleCount: 0};
         }
 
         function getTuneActionProfiles() {
-            const maxSpeedRpm = clamp(Number(document.getElementById('tuneMaxSpeed').value || 60), 5, 6000);
-            const accelRpmS = clamp(Number(document.getElementById('tuneAccel').value || 180), 10, 3000);
-            const turnsPerDirection = clamp(Number(document.getElementById('tuneTestTurns').value || 5), 1, 5);
+            // 本机 300~800RPM 剧烈共振：低速整定阶段先把上限钉在 250RPM。
+            const maxSpeedRpm = clamp(Number(document.getElementById('tuneMaxSpeed').value || 200), 5, 250);
+            const accelRpmS = clamp(Number(document.getElementById('tuneAccel').value || 400), 10, 3000);
+            const turnsPerDirection = clamp(Number(document.getElementById('tuneTestTurns').value || 3), 1, 5);
             return createPulseTuneProfiles(maxSpeedRpm, accelRpmS, turnsPerDirection, true);
         }
 
@@ -427,7 +449,10 @@
                     for (const key of gainKeys) {
                         if (state.autoTuneCancelled) break;
                         const center = bestGains[key];
-                        const maxGain = key === 'posKp' || key === 'posKd' ? 30000 : 3000;
+                        // 上限与固件 maxPidGain() 一致（这里是“实际增益”口径）
+                        const maxGain = key === 'posKp' || key === 'posKi' ? 1000
+                            : key === 'posKd' ? 100
+                            : key === 'velKp' || key === 'velKi' ? 10 : 1;
                         const lower = center / geometricFactor;
                         const upper = Math.min(maxGain, center * geometricFactor);
                         const candidates = [

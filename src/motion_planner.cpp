@@ -121,15 +121,30 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
         // 走多快由前馈决定，跟得准不准才交给 PID。换目标时不再产生“误差是阶跃”的大 P 冲击。
         const float follow_err_deg =
             normalize_signed_angle_error_deg(c.angle_profile_pos_deg_ - c.motion_position_deg_);
+        // 【两个环都必须限幅】与规划运动补偿段同一套规则：位置环最多给轮廓速度的 30%，
+        // 速度环最多 20%。没有这一层时，网页上那个 30（历史口径，等效 0.3）会变成
+        // 真·30 倍增益：v_ref 一步顶到限速帽，梯形轮廓的加减速被"补偿"整个吃掉 ——
+        // 这正是"内部规划运动的加减速阶段消失、一上来就是最高转速"的直接原因。
+        const float profile_abs_rps = fast_abs(profile_desired_rps);
+        const float pos_limit = fast_clamp(profile_abs_rps * 0.30f, 0.25f, max_rps * 0.5f);
+        c.position_pid_.setOutputLimit(pos_limit);
         // 【微分先行】D 对测量值求导（-measured_rate），不对误差求导：
         // 目标角改变时误差是阶跃，对误差微分会打一脚冲击（derivative kick）。
-        const float position_reference_rps =
-            profile_desired_rps +
-            c.position_pid_.update(follow_err_deg / 360.0f, dt, 1.0f,
-                                   measured_motion_rps, true);
+        float pos_corr = c.position_pid_.update(follow_err_deg / 360.0f, dt, 1.0f,
+                                                measured_motion_rps, true);
+        pos_corr = fast_clamp(pos_corr, -pos_limit, pos_limit);
+        const float position_reference_rps = profile_desired_rps + pos_corr;
+
         // 速度环只对“指令速度 − 实测速度”做阻尼修正
+        const float vel_limit = fast_clamp(profile_abs_rps * 0.20f, 0.15f, max_rps * 0.35f);
+        c.velocity_pid_.setOutputLimit(vel_limit);
         const float velocity_error_rps = position_reference_rps - measured_motion_rps;
-        const float velocity_correction_rps = c.velocity_pid_.update(velocity_error_rps, dt);
+        const float measured_accel_rps2 =
+            (measured_motion_rps - c.last_angle_mode_measured_rps_) / dt;
+        c.last_angle_mode_measured_rps_ = measured_motion_rps;
+        float velocity_correction_rps = c.velocity_pid_.update(velocity_error_rps, dt, 1.0f,
+                                                               measured_accel_rps2, true);
+        velocity_correction_rps = fast_clamp(velocity_correction_rps, -vel_limit, vel_limit);
 
         const float unconstrained_rps =
             fast_clamp(position_reference_rps + velocity_correction_rps, -max_rps, max_rps);
@@ -465,8 +480,15 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
 
     const uint32_t micro_steps_per_round = c.getStepsPerRound();
     const auto compensated_step_speed = c.compensated_rps_ * static_cast<float>(micro_steps_per_round);
-    c.compensated_motion_step_accumulator_ +=
-        fast_abs(c.current_step_speed_ + compensated_step_speed) * dt_step_s;
+    // 修正量是“沿运动方向的附加速度”，基础速度是大小（>=0）。相加后必须 >= 0：
+    // 允许为负会让下面的 |...| 变成“反向走”，而 DIR 脚已经固定，
+    // 结果是脉冲照发、方向不变、转速却比规划快 —— 一个很难查的隐性超速。
+    float total_step_speed = c.current_step_speed_ + compensated_step_speed;
+    if (total_step_speed < 0.0f)
+    {
+        total_step_speed = 0.0f;
+    }
+    c.compensated_motion_step_accumulator_ += total_step_speed * dt_step_s;
 
     // 角度模式：每拍最多走 kMaxStepsPerTick 步。
     // 这个钳位同时是“防喷发”和“实际限速”：超出部分是被**丢弃**的（两个累加器都被直接

@@ -86,6 +86,10 @@ const CUSTOM_REGS = {
     // 现在只有一个位置环超前系数：
     // R/W，单位 0.001；填 1000 = α=1.0 = 不启用。只作用于位置环 D 通道，不存 Flash。
     POSITION_LEAD_ALPHA: 0x15C,
+    // 堵转/不转保护：0x15D=状态(1=已锁存)，0x15E=累计次数，0x15F=写1清除锁存
+    STALL_DETECTED: 0x15D,
+    STALL_EVENTS: 0x15E,
+    STALL_CLEAR: 0x15F,
     CPU_USAGE_CENTIPERCENT: 0x137,
     CONTROL_TASK_USAGE_CENTIPERCENT: 0x138,
     MAX_RPM: 0x11B,

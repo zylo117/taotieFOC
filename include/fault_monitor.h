@@ -24,9 +24,13 @@ public:
 
     void reportEncoderFault(bool active);
     void reportMagneticFieldAlarm(bool active);
+    // 堵转/不转：由控制器 updateStallGuard() 判定，动作与编码器故障相同（失能 + 禁输出）。
+    // 但它不会自恢复：必须显式 clear（0x15F=1），否则下一次 startMotion 直接拒绝。
+    void reportStall(bool active);
 
     bool encoderFaultActive() const { return encoder_fault_active_; }
     bool magneticFaultActive() const { return magnetic_fault_active_; }
+    bool stallActive() const { return stall_active_; }
     bool outputStopped() const { return output_stopped_; }
 
 private:
@@ -36,6 +40,7 @@ private:
     bool stop_on_magnetic_fault_ = true;
     bool encoder_fault_active_ = false;
     bool magnetic_fault_active_ = false;
+    bool stall_active_ = false;
     // true = 因故障禁止一切 STEP 输出（外部跟随也不会发脉冲）
     bool output_stopped_ = false;
 };

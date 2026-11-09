@@ -128,3 +128,35 @@ void PidController::resetDeriv()
     lead_prev_out = 0.0f;
     lead_prev_in = 0.0f;
 }
+
+void PidController::reset()
+{
+    resetIntegral();
+    resetDeriv();
+}
+
+void PidController::setOutputLimit(float limit)
+{
+    const float limit_abs = (limit < 0.0f) ? -limit : limit;
+    // 上限为 0 会让环路彻底失去作用（输出恒 0），按“不限制”处理更安全：
+    // 调用方算出的限幅在极端情况下（profile 速度为 0）确实可能是 0。
+    max_output = (limit_abs > 1.0e-6f) ? limit_abs : MAX_PID_OUTPUT;
+
+    // 反推积分限幅：让 I 项单独最多顶到输出上限，否则 I 会先绕到 100
+    // 再由下游钳位削掉，退饱和要等好几拍（这就是“超调”的来源之一）。
+    const float ki_abs = (ki < 0.0f) ? -ki : ki;
+    float integral_limit = (ki_abs > 1.0e-6f) ? (max_output / ki_abs) : MAX_I_TERM;
+    if (integral_limit > MAX_I_TERM)
+    {
+        integral_limit = MAX_I_TERM;
+    }
+    max_integral = integral_limit;
+    if (integral > max_integral)
+    {
+        integral = max_integral;
+    }
+    else if (integral < -max_integral)
+    {
+        integral = -max_integral;
+    }
+}

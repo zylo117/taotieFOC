@@ -12,22 +12,37 @@
 
 namespace
 {
-    // PID 增益上限（网页口径，即“实际增益 × 1000”的口径下直接填的数）。
+    // PID 增益的合法区间（单位 = **实际增益**，网页输入框填的就是这个数）。
     //
-    // 【上限曾一度设成 30/3，是个错误】用户原来用的 60/20/60 会被静默钳成 30/3/30，
-    // 于是加 D 想压震荡却永远加不上去（被钳在 30），表现为“加了 D 反而更震荡”。
-    // 现在恢复 30000/3000（即实际增益 30 / 3？不：这里除 1000 后就是实际增益，
-    // 所以上限实际是 30000 / 3000），配合 param_store 的 uint32_t 字段不会溢出。
+    // 【这个表必须和前端 input 的 max 一致】历史上这里按“×1000 的口径”写了
+    // 30000/3000，可是 gain 已经被除以 1000 了，于是真实上限只有 30/3：用户填 60
+    // 会被静默钳成 30、填 20 的 Ki 被钳成 3 —— “我填的值不是给 PID 的值”这一类
+    // 玄学全部来自这里。现在按每个环的物理量级重划：
+    //   位置环输入是“圈”（1° = 1/360 圈），输出 rps：60 表示 1° 误差给 0.167rps；
+    //   速度环输入输出都是 rps，增益是无量纲：0.3 已经能把 1RPM 误差变成 0.3RPM 修正。
+    float maxPidGain(uint16_t reg)
+    {
+        switch (reg)
+        {
+        case TMC2209_EXT_PARAM_POSITION_KP:
+        case TMC2209_EXT_PARAM_POSITION_KI:
+            return 1000.0f;
+        case TMC2209_EXT_PARAM_POSITION_KD:
+            return 100.0f;
+        case TMC2209_EXT_PARAM_VELOCITY_KP:
+        case TMC2209_EXT_PARAM_VELOCITY_KI:
+            return 10.0f;
+        case TMC2209_EXT_PARAM_VELOCITY_KD:
+            return 1.0f;
+        default:
+            return 1.0f;
+        }
+    }
+
     float clampPidGain(uint16_t reg, uint32_t raw_value)
     {
-        const float max_gain = (reg == TMC2209_EXT_PARAM_POSITION_KI || reg == TMC2209_EXT_PARAM_VELOCITY_KI)
-            ? 3000.0f
-            : 30000.0f;
         const float gain = static_cast<float>(raw_value) / 1000.0f;
-        if (gain < 0.0f)
-        {
-            return 0.0f;
-        }
+        const float max_gain = maxPidGain(reg);
         return gain > max_gain ? max_gain : gain;
     }
 }
@@ -371,6 +386,15 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         return owner_.protocol_ != nullptr &&
                owner_.protocol_->setCustomParameter(reg, static_cast<uint32_t>(alpha * 1000.0f + 0.5f));
     }
+    if (reg == TMC2209_EXT_PARAM_STALL_CLEAR)
+    {
+        if (value != 0U)
+        {
+            owner_.clearStall();
+            printf("[STALL] cleared by host\r\n");
+        }
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_MOTOR_ENABLE)
     {
         // 显式使能：清除安全锁，允许启动
@@ -655,6 +679,16 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_PID_TUNE_SAMPLE_COUNT)
     {
         *value = owner_.pid_auto_tuner_.sampleCount();
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_STALL_DETECTED)
+    {
+        *value = owner_.isStallDetected() ? 1U : 0U;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_STALL_EVENTS)
+    {
+        *value = owner_.getStallEvents();
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_MOTION_SCHEDULED_STEPS)

@@ -27,9 +27,15 @@
         }
 
         function updateFaultStatus() {
-            const hasFault = state.encoderFault || state.magneticFault || state.outputStopped;
-            const summary = state.encoderFault ? '编码器读取失败' : state.magneticFault ? '磁场报警' : state.outputStopped ? '已停止输出' : '正常';
+            const hasFault = state.encoderFault || state.magneticFault || state.outputStopped || state.stallDetected;
+            const summary = state.stallDetected ? '堵转锁存' : state.encoderFault ? '编码器读取失败' : state.magneticFault ? '磁场报警' : state.outputStopped ? '已停止输出' : '正常';
             state.faultSummary = summary;
+            const stallElement = document.getElementById('stallStatus');
+            if (stallElement) {
+                stallElement.textContent = state.stallDetected
+                    ? '已触发：固件已停机并失能，需点“清除堵转锁存”'
+                    : '未触发';
+            }
 
             faultBadge.innerHTML = `<span class="led ${hasFault ? (state.encoderFault || state.magneticFault ? 'warn' : 'danger') : ''}"></span> ${summary}`;
             faultBadge.className = 'badge ' + (hasFault ? (state.encoderFault || state.magneticFault ? 'warn' : 'danger') : 'ok');

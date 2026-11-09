@@ -1249,37 +1249,39 @@
                             <h3 style="margin-top:0;">位置 PID</h3>
                             <div class="field">
                                 <label>Kp</label>
-                                <input id="posKp" min="0" max="30000" step="0.01" type="number" value="60.0"/>
+                                <input id="posKp" min="0" max="1000" step="0.001" type="number" value="60"/>
                             </div>
                             <div class="field mt">
                                 <label>Ki</label>
-                                <input id="posKi" min="0" max="3000" step="0.01" type="number" value="20.0"/>
+                                <input id="posKi" min="0" max="1000" step="0.001" type="number" value="10"/>
                             </div>
                             <div class="field mt">
                                 <label>Kd</label>
-                                <input id="posKd" min="0" max="30000" step="0.01" type="number" value="60.0"/>
+                                <input id="posKd" min="0" max="100" step="0.001" type="number" value="0"/>
                             </div>
                             <div class="field mt">
                                 <label>超前 α</label>
                                 <input id="posLeadAlpha" min="1" max="5" step="0.01" type="number" value="1.0"/>
                             </div>
                             <div class="tiny mt">超前校正系数（0x15C）：1.0 = 不启用。补回微分低通吃掉的相位裕度，范围 1.0~5.0；需配合 Kd&gt;0 才有作用。不存 Flash，重启后回到 1.0。</div>
+                            <div class="tiny mt">【单位】输入=误差（圈）× Kp = 输出附加速度（转/秒）。Kp=60 表示 1° 误差给 0.167 转/秒（10RPM）。两个环的输出都在固件里限幅到规划速度的 30%/20%，所以填大了也不会打穿速度指令。</div>
                         </div>
 
                         <div class="card">
                             <h3 style="margin-top:0;">速度 PID</h3>
                             <div class="field">
                                 <label>Kp</label>
-                                <input id="velKp" min="0" max="30000" step="0.01" type="number" value="30.0"/>
+                                <input id="velKp" min="0" max="10" step="0.001" type="number" value="0.3"/>
                             </div>
                             <div class="field mt">
                                 <label>Ki</label>
-                                <input id="velKi" min="0" max="3000" step="0.01" type="number" value="8.0"/>
+                                <input id="velKi" min="0" max="10" step="0.001" type="number" value="0"/>
                             </div>
                             <div class="field mt">
                                 <label>Kd</label>
-                                <input id="velKd" min="0" max="30000" step="0.01" type="number" value="20.0"/>
+                                <input id="velKd" min="0" max="1" step="0.0001" type="number" value="0"/>
                             </div>
+                            <div class="tiny mt">【单位】增益就是“转/秒 误差 → 转/秒 修正”，无量纲。0.3 表示 1RPM 误差给 0.3RPM 修正；旧固件这里有个隐藏的 ×0.01，所以当年的 30 等于现在的 0.3。Kd 作用在实测加速度上（微分先行），不是误差微分。</div>
                         </div>
 
                         <!-- 角度模式增益曾一度独立成 0x156~0x15B；改成“梯形轮廓 + 跟踪误差”之后，
@@ -1315,11 +1317,11 @@
                         <div class="card">
                             <div class="field">
                                 <label>最大速度（RPM）</label>
-                                <input id="tuneMaxSpeed" min="3" max="6000" step="1" type="number" value="60"/>
+                                <input id="tuneMaxSpeed" min="3" max="250" step="1" type="number" value="200"/>
                             </div>
                             <div class="field mt">
                                 <label>加速度（RPM/s）</label>
-                                <input id="tuneAccel" min="6" max="3000" step="1" type="number" value="180"/>
+                                <input id="tuneAccel" min="6" max="3000" step="1" type="number" value="400"/>
                             </div>
                             <div class="field mt">
                                 <label>增益步进</label>
@@ -1327,14 +1329,20 @@
                             </div>
                             <div class="field mt">
                                 <label>正反向测试圈数</label>
-                                <input id="tuneTestTurns" min="1" max="5" step="1" type="number" value="5"/>
+                                <input id="tuneTestTurns" min="1" max="5" step="1" type="number" value="3"/>
                             </div>
+                            <div class="tiny mt">本机 300~800RPM 有剧烈共振，整定上限先钉在 250RPM；高速整定等低速参数稳定后单独做。</div>
                         </div>
 
                         <div class="card">
                             <div class="field">
                                 <label>整定状态</label>
                                 <span aria-live="polite" class="tiny" id="tuneState">未启动</span>
+                            </div>
+                            <div class="field mt">
+                                <label>堵转保护</label>
+                                <span class="tiny" id="stallStatus">未触发</span>
+                                <button id="clearStallBtn" type="button">清除堵转锁存</button>
                             </div>
                             <div class="field mt">
                                 <label>危险等级</label>
