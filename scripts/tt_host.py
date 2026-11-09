@@ -248,6 +248,9 @@ class TTHost:
         score = self.read(R_TUNE_SCORE)
         samples = self.read(R_TUNE_SAMPLES)
         peak = self.read(R_TUNE_PEAK)
+        final_err = self.read(R_FOLLOW_ERR)
+        if final_err is not None:
+            final_err = _s32(final_err)
         return {
             "started": started,
             "finished": finished,
@@ -255,4 +258,7 @@ class TTHost:
             "score_mdeg": None if score is None else _u32(score),
             "samples": 0 if samples is None else _u32(samples),
             "peak_mdeg": 0 if peak is None else _u32(peak),
+            # 停稳之后的残余位置误差（毫度，有符号）。固件的评分只统计运动过程，
+            # 不含"最后停在哪儿"，所以整定器要单独看这个：不丢步不过冲 = 它也应该小。
+            "final_err_mdeg": 0 if final_err is None else final_err,
         }

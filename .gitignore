@@ -71,3 +71,8 @@ Testing/
 # Python 缓存
 __pycache__/
 *.pyc
+
+# 整定运行产物
+autotune_*.json
+autotune_*.log
+compare.log

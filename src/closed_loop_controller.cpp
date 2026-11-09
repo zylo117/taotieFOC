@@ -1340,7 +1340,15 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
         // ---------- 1) 剔除物理滞后角 ----------
         // 符号：motion_lag_angle_deg_ 与 motion_follow_error_deg_ 同号（见 updateLagAngleFeedforward）。
-        const float effective_error_deg = motion_follow_error_deg_ - motion_lag_angle_deg_;
+        //
+        // 【必须先投影到“沿运动方向”再进 PID】这是反向补偿的关键一行：
+        //   世界坐标里 follow_error = 实际 - 命令，正向落后是负数、反向落后是正数。
+        //   PID 的输出语义是“沿运动方向的附加速度”，所以误差也必须换成同一个符号域：
+        //       反向落后 -> 世界坐标 +L -> 投影后 -L -> PID 正输出 -> 加速（正确）
+        //   不投影的话，反向落后会被当成“超前”而刹车 —— 实测反向 1 圈只走了 250°，
+        //   少 110°，评分 166°（这就是整定验证里“中速反向 252°”的来源）。
+        const float effective_error_deg =
+            (motion_follow_error_deg_ - motion_lag_angle_deg_) * direction;
         // 残差死区：表值不可能完全准（拟合误差 + 负载差异 + 加减速时滞后角本来就更小），
         // 死区外的部分才进 PID。死区太小（旧值 0.05°）时，0.1° 的表误差就会让 I 项
         // 慢慢爬、最后多走一截；0.15° 约等于 27 个编码器 LSB，远高于噪声。
