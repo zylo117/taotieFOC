@@ -358,7 +358,11 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
     if (driver_ != nullptr)
     {
         driver_->init();
-        // 恢复 Flash 里的微步设置（必须在 driver_->init() 之后：setMicrosteps 会写 CHOPCONF）。
+        // 恢复 Flash 里的微步设置。
+        // 【注意】本固件里 TMC UART 是关的（tmc2209_driver.cpp 的 writeRegister 直接返回
+        // false），所以 setMicrosteps 只改"软件口径"：一圈按多少微步折算脉冲。
+        // 它必须和驱动器面板/引脚决定的**实际细分**一致，否则行程会正好差整数倍
+        //（历史上默认 32 而硬件是 64 时，命令 0.5 圈实际只走 0.25 圈）。
         if (boot_microsteps >= 1U)
         {
             driver_->setMicrosteps(boot_microsteps);
@@ -1086,9 +1090,20 @@ void ClosedLoopController::updateStallGuard(uint64_t now_ns)
         return;
     }
 
-    const int32_t raw_step = static_cast<int32_t>(encoder_filtered_raw_) -
-                             static_cast<int32_t>(stall_last_raw_);
-    if (raw_step > kStallQuietLsb || raw_step < -kStallQuietLsb)
+    // 【判据必须放在"整段位移"上，不能放在逐拍增量上】
+    // 这台编码器静止时的读数峰峰值约 26~31 LSB（传感器/EMI 噪声），逐拍增量
+    // 经常超过 2 LSB —— 用"每拍变化 < 2LSB"判静止，噪声会不停把计时器清零，
+    // 堵转永远触发不了（实测把电流置 0 让电机完全不动，守卫依然不动作）。
+    // 现在看 200ms 窗口内的**净位移**：
+    //   静止：噪声只在 ±15 LSB 内，净位移不会超过 100 LSB；
+    //   最低速 8RPM：200ms 也走 8/60*65536*0.2 = 1750 LSB。
+    // 两者差 17 倍，阈值 100 LSB 非常安全。
+    constexpr int32_t kStallMoveLsb = ClosedLoopController::kStallMoveLsb;
+    const int32_t span = static_cast<int32_t>(encoder_filtered_raw_) -
+                         static_cast<int32_t>(stall_last_raw_);
+    const int32_t wrapped_span = (span > 32767) ? (span - 65536)
+                               : (span < -32768) ? (span + 65536) : span;
+    if (wrapped_span > kStallMoveLsb || wrapped_span < -kStallMoveLsb)
     {
         stall_last_raw_ = encoder_filtered_raw_;
         stall_quiet_since_ns_ = now32;

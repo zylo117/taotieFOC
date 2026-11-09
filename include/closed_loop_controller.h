@@ -506,11 +506,14 @@ private:
     uint32_t motion_turnaround_skip_ramps_ = 0U;
 
     // ===== 堵转/不转保护 =====
-    // 判据：命令速度足够大（真的在发脉冲）且编码器原始角在 N ms 内几乎不动。
-    // 阈值必须高于“静止时编码器抖动”，又低于最慢的正常转动：
-    // 20RPM 时 1ms 也有 6.5 个 LSB，所以“连续 200ms |Δraw| < 2 LSB”只可能是真的没动。
+    // 判据：命令速度足够大（真的在发脉冲）且编码器在 200ms 窗口内的**净位移**很小。
+    // 阈值必须高于"静止时编码器的慢漂移"，又远低于最慢的正常转动：
+    //   静止噪声峰峰约 26~31 LSB（实测），200ms 净位移不会超过 ~30 LSB；
+    //   最低速 8RPM 时 200ms 也走 1750 LSB。取 100 LSB 有 3 倍/17 倍的双向余量。
+    // （不能用"每拍变化 < N LSB"：噪声每拍就能超过 2 LSB，计时器会被不停清零，
+    //   实测把运行电流置 0 让电机完全不动时守卫依然不动作。）
     static constexpr uint32_t kStallQuietMs = 200U;
-    static constexpr int32_t kStallQuietLsb = 2;
+    static constexpr int32_t kStallMoveLsb = 100;
     static constexpr float kStallMinCommandRpm = 8.0f;
     volatile bool stall_detected_ = false;
     volatile uint32_t stall_events_ = 0U;
