@@ -24,7 +24,7 @@
         // 进而让 pushWaveSample 报 “Cannot access WAVE_POST_ROLL_MS before initialization”。
         // 初始化调用已移到内联脚本的 buildMotionControlOptions() 之后。
 
-        // 固件报“运动结束”后再留一段采样尾巴，等机械轴把最后的负载角走完，
+        // 固件报“运动结束”后再留一段采样尾巴，等机械轴把最后的滞后角走完，
         // 波形图才能把“误差收敛到稳态”这一段画出来（而不是停在还没停转的那一帧）。
         const WAVE_POST_ROLL_MS = 600;
 
@@ -35,9 +35,9 @@
                 t: now,
                 rpm: Number(state.motionSpeedRpm || 0),
                 followError: Number(state.motionFollowErrorDeg || 0),
-                // 历史样本里也存下当时的负载角，勾选“误差不计负载角”时用它做扣除，
+                // 历史样本里也存下当时的滞后角，勾选“误差不计滞后角”时用它做扣除，
                 // 而不是用当前值近似（否则波形在速度变化段会失真）。
-                loadAngle: Number(state.motionLoadAngleDeg || 0)
+                lagAngle: Number(state.motionLagAngleDeg || 0)
             };
             state.waveHistory.push(sample);
             const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 10000), 10000, 10000);
@@ -136,7 +136,7 @@
             const points = state.waveHistory.length ? state.waveHistory : [{t: now - windowMs, rpm: 0, followError: 0}];
             const filtered = points.filter((entry) => now - entry.t <= windowMs);
 
-            // 跟随误差的量级只有零点几度（1200 RPM 稳态负载角约 0.3°），
+            // 跟随误差的量级只有零点几度（1200 RPM 稳态滞后角约 0.3°），
             // 固定 ±30° 的轴会把曲线压成一条直线，看不出“结束运动到底少走了多少”。
             // 这里按窗口内实际幅值自动挑一档对称刻度，最小 ±0.2°，最大 ±30°。
             const errorAxisSteps = [0.2, 0.5, 1, 2, 3, 5, 10, 15, 20, 30];
@@ -207,9 +207,9 @@
             const lastReadoutId = canvasId === 'motionWavePopupCanvas' ? 'wavePopupErrorLastReadout' : 'waveErrorLastReadout';
             const lastSample = filtered.length ? filtered[filtered.length - 1] : {followError: 0};
             document.getElementById(speedReadoutId).textContent = `${Number(state.motionSpeedRpm || 0).toFixed(2)} RPM`;
-            const loadAngleReadout = document.getElementById('waveLoadAngleReadout');
-            if (loadAngleReadout) {
-                loadAngleReadout.textContent = `${Number(state.motionLoadAngleDeg || 0).toFixed(3)}°`;
+            const lagAngleReadout = document.getElementById('waveLagAngleReadout');
+            if (lagAngleReadout) {
+                lagAngleReadout.textContent = `${Number(state.motionLagAngleDeg || 0).toFixed(3)}°`;
             }
             document.getElementById(errorReadoutId).textContent = `${Number(state.motionFollowErrorDeg || 0).toFixed(3)}°`;
             document.getElementById(peakReadoutId).textContent = `${errorAbsPeak.toFixed(3)}°`;
@@ -266,23 +266,23 @@
                 // clip() 不会清空当前路径，必须重新 beginPath，
                 // 否则最后那次 stroke() 会把上面这个裁剪矩形也描出来（多一圈绿框）。
                 ctx.beginPath();
-                // 勾选“误差不计负载角”时，把当时的负载角加回去：
+                // 勾选“误差不计滞后角”时，把当时的滞后角加回去：
                 // follow_error 稳定在 -L，加上 L 后归零，图上就能看出“真实偏差”。
-                // 用 entry.loadAngle（采样时刻的值）而不是当前值，速度变化段才不失真。
+                // 用 entry.lagAngle（采样时刻的值）而不是当前值，速度变化段才不失真。
                 // 【性能】勾选状态提到循环外：原来每个点都查一次 DOM，2000 个点就是 2000 次查询/帧。
-                const excludeLoadAngle = document.getElementById('waveExcludeLoadAngleInput');
-                const excludeLoadAngleChecked = !!(excludeLoadAngle && excludeLoadAngle.checked);
+                const excludeLagAngle = document.getElementById('waveExcludeLagAngleInput');
+                const excludeLagAngleChecked = !!(excludeLagAngle && excludeLagAngle.checked);
                 filtered.forEach((entry, i) => {
                     const x = plotLeft + ((now - entry.t) / windowMs) * (plotRight - plotLeft);
-                    const loadAngleComp = excludeLoadAngleChecked
-                        ? Number(entry.loadAngle || 0)
+                    const lagAngleComp = excludeLagAngleChecked
+                        ? Number(entry.lagAngle || 0)
                         : 0;
-                    // 勾选「误差不计负载角」时扣除负载角：
-                    // 注意固件发来的负载角是**带符号**的，且和 follow_error 同号：
-                    //   正向运动：follow_error = -1.5°，loadAngle = -1.5°
-                    //   反向运动：follow_error = +1.5°，loadAngle = +1.5°
+                    // 勾选「误差不计滞后角」时扣除滞后角：
+                    // 注意固件发来的滞后角是**带符号**的，且和 follow_error 同号：
+                    //   正向运动：follow_error = -1.5°，lagAngle = -1.5°
+                    //   反向运动：follow_error = +1.5°，lagAngle = +1.5°
                     // 所以是「减去」而不是「加上」（旧版本固件发正值时才用 +）。
-                    const y = followErrorLine(entry.followError - loadAngleComp);
+                    const y = followErrorLine(entry.followError - lagAngleComp);
                     if (i === 0) ctx.moveTo(x, y);
                     else ctx.lineTo(x, y);
                 });
@@ -293,7 +293,7 @@
             }
 
             // 标出固件报告“运动结束”的时刻：这条线左侧是运动段，右侧是沉降/静止段。
-            // 有了它就能一眼看出末值是收敛到 0 附近，还是停在了某个负载角上。
+            // 有了它就能一眼看出末值是收敛到 0 附近，还是停在了某个滞后角上。
             if (state.waveStoppedAt && now >= state.waveStoppedAt && now - state.waveStoppedAt <= windowMs) {
                 const stopX = plotLeft + ((now - state.waveStoppedAt) / windowMs) * (plotRight - plotLeft);
                 ctx.save();

@@ -8,7 +8,7 @@
 #include "closed_loop_protocol.h"
 #include "external_pulse_follower.h"
 #include "fault_monitor.h"
-#include "load_angle.h"
+#include "lag_angle.h"
 #include "loop_stats.h"
 #include "motion_planner.h"
 #include "encoder_calibrator.h"
@@ -234,7 +234,7 @@ public:
     void calibrateEncoder();
 
 private:
-    // 参数路由需要直接读写控制器的运动状态、PID、编码器、负载角等成员，
+    // 参数路由需要直接读写控制器的运动状态、PID、编码器、滞后角等成员，
     // 不给它开几十个 public 访问器（那样接口会比现在更难看清）。
     friend class ParameterRouter;
     // 外部跟随同理：积压记账要和 motion_steps_emitted_signed / dma_pending_signed
@@ -266,12 +266,12 @@ private:
     StepperDriver* driver_;
     AngleEncoder* encoder_;
     ClosedLoopDriverProtocol* protocol_;
-    LoadAngle load_angle_;
-    uint16_t load_angle_point_index_;
-    uint16_t load_angle_point_speed_rpm_;
-    int32_t load_angle_point_mdeg_;
-    uint16_t load_angle_query_speed_rpm_;
-    bool load_angle_fit_saved_;
+    LagAngle lag_angle_;
+    uint16_t lag_angle_point_index_;
+    uint16_t lag_angle_point_speed_rpm_;
+    int32_t lag_angle_point_mdeg_;
+    uint16_t lag_angle_query_speed_rpm_;
+    bool lag_angle_fit_saved_;
     PidController position_pid_;
     PidController velocity_pid_;
     // 三种模式（角度僚服 / 规划运动 / 外部脉冲跟随）现在共用上面这一组实例与参数：
@@ -453,10 +453,10 @@ private:
 
     float closed_loop_threshold_angle_ = 1.8f;
     float compensated_rps_ = 0.0f;
-    // 实时负载角（度，正值 = 电机轴相对于命令脉冲的理论滞后量）。
-    // 由补偿段每拍更新（load_angle_.getLoadAngleMilliDegrees 按当前转速查模），
-    // 遥测通过 0x151 发给网页显示，也用于“波形不计负载角”的后处理。
-    float motion_load_angle_deg_ = 0.0f;
+    // 实时滞后角（度，正值 = 电机轴相对于命令脉冲的理论滞后量）。
+    // 由补偿段每拍更新（lag_angle_.getLagAngleMilliDegrees 按当前转速查模），
+    // 遥测通过 0x151 发给网页显示，也用于“波形不计滞后角”的后处理。
+    float motion_lag_angle_deg_ = 0.0f;
 
     // 换向后的“评分屏蔽拍数”。往返运动换向那一刻命令方向翻转、机械还在减速，
     // follow_error 会瞬间拉开几十度（物理必然，不是 PID 差），如果计进评分
@@ -464,11 +464,11 @@ private:
     // 换向时设为 kTurnaroundSkipRamps，每拍递减到 0 后恢复采样。
     uint32_t motion_turnaround_skip_ramps_ = 0U;
 
-    // 负载角前馈信任度（0.0~1.0）。
-    // 负载角只与速度有关是个简化假设：真实负载角还取决于负载大小，而本方案
+    // 滞后角前馈信任度（0.0~1.0）。
+    // 滞后角只与速度有关是个简化假设：真实滞后角还取决于负载大小，而本方案
     // 无法接入 TMC2209 的电流环，感知不到负载变化。信任度降到 0.5~0.7 可以
     // 让前馈变保守，把偏差交给 PID（代价是响应变慢），避免表值偏高时过度补偿。
-    float load_angle_feedforward_ratio_ = 1.0f;
+    float lag_angle_feedforward_ratio_ = 1.0f;
 
     // 遥测节拍器：控制环每拍推进一格，syncProtocolTelemetry 按档位选刷哪一堆。
     // 以前直接用 rampUpdate 里的 ramp_loop_idx 取模，而那个计数器是 uint16_t，
@@ -477,7 +477,7 @@ private:
     TelemetryScheduler::Slot telemetry_slot_ = TelemetryScheduler::Slot::kNone;
 
     // 参数路由（writeParameter / readParameter 的大表）。
-    // 这是控制器的 friend：参数分散在运动状态/PID/编码器/负载角等多个子模块里，
+    // 这是控制器的 friend：参数分散在运动状态/PID/编码器/滞后角等多个子模块里，
     // 逐个开 public 访问器会把接口撑得比现在更难看清。
     ParameterRouter parameter_router_{*this};
 
@@ -496,7 +496,7 @@ private:
         RAMP_STAGE_ACCEL,
         RAMP_STAGE_CRUISE,
         RAMP_STAGE_DECEL,
-        // 脉冲已经全部交给 TMR2/DMA，但电机轴还没追上（负载角）。
+        // 脉冲已经全部交给 TMR2/DMA，但电机轴还没追上（滞后角）。
         // 这个阶段只做两件事：等最后一批脉冲真的发完、等编码器静止，然后才收尾。
         // 否则 stopMotion() 会立刻关掉 TMR2，把尾巴上那几十个脉冲连同对应角度一起丢掉。
         RAMP_STAGE_SETTLE,

@@ -1,4 +1,4 @@
-#include "load_angle.h"
+#include "lag_angle.h"
 
 #include "at32f403a_407.h"
 
@@ -11,22 +11,22 @@ extern "C"
 
 namespace
 {
-    uint16_t load_angle_flash_words[LoadAngle::MAX_POINTS * 3U];
+    uint16_t lag_angle_flash_words[LagAngle::MAX_POINTS * 3U];
 }
 
-LoadAngle::LoadAngle()
+LagAngle::LagAngle()
     : point_count_(0U), received_count_(0U), fitted_(false),
     power_coefficient_(0.0f), intercept_deg_(0.0f), exponent_(0.5f)
 {
     for (uint16_t i = 0U; i < MAX_POINTS; ++i)
     {
         points_[i].speed_rpm = 0U;
-        points_[i].load_angle_mdeg = 0;
+        points_[i].lag_angle_mdeg = 0;
         received_[i] = false;
     }
 }
 
-bool LoadAngle::beginUpload(uint16_t count)
+bool LagAngle::beginUpload(uint16_t count)
 {
     if (count < 2U || count > MAX_POINTS)
     {
@@ -45,14 +45,14 @@ bool LoadAngle::beginUpload(uint16_t count)
     return true;
 }
 
-bool LoadAngle::setPoint(uint16_t index, uint16_t speed_rpm, int32_t load_angle_mdeg)
+bool LagAngle::setPoint(uint16_t index, uint16_t speed_rpm, int32_t lag_angle_mdeg)
 {
     if (index >= point_count_)
     {
         return false;
     }
     points_[index].speed_rpm = speed_rpm;
-    points_[index].load_angle_mdeg = load_angle_mdeg;
+    points_[index].lag_angle_mdeg = lag_angle_mdeg;
     if (!received_[index])
     {
         received_[index] = true;
@@ -62,7 +62,7 @@ bool LoadAngle::setPoint(uint16_t index, uint16_t speed_rpm, int32_t load_angle_
     return true;
 }
 
-bool LoadAngle::fit()
+bool LagAngle::fit()
 {
     if (point_count_ < 2U || received_count_ != point_count_)
     {
@@ -92,7 +92,7 @@ bool LoadAngle::fit()
             {
                 const double speed = static_cast<double>(points_[i].speed_rpm);
                 const double power = speed > 0.0 ? std::pow(speed, exponent) : 0.0;
-                const double angle = static_cast<double>(points_[i].load_angle_mdeg) / 1000.0;
+                const double angle = static_cast<double>(points_[i].lag_angle_mdeg) / 1000.0;
                 sum_power += power;
                 sum_angle += angle;
                 sum_power_squared += power * power;
@@ -111,7 +111,7 @@ bool LoadAngle::fit()
             {
                 const double speed = static_cast<double>(points_[i].speed_rpm);
                 const double power = speed > 0.0 ? std::pow(speed, exponent) : 0.0;
-                const double angle = static_cast<double>(points_[i].load_angle_mdeg) / 1000.0;
+                const double angle = static_cast<double>(points_[i].lag_angle_mdeg) / 1000.0;
                 const double error = angle - (intercept + coefficient * power);
                 squared_error += error * error;
             }
@@ -144,19 +144,19 @@ bool LoadAngle::fit()
     return true;
 }
 
-bool LoadAngle::saveToFlash()
+bool LagAngle::saveToFlash()
 {
     if (!fitted_ || point_count_ < 2U)
     {
         return false;
     }
 
-    uint16_t* words = load_angle_flash_words;
+    uint16_t* words = lag_angle_flash_words;
     uint16_t word_count = 0U;
     uint16_t checksum = 0U;
     for (uint16_t i = 0U; i < point_count_; ++i)
     {
-        const uint32_t angle_bits = static_cast<uint32_t>(points_[i].load_angle_mdeg);
+        const uint32_t angle_bits = static_cast<uint32_t>(points_[i].lag_angle_mdeg);
         words[word_count++] = points_[i].speed_rpm;
         words[word_count++] = static_cast<uint16_t>(angle_bits & 0xFFFFU);
         words[word_count++] = static_cast<uint16_t>(angle_bits >> 16U);
@@ -183,7 +183,7 @@ bool LoadAngle::saveToFlash()
     return flash_write(FLASH_META_BASE, metadata, 8U) == SUCCESS;
 }
 
-bool LoadAngle::loadFromFlash()
+bool LagAngle::loadFromFlash()
 {
     uint16_t metadata[8];
     flash_read(FLASH_META_BASE, metadata, 8U);
@@ -198,7 +198,7 @@ bool LoadAngle::loadFromFlash()
     }
 
     const uint16_t word_count = static_cast<uint16_t>(count * 3U);
-    uint16_t* words = load_angle_flash_words;
+    uint16_t* words = lag_angle_flash_words;
     flash_read(FLASH_DATA_BASE, words, word_count);
     uint16_t checksum = 0U;
     for (uint16_t i = 0U; i < word_count; ++i)
@@ -220,49 +220,49 @@ bool LoadAngle::loadFromFlash()
         const uint32_t angle_bits = static_cast<uint32_t>(words[offset + 1U]) |
                                     (static_cast<uint32_t>(words[offset + 2U]) << 16U);
         points_[i].speed_rpm = words[offset];
-        points_[i].load_angle_mdeg = static_cast<int32_t>(angle_bits);
+        points_[i].lag_angle_mdeg = static_cast<int32_t>(angle_bits);
         received_[i] = true;
     }
     return fit();
 }
 
-bool LoadAngle::getPoint(uint16_t index, uint16_t* speed_rpm, int32_t* load_angle_mdeg) const
+bool LagAngle::getPoint(uint16_t index, uint16_t* speed_rpm, int32_t* lag_angle_mdeg) const
 {
-    if (index >= point_count_ || speed_rpm == nullptr || load_angle_mdeg == nullptr)
+    if (index >= point_count_ || speed_rpm == nullptr || lag_angle_mdeg == nullptr)
     {
         return false;
     }
     *speed_rpm = points_[index].speed_rpm;
-    *load_angle_mdeg = points_[index].load_angle_mdeg;
+    *lag_angle_mdeg = points_[index].lag_angle_mdeg;
     return true;
 }
 
-uint16_t LoadAngle::pointCount() const
+uint16_t LagAngle::pointCount() const
 {
     return point_count_;
 }
 
-bool LoadAngle::isFitted() const
+bool LagAngle::isFitted() const
 {
     return fitted_;
 }
 
-float LoadAngle::powerCoefficient() const
+float LagAngle::powerCoefficient() const
 {
     return power_coefficient_;
 }
 
-float LoadAngle::interceptDeg() const
+float LagAngle::interceptDeg() const
 {
     return intercept_deg_;
 }
 
-float LoadAngle::exponent() const
+float LagAngle::exponent() const
 {
     return exponent_;
 }
 
-int32_t LoadAngle::getLoadAngleMilliDegrees(uint16_t speed_rpm) const
+int32_t LagAngle::getLagAngleMilliDegrees(uint16_t speed_rpm) const
 {
     if (!fitted_)
     {

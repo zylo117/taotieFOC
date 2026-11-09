@@ -298,7 +298,7 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
 
     // ---------- 速度模式：运行时改目标转速 ----------
     // 背景：motion_max_step_s_ 只在 startMotion() 里按 motion_max_rpm_ 算一次，
-    // 上位机后来改 0x11B 不会生效 —— 这就是“负载角校准只能一段一段测、
+    // 上位机后来改 0x11B 不会生效 —— 这就是“滞后角校准只能一段一段测、
     // 每点都要停机重启再加速”的根本原因。
     // 这里补上运行时变速：检测到目标变了就重算，并调整阶段让现有加减速逻辑自然过渡。
     // 只对速度模式（MOTION_MODE_VELOCITY_*）生效，位置模式不受影响。
@@ -369,7 +369,7 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
 
             // 【降速必须每拍都做】不能只在“目标变化那一拍”降一次：
             // 250RPM -> 200RPM 差 10666 步/s，而一拍只降 accel x dt = 64 步/s，
-            // 只执行一次等于完全没减速 —— 表现为“负载角阶梯只能升不能降”。
+            // 只执行一次等于完全没减速 —— 表现为“滞后角阶梯只能升不能降”。
             // ACCEL 分支每拍都在加，降速也必须每拍都在减，两者对称。
             if (c.current_step_speed_ > c.motion_max_step_s_ + 1.0f)
             {

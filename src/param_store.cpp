@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <cstring>
 
-// 参数扇区：0x0801E000（2KB），夹在负载角数据 0x0801D000 与
+// 参数扇区：0x0801E000（2KB），夹在滞后角数据 0x0801D000 与
 // 校准表元数据 0x0801F000 之间，不与任何现有数据重叠。
 static const uint32_t kParamFlashBase = 0x0801E000U;
 static const uint32_t kParamMagic = 0x54414F54U;   // 'TAOT'

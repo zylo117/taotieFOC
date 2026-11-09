@@ -79,18 +79,18 @@
             , [CUSTOM_REGS.MOTION_COMMAND_SPEED_MRPM, ['0x0135', 'MOTION_COMMAND_SPEED', '当前命令速度，单位 0.001 RPM']]
             , [CUSTOM_REGS.CPU_USAGE_CENTIPERCENT, ['0x0137', 'CPU_USAGE', 'MCU 总 CPU 占用率，单位 0.01%']]
             , [CUSTOM_REGS.CONTROL_TASK_USAGE_CENTIPERCENT, ['0x0138', 'CONTROL_TASK_USAGE', 'Control_task CPU 占用率，单位 0.01%']]
-            , [CUSTOM_REGS.LOAD_ANGLE_UPLOAD_COUNT, ['0x013C', 'LOAD_ANGLE_UPLOAD_COUNT', '上位机待上传拟合点数']]
-            , [CUSTOM_REGS.LOAD_ANGLE_POINT_INDEX, ['0x013D', 'LOAD_ANGLE_POINT_INDEX', '待写入的拟合点索引']]
-            , [CUSTOM_REGS.LOAD_ANGLE_POINT_SPEED_RPM, ['0x013E', 'LOAD_ANGLE_POINT_SPEED_RPM', '拟合点速度，单位 RPM']]
-            , [CUSTOM_REGS.LOAD_ANGLE_POINT_MDEG, ['0x013F', 'LOAD_ANGLE_POINT_MDEG', '拟合点负载角，单位 0.001°']]
-            , [CUSTOM_REGS.LOAD_ANGLE_POINT_COMMIT, ['0x0140', 'LOAD_ANGLE_POINT_COMMIT', '提交当前拟合点']]
-            , [CUSTOM_REGS.LOAD_ANGLE_FIT, ['0x0141', 'LOAD_ANGLE_FIT', '固件执行拟合并保存']]
-            , [CUSTOM_REGS.LOAD_ANGLE_QUERY_SPEED_RPM, ['0x0142', 'LOAD_ANGLE_QUERY_SPEED_RPM', '设置待查询速度，单位 RPM']]
-            , [CUSTOM_REGS.LOAD_ANGLE_QUERY_MDEG, ['0x0143', 'LOAD_ANGLE_QUERY_MDEG', '固件拟合查询值，单位 0.001°']]
-            , [CUSTOM_REGS.LOAD_ANGLE_POINT_COUNT, ['0x0144', 'LOAD_ANGLE_POINT_COUNT', '已保存拟合点数']]
-            , [CUSTOM_REGS.LOAD_ANGLE_FIT_SLOPE, ['0x0145', 'LOAD_ANGLE_POWER_COEFFICIENT', '幂律系数 c，单位 °/RPM^a × 1000000']]
-            , [CUSTOM_REGS.LOAD_ANGLE_FIT_INTERCEPT, ['0x0146', 'LOAD_ANGLE_FIT_INTERCEPT', '固件拟合截距，单位 0.001°']]
-            , [CUSTOM_REGS.LOAD_ANGLE_FIT_EXPONENT, ['0x0147', 'LOAD_ANGLE_FIT_EXPONENT', '幂律指数 a，单位 0.000001']]
+            , [CUSTOM_REGS.LAG_ANGLE_UPLOAD_COUNT, ['0x013C', 'LAG_ANGLE_UPLOAD_COUNT', '上位机待上传拟合点数']]
+            , [CUSTOM_REGS.LAG_ANGLE_POINT_INDEX, ['0x013D', 'LAG_ANGLE_POINT_INDEX', '待写入的拟合点索引']]
+            , [CUSTOM_REGS.LAG_ANGLE_POINT_SPEED_RPM, ['0x013E', 'LAG_ANGLE_POINT_SPEED_RPM', '拟合点速度，单位 RPM']]
+            , [CUSTOM_REGS.LAG_ANGLE_POINT_MDEG, ['0x013F', 'LAG_ANGLE_POINT_MDEG', '拟合点滞后角，单位 0.001°']]
+            , [CUSTOM_REGS.LAG_ANGLE_POINT_COMMIT, ['0x0140', 'LAG_ANGLE_POINT_COMMIT', '提交当前拟合点']]
+            , [CUSTOM_REGS.LAG_ANGLE_FIT, ['0x0141', 'LAG_ANGLE_FIT', '固件执行拟合并保存']]
+            , [CUSTOM_REGS.LAG_ANGLE_QUERY_SPEED_RPM, ['0x0142', 'LAG_ANGLE_QUERY_SPEED_RPM', '设置待查询速度，单位 RPM']]
+            , [CUSTOM_REGS.LAG_ANGLE_QUERY_MDEG, ['0x0143', 'LAG_ANGLE_QUERY_MDEG', '固件拟合查询值，单位 0.001°']]
+            , [CUSTOM_REGS.LAG_ANGLE_POINT_COUNT, ['0x0144', 'LAG_ANGLE_POINT_COUNT', '已保存拟合点数']]
+            , [CUSTOM_REGS.LAG_ANGLE_FIT_SLOPE, ['0x0145', 'LAG_ANGLE_POWER_COEFFICIENT', '幂律系数 c，单位 °/RPM^a × 1000000']]
+            , [CUSTOM_REGS.LAG_ANGLE_FIT_INTERCEPT, ['0x0146', 'LAG_ANGLE_FIT_INTERCEPT', '固件拟合截距，单位 0.001°']]
+            , [CUSTOM_REGS.LAG_ANGLE_FIT_EXPONENT, ['0x0147', 'LAG_ANGLE_FIT_EXPONENT', '幂律指数 a，单位 0.000001']]
             , [0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
             , [0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
             , [0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
@@ -349,27 +349,27 @@
                 document.getElementById('tabMotionBtn').addEventListener('click', () => switchWorkTab('motion'));
                 document.getElementById('tabExtFollowBtn').addEventListener('click', () => switchWorkTab('extfollow'));
             document.getElementById('readAllBtn').addEventListener('click', readAllConfig);
-            document.getElementById('loadAngleCalibrationBtn').addEventListener('click', openLoadAngleCalibration);
-            document.getElementById('closeLoadAngleDialogBtn').addEventListener('click', () => {
-                document.getElementById('loadAngleDialog').close();
+            document.getElementById('lagAngleCalibrationBtn').addEventListener('click', openLagAngleCalibration);
+            document.getElementById('closeLagAngleDialogBtn').addEventListener('click', () => {
+                document.getElementById('lagAngleDialog').close();
             });
-            document.getElementById('loadAngleDialog').addEventListener('cancel', (event) => {
-                if (state.loadAngleCalibrationRunning) event.preventDefault();
+            document.getElementById('lagAngleDialog').addEventListener('cancel', (event) => {
+                if (state.lagAngleCalibrationRunning) event.preventDefault();
             });
-            document.getElementById('startLoadAngleCalibrationBtn').addEventListener('click', startLoadAngleCalibration);
-            document.getElementById('cancelLoadAngleCalibrationBtn').addEventListener('click', async () => {
-                if (!state.loadAngleCalibrationRunning) return;
-                state.loadAngleCalibrationCancelled = true;
-                document.getElementById('loadAngleStatus').textContent = '正在停止当前运动...';
-                await stopLoadAngleMotion();
+            document.getElementById('startLagAngleCalibrationBtn').addEventListener('click', startLagAngleCalibration);
+            document.getElementById('cancelLagAngleCalibrationBtn').addEventListener('click', async () => {
+                if (!state.lagAngleCalibrationRunning) return;
+                state.lagAngleCalibrationCancelled = true;
+                document.getElementById('lagAngleStatus').textContent = '正在停止当前运动...';
+                await stopLagAngleMotion();
             });
-            document.getElementById('refreshLoadAngleCalibrationBtn').addEventListener('click', async () => {
-                if (state.loadAngleCalibrationRunning) return;
+            document.getElementById('refreshLagAngleCalibrationBtn').addEventListener('click', async () => {
+                if (state.lagAngleCalibrationRunning) return;
                 try {
-                    await refreshLoadAngleCalibration();
-                    document.getElementById('loadAngleStatus').textContent = '数据来自固件校准表与拟合结果';
+                    await refreshLagAngleCalibration();
+                    document.getElementById('lagAngleStatus').textContent = '数据来自固件校准表与拟合结果';
                 } catch (error) {
-                    document.getElementById('loadAngleStatus').textContent = `读取失败：${error.message}`;
+                    document.getElementById('lagAngleStatus').textContent = `读取失败：${error.message}`;
                 }
             });
             document.getElementById('viewCalibrationTableBtn').addEventListener('click', openCalibrationTableViewer);
@@ -535,10 +535,10 @@
                 }
             });
 
-            // 波形图“误差不计负载角”勾选框：勾选/取消时立即重绘，不用等下一次采样刷新
-            const excludeLoadAngleInput = document.getElementById('waveExcludeLoadAngleInput');
-            if (excludeLoadAngleInput) {
-                excludeLoadAngleInput.addEventListener('change', () => {
+            // 波形图“误差不计滞后角”勾选框：勾选/取消时立即重绘，不用等下一次采样刷新
+            const excludeLagAngleInput = document.getElementById('waveExcludeLagAngleInput');
+            if (excludeLagAngleInput) {
+                excludeLagAngleInput.addEventListener('change', () => {
                     if (state.waveCaptureActive || state.waveHistory.length > 0) {
                         drawWaveform();
                         if (document.getElementById('wavePopup').classList.contains('visible')) {
@@ -548,18 +548,18 @@
                 });
             }
 
-            // 负载角前馈信任度：改动时下发 0x152（百分数）。
-            // 负载角表按某个标定负载拟合，实际负载变化时真实负载角会偏离表值；
+            // 滞后角前馈信任度：改动时下发 0x152（百分数）。
+            // 滞后角表按某个标定负载拟合，实际负载变化时真实滞后角会偏离表值；
             // 降到 50~70 让前馈更保守（偏差交给 PID），0 = 完全关闭前馈。
-            const ffRatioInput = document.getElementById('loadAngleFfRatioInput');
+            const ffRatioInput = document.getElementById('lagAngleFfRatioInput');
             if (ffRatioInput) {
                 ffRatioInput.addEventListener('change', async function () {
                     const percent = clamp(Math.round(Number(this.value) || 0), 0, 100);
                     this.value = String(percent);
                     if (!state.connected) return;
                     try {
-                        await writeRegister(CUSTOM_REGS.LOAD_ANGLE_FF_RATIO, percent);
-                        log(`[INFO] 负载角前馈信任度 = ${percent}%`);
+                        await writeRegister(CUSTOM_REGS.LAG_ANGLE_FF_RATIO, percent);
+                        log(`[INFO] 滞后角前馈信任度 = ${percent}%`);
                     } catch (error) {
                         log(`[ERROR] 设置前馈信任度失败：${error.message}`);
                     }
@@ -644,10 +644,10 @@
                 const followErrorDeg = (frame.value | 0) / 1000.0;
                 state.motionFollowErrorDeg = followErrorDeg;
             }
-            if (frame.reg === CUSTOM_REGS.LOAD_ANGLE_MDEG) {
-                // 实时负载角（mdeg 有符号）：按当前转速从 load_angle_ 拟合模型算出。
-                // 未标定负载角表时固件恒发 0。
-                state.motionLoadAngleDeg = (frame.value | 0) / 1000.0;
+            if (frame.reg === CUSTOM_REGS.LAG_ANGLE_MDEG) {
+                // 实时滞后角（mdeg 有符号）：按当前转速从 lag_angle_ 拟合模型算出。
+                // 未标定滞后角表时固件恒发 0。
+                state.motionLagAngleDeg = (frame.value | 0) / 1000.0;
             }
             if (frame.reg === 0x122) {
                 const windowValue = clamp(Number(frame.value || 10000), 10000, 10000);

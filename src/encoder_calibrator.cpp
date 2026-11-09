@@ -382,7 +382,7 @@ bool EncoderCalibrator::startMove(uint16_t index)
 //   HOMING    角度模式已把转子拉向 0 度；等“误差≤0.25° 且相邻拍变化≤0.20°”连续 100 拍
 //             -> 退出角度模式、stopMotion、进 SAMPLING（index=0）
 //             超时 100 万拍（约 50 秒）则 finish(false)，绝不清计数
-//   SAMPLING 先停 1000 拍（50ms）让负载角稳定，再采 202 个样本、去掉最大最小后平均
+//   SAMPLING 先停 1000 拍（50ms）让滞后角稳定，再采 202 个样本、去掉最大最小后平均
 //             -> 正向：只存数组；反向：与正向平均后写表
 //             每采完一个点调 startMove() 走下一段，阶段由 updateTrapezoid 在走完后改回 SAMPLING
 //
@@ -458,7 +458,7 @@ void EncoderCalibrator::update(uint16_t raw)
         return;
     }
 
-    // 【每个位置先停一下再采样】运动刚停时转子还在找平衡（负载角），
+    // 【每个位置先停一下再采样】运动刚停时转子还在找平衡（滞后角），
     // 立刻采样会把“还没停稳”的角度记进表里，造成系统性偏差。
     // 复用 home_wait_ticks_ 当等待计数器（进 SAMPLING / 每段移动前已清零）。
     // 时长代价：每点约 (kSettleTicks + kSamplesNeeded) 个拍 = 80+15 = 95ms，
@@ -564,7 +564,7 @@ void EncoderCalibrator::update(uint16_t raw)
     {
         const uint16_t forward_raw = (index_ < kPoints) ? forward_raw_[index_] : mean_raw;
         // 此刻手里同时拿着“正向那一趟”和“反向这一趟”的原始值，差值统计必须在这里做：
-        // 平均写进表之后两者就再也分不开了（这也是 closure 分不清负载角与逐段超差的原因）。
+        // 平均写进表之后两者就再也分不开了（这也是 closure 分不清滞后角与逐段超差的原因）。
         if (index_ < kPoints)
         {
             noteForwardBackward(index_, forward_raw, mean_raw);
@@ -680,7 +680,7 @@ void EncoderCalibrator::noteForwardBackward(uint16_t index, uint16_t fwd, uint16
 
 // ===========================================================================
 // 报出 d(i) 的均值与斜率 —— 这两个数分别对应两件完全不同的事：
-//   mean(d)/2 = 静态负载角（两趟符号相反，已被平均抵掉；对阶段 1 标定直接有用）
+//   mean(d)/2 = 静态滞后角（两趟符号相反，已被平均抵掉；对阶段 1 标定直接有用）
 //   slope(d)  ≠ 0  则说明存在逐段累积、与方向相关的超差（平均抵不掉，
 //              而且会把 closure 做成假数字）
 // ===========================================================================
@@ -701,7 +701,7 @@ void EncoderCalibrator::reportForwardBackward() const
            - static_cast<double>(fb_sum_i_) * static_cast<double>(fb_sum_d_)) / den
         : 0.0;
 
-    printf("[CAL] fwd-vs-bwd n=%u mean=%+.3fdeg (static load angle %+.3fdeg) "
+    printf("[CAL] fwd-vs-bwd n=%u mean=%+.3fdeg (static lag angle %+.3fdeg) "
            "slope=%+.3fdeg/turn max=%+.3fdeg@i=%u\r\n",
            static_cast<unsigned>(fb_pairs_),
            mean_d * lsb_deg,

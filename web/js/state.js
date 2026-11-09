@@ -87,9 +87,9 @@
             , calibrationLookupLastRaw: null
             , calibrationLookupLastCorrected: null
             , calibrationLookupRequestId: 0
-            , loadAngleCalibrationRunning: false
-            , loadAngleCalibrationCancelled: false
-            , loadAngleMaxSpeedRpm: 3000
+            , lagAngleCalibrationRunning: false
+            , lagAngleCalibrationCancelled: false
+            , lagAngleMaxSpeedRpm: 3000
             , motionRunning: false
             , encoderJitterSamples: []
             , encoderJitterRangeDeg: 0

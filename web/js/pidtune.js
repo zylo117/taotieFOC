@@ -1,6 +1,6 @@
 // PID auto-tune: trial profiles, scoring, geometric search (module 9).
 // Depends on: state, CUSTOM_REGS, writeRegister/readRegisterValue, log, writePidParameters.
-// Load order: ... -> loadangle -> pidtune -> ...
+// Load order: ... -> lagangle -> pidtune -> ...
 
         function appendTuneLog(message) {
             const logElement = document.getElementById('tuneLog');

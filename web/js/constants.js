@@ -3,7 +3,7 @@
 //
 // 从 taotie_webui.html 拆出来的第一个模块（拆分计划见 reply 里的说明）。
 // 用普通 <script> 顺序加载（非 module），所以这里声明的 const 会进入全局作用域，
-// 后面的 state.js / protocol.js / loadangle.js 等都能直接引用。
+// 后面的 state.js / protocol.js / lagangle.js 等都能直接引用。
 //
 // 加载顺序要求：本文件必须在所有引用 CUSTOM_REGS 的脚本之前。
 // ===========================================================================
@@ -55,18 +55,18 @@ const CUSTOM_REGS = {
     CALIBRATION_LOOKUP_RAW_TO_CORRECTED: 0x13A,
     CALIBRATION_LOOKUP_CORRECTED_TO_RAW: 0x13B,
     CALIBRATION_TABLE_DUMP: 0x139,
-    LOAD_ANGLE_UPLOAD_COUNT: 0x13C,
-    LOAD_ANGLE_POINT_INDEX: 0x13D,
-    LOAD_ANGLE_POINT_SPEED_RPM: 0x13E,
-    LOAD_ANGLE_POINT_MDEG: 0x13F,
-    LOAD_ANGLE_POINT_COMMIT: 0x140,
-    LOAD_ANGLE_FIT: 0x141,
-    LOAD_ANGLE_QUERY_SPEED_RPM: 0x142,
-    LOAD_ANGLE_QUERY_MDEG: 0x143,
-    LOAD_ANGLE_POINT_COUNT: 0x144,
-    LOAD_ANGLE_FIT_SLOPE: 0x145,
-    LOAD_ANGLE_FIT_INTERCEPT: 0x146,
-    LOAD_ANGLE_FIT_EXPONENT: 0x147,
+    LAG_ANGLE_UPLOAD_COUNT: 0x13C,
+    LAG_ANGLE_POINT_INDEX: 0x13D,
+    LAG_ANGLE_POINT_SPEED_RPM: 0x13E,
+    LAG_ANGLE_POINT_MDEG: 0x13F,
+    LAG_ANGLE_POINT_COMMIT: 0x140,
+    LAG_ANGLE_FIT: 0x141,
+    LAG_ANGLE_QUERY_SPEED_RPM: 0x142,
+    LAG_ANGLE_QUERY_MDEG: 0x143,
+    LAG_ANGLE_POINT_COUNT: 0x144,
+    LAG_ANGLE_FIT_SLOPE: 0x145,
+    LAG_ANGLE_FIT_INTERCEPT: 0x146,
+    LAG_ANGLE_FIT_EXPONENT: 0x147,
     ENCODER_FILTER_WINDOW: 0x148,
     EXT_FOLLOW_ENABLE: 0x149,
     EXT_FOLLOW_MAX_STEP_S: 0x14A,
@@ -76,8 +76,8 @@ const CUSTOM_REGS = {
     EXT_FOLLOW_DROPPED: 0x14E,
     EXT_FOLLOW_RESET: 0x14F,
     EXT_FOLLOW_WINDOW_REVERSALS: 0x150,
-    LOAD_ANGLE_MDEG: 0x151,
-    LOAD_ANGLE_FF_RATIO: 0x152,
+    LAG_ANGLE_MDEG: 0x151,
+    LAG_ANGLE_FF_RATIO: 0x152,
     // 写 1 = 让固件打印一次 [VLOOP] 诊断快照（P/I/D 分量 + web/live 增益对比），
     // 打完自动清零。默认不打：周期 printf 的 23ms 阻塞会干扰被诊断的闭环本身。
     VLOOP_DEBUG_PRINT: 0x155,

@@ -98,12 +98,12 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
                params.velocity_kd / 1000.0f);
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FF_RATIO)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_FF_RATIO)
     {
-        // 负载角前馈信任度：网页传百分数 0~100，内部存 0.0~1.0。
+        // 滞后角前馈信任度：网页传百分数 0~100，内部存 0.0~1.0。
         // 写 0 = 完全关闭前馈（退回无前馈行为）；写 100 = 完全相信表。
         const uint32_t percent = value > 100U ? 100U : value;
-        owner_.load_angle_feedforward_ratio_ = static_cast<float>(percent) / 100.0f;
+        owner_.lag_angle_feedforward_ratio_ = static_cast<float>(percent) / 100.0f;
         return owner_.protocol_ != nullptr && owner_.protocol_->writeRegister(reg, percent);
     }
     // ===== 校准期间：所有“闭环 / 运动命令”入口由校准器接管 =====
@@ -148,44 +148,44 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         owner_.setEncoderZero(static_cast<uint16_t>(value));
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_UPLOAD_COUNT)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_UPLOAD_COUNT)
     {
-        owner_.load_angle_fit_saved_ = false;
-        return owner_.load_angle_.beginUpload(static_cast<uint16_t>(value));
+        owner_.lag_angle_fit_saved_ = false;
+        return owner_.lag_angle_.beginUpload(static_cast<uint16_t>(value));
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_INDEX)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_POINT_INDEX)
     {
-        owner_.load_angle_point_index_ = static_cast<uint16_t>(value);
+        owner_.lag_angle_point_index_ = static_cast<uint16_t>(value);
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_SPEED_RPM)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_POINT_SPEED_RPM)
     {
-        owner_.load_angle_point_speed_rpm_ = static_cast<uint16_t>(value);
+        owner_.lag_angle_point_speed_rpm_ = static_cast<uint16_t>(value);
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_MDEG)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_POINT_MDEG)
     {
-        owner_.load_angle_point_mdeg_ = static_cast<int32_t>(value);
+        owner_.lag_angle_point_mdeg_ = static_cast<int32_t>(value);
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_COMMIT)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_POINT_COMMIT)
     {
-        return value != 0U && owner_.load_angle_.setPoint(owner_.load_angle_point_index_,
-                                                         owner_.load_angle_point_speed_rpm_,
-                                                         owner_.load_angle_point_mdeg_);
+        return value != 0U && owner_.lag_angle_.setPoint(owner_.lag_angle_point_index_,
+                                                         owner_.lag_angle_point_speed_rpm_,
+                                                         owner_.lag_angle_point_mdeg_);
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FIT)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_FIT)
     {
         if (value == 0U)
         {
             return true;
         }
-        owner_.load_angle_fit_saved_ = owner_.load_angle_.fit() && owner_.load_angle_.saveToFlash();
-        return owner_.load_angle_fit_saved_;
+        owner_.lag_angle_fit_saved_ = owner_.lag_angle_.fit() && owner_.lag_angle_.saveToFlash();
+        return owner_.lag_angle_fit_saved_;
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_QUERY_SPEED_RPM)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_QUERY_SPEED_RPM)
     {
-        owner_.load_angle_query_speed_rpm_ = static_cast<uint16_t>(value);
+        owner_.lag_angle_query_speed_rpm_ = static_cast<uint16_t>(value);
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_START_RPM)
@@ -444,10 +444,10 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
         *value = static_cast<uint32_t>(gain * 1000.0f + 0.5f);
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FF_RATIO)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_FF_RATIO)
     {
         // 回读百分数（0~100），与写入口径一致
-        *value = static_cast<uint32_t>(owner_.load_angle_feedforward_ratio_ * 100.0f + 0.5f);
+        *value = static_cast<uint32_t>(owner_.lag_angle_feedforward_ratio_ * 100.0f + 0.5f);
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_CLOSED_LOOP_ENABLE)
@@ -570,61 +570,61 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
         *value = static_cast<uint32_t>(static_cast<int32_t>(owner_.target_angle_deg_ * 1000.0f));
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_INDEX)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_POINT_INDEX)
     {
-        *value = owner_.load_angle_point_index_;
+        *value = owner_.lag_angle_point_index_;
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_SPEED_RPM)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_POINT_SPEED_RPM)
     {
-        uint16_t speed_rpm = owner_.load_angle_point_speed_rpm_;
-        int32_t load_angle_mdeg = owner_.load_angle_point_mdeg_;
-        owner_.load_angle_.getPoint(owner_.load_angle_point_index_, &speed_rpm, &load_angle_mdeg);
+        uint16_t speed_rpm = owner_.lag_angle_point_speed_rpm_;
+        int32_t lag_angle_mdeg = owner_.lag_angle_point_mdeg_;
+        owner_.lag_angle_.getPoint(owner_.lag_angle_point_index_, &speed_rpm, &lag_angle_mdeg);
         *value = speed_rpm;
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_MDEG)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_POINT_MDEG)
     {
-        uint16_t speed_rpm = owner_.load_angle_point_speed_rpm_;
-        int32_t load_angle_mdeg = owner_.load_angle_point_mdeg_;
-        owner_.load_angle_.getPoint(owner_.load_angle_point_index_, &speed_rpm, &load_angle_mdeg);
-        *value = static_cast<uint32_t>(load_angle_mdeg);
+        uint16_t speed_rpm = owner_.lag_angle_point_speed_rpm_;
+        int32_t lag_angle_mdeg = owner_.lag_angle_point_mdeg_;
+        owner_.lag_angle_.getPoint(owner_.lag_angle_point_index_, &speed_rpm, &lag_angle_mdeg);
+        *value = static_cast<uint32_t>(lag_angle_mdeg);
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_QUERY_SPEED_RPM)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_QUERY_SPEED_RPM)
     {
-        *value = owner_.load_angle_query_speed_rpm_;
+        *value = owner_.lag_angle_query_speed_rpm_;
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_QUERY_MDEG)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_QUERY_MDEG)
     {
-        *value = static_cast<uint32_t>(owner_.load_angle_.getLoadAngleMilliDegrees(owner_.load_angle_query_speed_rpm_));
-        return owner_.load_angle_.isFitted();
+        *value = static_cast<uint32_t>(owner_.lag_angle_.getLagAngleMilliDegrees(owner_.lag_angle_query_speed_rpm_));
+        return owner_.lag_angle_.isFitted();
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_POINT_COUNT)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_POINT_COUNT)
     {
-        *value = owner_.load_angle_.pointCount();
+        *value = owner_.lag_angle_.pointCount();
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FIT)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_FIT)
     {
-        *value = owner_.load_angle_fit_saved_ ? 1U : 0U;
+        *value = owner_.lag_angle_fit_saved_ ? 1U : 0U;
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_SLOPE)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_FIT_SLOPE)
     {
-        *value = static_cast<uint32_t>(static_cast<int32_t>(owner_.load_angle_.powerCoefficient() * 1000000.0f));
-        return owner_.load_angle_.isFitted();
+        *value = static_cast<uint32_t>(static_cast<int32_t>(owner_.lag_angle_.powerCoefficient() * 1000000.0f));
+        return owner_.lag_angle_.isFitted();
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_INTERCEPT)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_FIT_INTERCEPT)
     {
-        *value = static_cast<uint32_t>(static_cast<int32_t>(owner_.load_angle_.interceptDeg() * 1000.0f));
-        return owner_.load_angle_.isFitted();
+        *value = static_cast<uint32_t>(static_cast<int32_t>(owner_.lag_angle_.interceptDeg() * 1000.0f));
+        return owner_.lag_angle_.isFitted();
     }
-    if (reg == TMC2209_EXT_PARAM_LOAD_ANGLE_FIT_EXPONENT)
+    if (reg == TMC2209_EXT_PARAM_LAG_ANGLE_FIT_EXPONENT)
     {
-        *value = static_cast<uint32_t>(static_cast<int32_t>(owner_.load_angle_.exponent() * 1000000.0f));
-        return owner_.load_angle_.isFitted();
+        *value = static_cast<uint32_t>(static_cast<int32_t>(owner_.lag_angle_.exponent() * 1000000.0f));
+        return owner_.lag_angle_.isFitted();
     }
     if (reg == TMC2209_EXT_PARAM_POSITION_KP)
     {

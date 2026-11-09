@@ -20,7 +20,7 @@
 // ---------------------------------------------------------------------------
 // 问题：“本窗最后一批脉冲已经交给 TMR2/DMA” ≠ “电机轴已经走到位”。
 //   1) 硬件侧：脉冲还在 DMA 序列里排队，最后一个窗口要 50us 才能发完；
-//   2) 机械侧：电机轴经过负载/皮带总比命令脉冲滞后一个负载角。
+//   2) 机械侧：电机轴经过负载/皮带总比命令脉冲滞后一个滞后角。
 // 原来在“计步数达到总数”的那一拍就直接 stopMotion()，它内部会立刻
 // stepper_stop_motion_timer() 关掉 TMR2 + DMA，把尾巴上还没发完的几十个脉冲
 // 直接砍掉 —— 高转速1200rpm下一个窗口就 50 多步 ≈ 0.36°，于是“总是少一点点”。
@@ -28,7 +28,7 @@
 // 若干拍不动，再判定运动结束。这段时间的编码器行程照样计入统计。
 // ===========================================================================
 // 最短沉降时间：必须大于一个控制窗口(50us) 加上若干机械时间常数。
-// 给 15ms 是因为负载角回位/皮带回弹通常在 10ms 量级，太短会在轴还在动时就收尾。
+// 给 15ms 是因为滞后角回位/皮带回弹通常在 10ms 量级，太短会在轴还在动时就收尾。
 #ifndef STEP_SETTLE_MIN_US
 #define STEP_SETTLE_MIN_US 15000U
 #endif
@@ -40,7 +40,7 @@
 
 // 多少 LSB 之内算“不动”。滤波后的原始角在跳变沿上会来回抹 1~2 LSB，
 // 卡到 1 LSB 的话可能永远凑不满连续 8 拍，反而每次都要等满超时。
-// 2 LSB = 0.011°，比机械负载角小两个数量级，不会把“还在爬行”误判成“已静止”。
+// 2 LSB = 0.011°，比机械滞后角小两个数量级，不会把“还在爬行”误判成“已静止”。
 #ifndef STEP_SETTLE_QUIET_LSB
 #define STEP_SETTLE_QUIET_LSB 2
 #endif
@@ -220,9 +220,9 @@ namespace
 }
 
 ClosedLoopController::ClosedLoopController()
-        : driver_(nullptr), encoder_(nullptr), protocol_(nullptr), load_angle_point_index_(0U),
-            load_angle_point_speed_rpm_(0U), load_angle_point_mdeg_(0), load_angle_query_speed_rpm_(0U),
-            load_angle_fit_saved_(false),
+        : driver_(nullptr), encoder_(nullptr), protocol_(nullptr), lag_angle_point_index_(0U),
+            lag_angle_point_speed_rpm_(0U), lag_angle_point_mdeg_(0), lag_angle_query_speed_rpm_(0U),
+            lag_angle_fit_saved_(false),
       base_position_kp_(60.0f), base_position_ki_(20.0f), base_position_kd_(60.0f),
       base_velocity_kp_(30.0f), base_velocity_ki_(8.0f), base_velocity_kd_(20.0f),
       adaptive_pid_enabled_(false), adaptive_config_{0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
@@ -326,15 +326,15 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
         encoder_zero_ = encoder_->readFilteredAngle();
     }
 
-    load_angle_fit_saved_ = load_angle_.loadFromFlash();
-    // 【诊断】负载角表到底有没有标定过：
-    //   fitted=0 -> 从未标定（或 Flash 里没有有效表）-> 负载角前馈和 0x151 遥测恒为 0
+    lag_angle_fit_saved_ = lag_angle_.loadFromFlash();
+    // 【诊断】滞后角表到底有没有标定过：
+    //   fitted=0 -> 从未标定（或 Flash 里没有有效表）-> 滞后角前馈和 0x151 遥测恒为 0
     //   fitted=1 -> 已加载，看 coeff/intercept/exp 是否合理
-    printf("[LOAD_ANGLE] fitted=%d coeff=%.6f intercept=%.4f exp=%.4f\r\n",
-           load_angle_.isFitted() ? 1 : 0,
-           static_cast<double>(load_angle_.powerCoefficient()),
-           static_cast<double>(load_angle_.interceptDeg()),
-           static_cast<double>(load_angle_.exponent()));
+    printf("[LAG_ANGLE] fitted=%d coeff=%.6f intercept=%.4f exp=%.4f\r\n",
+           lag_angle_.isFitted() ? 1 : 0,
+           static_cast<double>(lag_angle_.powerCoefficient()),
+           static_cast<double>(lag_angle_.interceptDeg()),
+           static_cast<double>(lag_angle_.exponent()));
 
     if (driver_ != nullptr)
     {
@@ -627,7 +627,7 @@ void ClosedLoopController::startMotion()
     }
 
     // 【连续运行模式】速度模式 + pulseCount=0 表示“无限跑”：
-    // 负载角标定 / PID 扫速需要电机一直转，随时改 0x11B 改速度、改 0x11E 改方向，
+    // 滞后角标定 / PID 扫速需要电机一直转，随时改 0x11B 改速度、改 0x11E 改方向，
     // 不能每到一段就停机重启（那样每点都要重新从 0 加速，完全没法用）。
     // 用 0xFFFFFFFF 会让 updateTrapezoid 里的“剩余步数”永远远大于减速点，
     // 所以永远不进 DECEL，直到上位机主动改速度或停止。
@@ -994,10 +994,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         closed_loop_compensation_enabled_ && motion_ramp_stage_ != RAMP_STAGE_SETTLE)
     {
         const bool latter_half = motion_steps_emitted_ >= motion_pulse_count_ / 2U;
-        // 【评分用残差】扣掉负载角：稳态时 follow_error 本来就应该等于 -负载角，
+        // 【评分用残差】扣掉滞后角：稳态时 follow_error 本来就应该等于 -滞后角，
         // 不扣的话所有 PID 组合的评分都被固有滞后的 1.5° 抬高，好差参数差异被压缩。
         pid_auto_tuner_.addSample(
-            -(motion_follow_error_deg_ - motion_load_angle_deg_), latter_half);
+            -(motion_follow_error_deg_ - motion_lag_angle_deg_), latter_half);
     }
 
     // 如果当前没有运动在运行，直接退出
@@ -1032,39 +1032,39 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // encoder_speed_rpm_ = measured_rpm;
     }
 
-    // 【负载角前馈】实时计算，供遥测（0x151）、网页「误差不计负载角」和补偿段共用。
+    // 【滞后角前馈】实时计算，供遥测（0x151）、网页「误差不计滞后角」和补偿段共用。
     // 必须每拍都算：补偿段只在 closed_loop_compensation_enabled_ 为真时执行，
-    // 如果把计算放在那里，用户不勾闭环补偿时网页的负载角就永远是 0。
+    // 如果把计算放在那里，用户不勾闭环补偿时网页的滞后角就永远是 0。
     //
     // 【符号必须带方向】和 motion_follow_error_deg_ 同号：
-    //   正向运动（落后）：follow_error = -L  ->  负载角也取 -L
-    //   反向运动（落后）：follow_error = +L  ->  负载角也取 +L
-    // 这样两边同号，补偿段用 follow_error - load_angle 才能在上两种情况下都得 0。
+    //   正向运动（落后）：follow_error = -L  ->  滞后角也取 -L
+    //   反向运动（落后）：follow_error = +L  ->  滞后角也取 +L
+    // 这样两边同号，补偿段用 follow_error - lag_angle 才能在上两种情况下都得 0。
     // 早期版本这里存绝对值，导致反向时 effective = +L + L = 2L，
     // PID 输出过大的负修正直接把基础速度抵消掉，表现为“反向直接卡住”。
-    motion_load_angle_deg_ = 0.0f;
-    if (load_angle_.isFitted())
+    motion_lag_angle_deg_ = 0.0f;
+    if (lag_angle_.isFitted())
     {
         const float load_speed_abs = fast_abs(encoder_speed_rpm_);
         const auto load_speed_u16 = static_cast<uint16_t>(
             load_speed_abs > 65535.0f ? 65535.0f : load_speed_abs);
         const float load_magnitude_deg =
-            static_cast<float>(load_angle_.getLoadAngleMilliDegrees(load_speed_u16)) / 1000.0f;
-        motion_load_angle_deg_ = (encoder_speed_rpm_ >= 0.0f)
+            static_cast<float>(lag_angle_.getLagAngleMilliDegrees(load_speed_u16)) / 1000.0f;
+        motion_lag_angle_deg_ = (encoder_speed_rpm_ >= 0.0f)
             ? -load_magnitude_deg
             : load_magnitude_deg;
 
         // 【前馈信任度】0~100%，默认 100%。
-        // 负载角不只与速度有关，还和实际负载有关：表是按某个标定负载拟合的，
-        // 负载变化时真实负载角会偏离表值。信任度降到 50~70% 可以让前馈更保守，
+        // 滞后角不只与速度有关，还和实际负载有关：表是按某个标定负载拟合的，
+        // 负载变化时真实滞后角会偏离表值。信任度降到 50~70% 可以让前馈更保守，
         // 把偏差交给 PID（代价是响应变慢），避免表值偏高时前馈过度、PID 反向修正。
-        motion_load_angle_deg_ *= load_angle_feedforward_ratio_;
+        motion_lag_angle_deg_ *= lag_angle_feedforward_ratio_;
 
         // 【上限钳位】防止标定数据异常（或速度外推）导致前馈爆表。
-        // 5° 远大于实际负载角量级（1200RPM 约 3°），只做安全网用。
-        constexpr float kMaxLoadAngleCompDeg = 5.0f;
-        motion_load_angle_deg_ = fast_clamp(motion_load_angle_deg_,
-                                           -kMaxLoadAngleCompDeg, kMaxLoadAngleCompDeg);
+        // 5° 远大于实际滞后角量级（1200RPM 约 3°），只做安全网用。
+        constexpr float kMaxLagAngleCompDeg = 5.0f;
+        motion_lag_angle_deg_ = fast_clamp(motion_lag_angle_deg_,
+                                           -kMaxLagAngleCompDeg, kMaxLagAngleCompDeg);
     }
 
     if (closed_loop_angle_mode_enabled_)
@@ -1093,20 +1093,20 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     {
         const float dt = static_cast<float>(delta_ramp_ns) / 1.0e9f;
 
-        // 【阶段 2：负载角前馈】电机轴永远落后于命令脉冲，这个滞后角就是负载角，
+        // 【阶段 2：滞后角前馈】电机轴永远落后于命令脉冲，这个滞后角就是滞后角，
         // 是物理必然，不应该被 PID 当成误差去“追”——追不上会让积分项无限累积，
         // 最后表现为脉冲暴增、电机停摆。
         //
-        // 做法：用 load_angle_ 表（按速度拟合的幂律模型）算出“理论上应该落后多少”，
+        // 做法：用 lag_angle_ 表（按速度拟合的幂律模型）算出“理论上应该落后多少”，
         // 从跟随误差里减掉，PID 只处理“超出预期的偏差”。
         //
         // 符号约定：
         //   motion_follow_error_deg_ = 实际 - 命令（正向落后时为负，反向落后时为正）
-        //   motion_load_angle_deg_   = 已带方向，与 follow_error 同号
+        //   motion_lag_angle_deg_   = 已带方向，与 follow_error 同号
         //   所以这里用「减」：正向 -L - (-L) = 0，反向 +L - (+L) = 0。
-        const float effective_error_deg = motion_follow_error_deg_ - motion_load_angle_deg_;
+        const float effective_error_deg = motion_follow_error_deg_ - motion_lag_angle_deg_;
 
-        // 残差死区：负载角模型不可能完全准（拟合误差 + 机械差异），
+        // 残差死区：滞后角模型不可能完全准（拟合误差 + 机械差异），
         // 剩下的零点几度不该让积分项持续爬升。死区外的部分才送进 PID。
         constexpr float kResidualDeadbandDeg = 0.05f;
         float pid_error_deg = 0.0f;

@@ -162,12 +162,12 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
                                         c.external_pulse_follower_.droppedSteps());
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS,
                                         c.external_pulse_follower_.windowReversals());
-        // 实时负载角（mdeg，已带方向）：网页用于显示和「误差不计负载角」。
-        // motion_load_angle_deg_ 在控制器里已经按方向取过符号了：
+        // 实时滞后角（mdeg，已带方向）：网页用于显示和「误差不计滞后角」。
+        // motion_lag_angle_deg_ 在控制器里已经按方向取过符号了：
         //   正向运动 -> -L（和 follow_error 同号）
         //   反向运动 -> +L
         // 这里直接发，不能再取反（否则反向运动时符号会错）。
-        c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_LOAD_ANGLE_MDEG,
-                                        static_cast<uint32_t>(static_cast<int32_t>(c.motion_load_angle_deg_ * 1000.0f)));
+        c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_LAG_ANGLE_MDEG,
+                                        static_cast<uint32_t>(static_cast<int32_t>(c.motion_lag_angle_deg_ * 1000.0f)));
     }
 }

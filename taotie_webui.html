@@ -648,7 +648,7 @@
             background: rgba(0, 0, 0, 0.72);
         }
 
-        .load-angle-dialog {
+        .lag-angle-dialog {
             width: min(760px, calc(100vw - 32px));
             max-width: 760px;
             padding: 18px;
@@ -659,28 +659,28 @@
             box-shadow: var(--shadow);
         }
 
-        .load-angle-dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
-        .load-angle-head,
-        .load-angle-actions,
-        .load-angle-status {
+        .lag-angle-dialog::backdrop { background: rgba(0, 0, 0, 0.72); }
+        .lag-angle-head,
+        .lag-angle-actions,
+        .lag-angle-status {
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 12px;
         }
-        .load-angle-head h2 { margin: 0; font-size: 1.05rem; }
-        .load-angle-actions { justify-content: flex-start; margin: 14px 0; }
-        .load-angle-status { color: var(--muted); font-size: 0.86rem; margin-bottom: 10px; }
-        .load-angle-chart { display: block; width: 100%; height: 340px; border: 1px solid var(--line); background: #0b1220; }
-        .load-angle-equation { margin-top: 10px; color: var(--muted); font-size: 0.9rem; }
-        .load-angle-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-        .load-angle-settings label { display: grid; gap: 5px; color: var(--muted); font-size: 0.8rem; }
-        .load-angle-settings input { min-width: 0; width: 100%; padding: 8px; }
-        .load-angle-legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 9px; color: var(--muted); font-size: 0.8rem; }
-        .load-angle-legend span { display: inline-flex; align-items: center; gap: 6px; }
-        .load-angle-legend i { width: 9px; height: 9px; border-radius: 50%; background: #38bdf8; }
-        .load-angle-legend .fit-dot { background: #f59e0b; }
-        @media (max-width: 640px) { .load-angle-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        .lag-angle-head h2 { margin: 0; font-size: 1.05rem; }
+        .lag-angle-actions { justify-content: flex-start; margin: 14px 0; }
+        .lag-angle-status { color: var(--muted); font-size: 0.86rem; margin-bottom: 10px; }
+        .lag-angle-chart { display: block; width: 100%; height: 340px; border: 1px solid var(--line); background: #0b1220; }
+        .lag-angle-equation { margin-top: 10px; color: var(--muted); font-size: 0.9rem; }
+        .lag-angle-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+        .lag-angle-settings label { display: grid; gap: 5px; color: var(--muted); font-size: 0.8rem; }
+        .lag-angle-settings input { min-width: 0; width: 100%; padding: 8px; }
+        .lag-angle-legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 9px; color: var(--muted); font-size: 0.8rem; }
+        .lag-angle-legend span { display: inline-flex; align-items: center; gap: 6px; }
+        .lag-angle-legend i { width: 9px; height: 9px; border-radius: 50%; background: #38bdf8; }
+        .lag-angle-legend .fit-dot { background: #f59e0b; }
+        @media (max-width: 640px) { .lag-angle-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
         .cal-table-head,
         .cal-table-controls,
@@ -819,7 +819,7 @@
             <button class="primary" id="connectBtn">连接串口</button>
             <button id="readAllBtn">读取全部</button>
             <button id="calibrateEncoderBtn">磁编码器校准</button>
-            <button id="loadAngleCalibrationBtn">负载角校准</button>
+            <button id="lagAngleCalibrationBtn">滞后角校准</button>
             <button id="shockCalibrationBtn">急刹冲击标定</button>
             <button id="viewCalibrationTableBtn">查看校准表</button>
             <button class="warn" id="tuneBtn">自动整定</button>
@@ -930,7 +930,7 @@
                     </div>
                     <div class="status-line mt" style="flex-direction:column;align-items:flex-start;gap:4px;">
                         <span>即时转速：<strong id="waveSpeedReadout">0.00 RPM</strong></span>
-                        <span>实时负载角：<strong id="waveLoadAngleReadout">0.000°</strong></span>
+                        <span>实时滞后角：<strong id="waveLagAngleReadout">0.000°</strong></span>
                         <span>跟随误差：<strong id="waveErrorReadout">0.000°</strong></span>
                     </div>
                 </div>
@@ -939,8 +939,8 @@
                 <div class="card">
                     <h3 style="margin:0 0 12px;">实时波形（转速 / 跟随误差）</h3>
                     <label class="checkbox-row" style="margin:-6px 0 10px;">
-                        <input id="waveExcludeLoadAngleInput" type="checkbox"/>
-                        <span>误差不计负载角（勾选后波形用 跟随误差 + 负载角 绘制；仅影响显示，不改控制）</span>
+                        <input id="waveExcludeLagAngleInput" type="checkbox"/>
+                        <span>误差不计滞后角（勾选后波形用 跟随误差 + 滞后角 绘制；仅影响显示，不改控制）</span>
                     </label>
                     <div class="tiny mt" id="motionDurationEstimate">预计时间：等待参数</div>
                     <canvas height="260" id="motionWaveCanvas" style="width:100%;height:260px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"
@@ -998,8 +998,8 @@
                                    value="4"/>
                         </div>
                         <div class="field">
-                            <label for="loadAngleFfRatioInput">负载角前馈信任度（%）</label>
-                            <input id="loadAngleFfRatioInput" max="100" min="0" step="5" type="number"
+                            <label for="lagAngleFfRatioInput">滞后角前馈信任度（%）</label>
+                            <input id="lagAngleFfRatioInput" max="100" min="0" step="5" type="number"
                                    value="100"/>
                         </div>
                     </div>
@@ -1410,48 +1410,48 @@
         <pre aria-label="校准表数据" class="cal-table-values" id="calibrationTableValues"></pre>
     </dialog>
 
-    <dialog class="load-angle-dialog" id="loadAngleDialog">
-        <div class="load-angle-head">
-            <h2>速度-负载角校准</h2>
-            <button id="closeLoadAngleDialogBtn" type="button">关闭</button>
+    <dialog class="lag-angle-dialog" id="lagAngleDialog">
+        <div class="lag-angle-head">
+            <h2>速度-滞后角校准</h2>
+            <button id="closeLagAngleDialogBtn" type="button">关闭</button>
         </div>
-        <div class="load-angle-actions">
-            <button class="primary" id="startLoadAngleCalibrationBtn" type="button">开始校准</button>
-            <button class="danger" id="cancelLoadAngleCalibrationBtn" type="button" disabled>停止校准</button>
-            <button id="refreshLoadAngleCalibrationBtn" type="button">读取已保存数据</button>
+        <div class="lag-angle-actions">
+            <button class="primary" id="startLagAngleCalibrationBtn" type="button">开始校准</button>
+            <button class="danger" id="cancelLagAngleCalibrationBtn" type="button" disabled>停止校准</button>
+            <button id="refreshLagAngleCalibrationBtn" type="button">读取已保存数据</button>
         </div>
-        <div class="load-angle-settings">
-            <label>起始转速 (RPM)<input id="loadAngleStartRpm" type="number" min="0" max="12000" step="1" value="0"></label>
-            <label>结束转速 (RPM)<input id="loadAngleStopRpm" type="number" min="0" max="12000" step="1" value="3000"></label>
-            <label>速度步进 (RPM)<input id="loadAngleStepRpm" type="number" min="1" max="12000" step="1" value="50"></label>
-            <label>每点间隔 (秒)<input id="loadAngleIntervalSec" type="number" min="2" max="120" step="0.5" value="2"></label>
-            <label>中心采样窗 (秒)<input id="loadAngleSampleWindowSec" type="number" min="0.2" max="30" step="0.1" value="1"></label>
-            <label>采样间隔 (毫秒)<input id="loadAngleSamplePeriodMs" type="number" min="20" max="1000" step="10" value="100"></label>
-            <label>加速度 (RPM/s)<input id="loadAngleAccelRpmS" type="number" min="1" max="12000" step="1" value="6000"></label>
-            <label>速度容差 (%)<input id="loadAngleTolerancePct" type="number" min="1" max="50" step="1" value="12"></label>
+        <div class="lag-angle-settings">
+            <label>起始转速 (RPM)<input id="lagAngleStartRpm" type="number" min="0" max="12000" step="1" value="0"></label>
+            <label>结束转速 (RPM)<input id="lagAngleStopRpm" type="number" min="0" max="12000" step="1" value="3000"></label>
+            <label>速度步进 (RPM)<input id="lagAngleStepRpm" type="number" min="1" max="12000" step="1" value="50"></label>
+            <label>每点间隔 (秒)<input id="lagAngleIntervalSec" type="number" min="2" max="120" step="0.5" value="2"></label>
+            <label>中心采样窗 (秒)<input id="lagAngleSampleWindowSec" type="number" min="0.2" max="30" step="0.1" value="1"></label>
+            <label>采样间隔 (毫秒)<input id="lagAngleSamplePeriodMs" type="number" min="20" max="1000" step="10" value="100"></label>
+            <label>加速度 (RPM/s)<input id="lagAngleAccelRpmS" type="number" min="1" max="12000" step="1" value="6000"></label>
+            <label>速度容差 (%)<input id="lagAngleTolerancePct" type="number" min="1" max="50" step="1" value="12"></label>
         </div>
-        <div class="load-angle-status">
-            <span aria-live="polite" id="loadAngleStatus">等待读取固件数据</span>
-            <span id="loadAngleProgress">0 / 0</span>
+        <div class="lag-angle-status">
+            <span aria-live="polite" id="lagAngleStatus">等待读取固件数据</span>
+            <span id="lagAngleProgress">0 / 0</span>
         </div>
-        <canvas aria-label="速度与负载角关系图" class="load-angle-chart" id="loadAngleChart"></canvas>
-        <div class="load-angle-legend"><span><i></i>上位机采样均值</span><span><i class="fit-dot"></i>固件拟合查询</span></div>
-        <div class="load-angle-equation" id="loadAngleEquation">固件拟合函数：--</div>
+        <canvas aria-label="速度与滞后角关系图" class="lag-angle-chart" id="lagAngleChart"></canvas>
+        <div class="lag-angle-legend"><span><i></i>上位机采样均值</span><span><i class="fit-dot"></i>固件拟合查询</span></div>
+        <div class="lag-angle-equation" id="lagAngleEquation">固件拟合函数：--</div>
     </dialog>
 
     <!-- ================= 阶段 2：急刹冲击标定 =================
          参数完全独立（不与规划运动共用），因为两者场景不同：
          规划运动是连续定位，这里是一组离散的速度 × 加速度倍数冲击。 -->
-    <dialog class="load-angle-dialog" id="shockDialog">
-        <div class="load-angle-head">
+    <dialog class="lag-angle-dialog" id="shockDialog">
+        <div class="lag-angle-head">
             <h2>急刹冲击标定</h2>
             <button id="closeShockDialogBtn" type="button">关闭</button>
         </div>
-        <div class="load-angle-actions">
+        <div class="lag-angle-actions">
             <button class="primary" id="startShockCalibrationBtn" type="button">开始标定</button>
             <button class="danger" id="cancelShockCalibrationBtn" type="button" disabled>停止</button>
         </div>
-        <div class="load-angle-settings">
+        <div class="lag-angle-settings">
             <label>速度点 (RPM，逗号分隔)<input id="shockSpeedList" type="text" value="300, 600, 1200"></label>
             <label>加速度倍数 M (逗号分隔)<input id="shockAccelMultipliers" type="text" value="1, 2, 4, 8"></label>
             <label>加速度基准 (RPM/s)<input id="shockBaseAccelRpmS" type="number" min="1" max="12000" step="1" value="6000"></label>
@@ -1462,7 +1462,7 @@
         </div>
         <!-- PID 面板：与主界面的 posKp/posKi/... 双向同步，改完即时写固件。
              角度模式下固件会把 P 项自动缩小 1/100，I/D 不缩放，所以这里填的就是运动模式的值。 -->
-        <div class="load-angle-settings">
+        <div class="lag-angle-settings">
             <label>位置环 Kp<input id="shockPosKp" type="number" min="0" max="30000" step="0.01" value="60"></label>
             <label>位置环 Ki<input id="shockPosKi" type="number" min="0" max="3000" step="0.01" value="20"></label>
             <label>位置环 Kd<input id="shockPosKd" type="number" min="0" max="30000" step="0.01" value="60"></label>
@@ -1471,15 +1471,15 @@
             <label>速度环 Kd<input id="shockVelKd" type="number" min="0" max="30000" step="0.01" value="20"></label>
             <button id="saveParamsBtn" type="button">写入参数到 Flash</button>
         </div>
-        <div class="load-angle-legend">
+        <div class="lag-angle-legend">
             <span><strong>调参顺序：</strong>① 先看开环基线（M=1）→ ② 只改位置环 P（RMS 变小且峰值不爆）→ ③ 加 Kd 压峰值（恢复时间不增）→ ④ 加 Ki 消稳态（一振荡就退回）。
             每轮只改一个参数。峰值/稳态比 &gt;5 = Kd 不足；闭环/开环峰值比 &gt;0.9 = PID 几乎没起作用；闭环 RMS 反而变大 = Kd 在放大测速噪声。</span>
         </div>
-        <div class="load-angle-status">
+        <div class="lag-angle-status">
             <span aria-live="polite" id="shockStatus">等待开始</span>
             <span id="shockProgress">0 / 0</span>
         </div>
-        <div class="load-angle-legend">
+        <div class="lag-angle-legend">
             <span>峰值 = 冲击段最大 |跟随误差|；恢复时间 = 从峰值回落到稳态×1.2 的时间；稳态 RMS = 匀速段均方根</span>
         </div>
         <table class="shock-result-table" id="shockResultTable">
@@ -1497,7 +1497,7 @@
     <script src="web/js/rx.js"></script>
     <script src="web/js/ui.js"></script>
     <script src="web/js/waveform.js"></script>
-    <script src="web/js/loadangle.js"></script>
+    <script src="web/js/lagangle.js"></script>
     <script src="web/js/pidtune.js"></script>
     <script src="web/js/enccal.js"></script>
     <script src="web/js/shock.js"></script>
