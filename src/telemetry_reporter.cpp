@@ -77,17 +77,12 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
         // 已移到 kMedium（≈ 100Hz）档。
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, c.step_pulse_width_ns_);
 
-        // 【VLOOP 诊断】写 0x155=1 才打一次（打完自动清零）。默认不打：
-        // 三行浮点 printf ≈ 270 字节 @115200 ≈ 23ms，周期打印会干扰被诊断的对象。
-        // 三行分工：
-        //   第 1 行：抖动归因 —— 位置/速度误差与 P、I、D 三个分量分开给出，直接看谁在抖；
-        //          （err 现在是“轮廓位置 - 实际位置”的跟踪误差，不再是指令-实际的目标误差）
-        //          ff 列就是梯形轮廓给的速度前馈量，能直接看出前馈有没有出力、有没有贴限速帽。
-        //   第 2 行：系数透明 —— web 是网页/Flash 口径（base_*），live 是此刻真正在算的 kp/ki/kd，
-        //          两者不相等就说明中间有运行时改增益（applyGainScales）在生效；
-        //   第 3 行：两个环的 p_scale。现在两条路径都应该是 1.00（角度模式历史上缩到 0.01），
-        //          保留这一列是为了防回归：一旦哪里又偷加口径倍率，这里会直接显示出来。
-        if (c.vloop_debug_once_)
+        // 【VLOOP 诊断】写 0x155=1 才打一次（打完自动清零）。默认不打。
+        // 【绝对不能在运动/角度模式运行中打印】这三行浮点 ≈ 270 字节 @115200 ≈ 23ms，
+        // 而 syncProtocolTelemetry() 是在 20kHz 控制任务里调用的 —— 打印一次就会
+        // 整整丢掉 ~460 个控制拍，脉冲出口直接停摆，电机顿一下。
+        // 所以：请求先挂起，等运动停下来再打；运动中写 0x155 不会立刻输出。
+        if (c.vloop_debug_once_ && !c.motion_running_ && !c.closed_loop_angle_mode_enabled_)
         {
             c.vloop_debug_once_ = false;
             {

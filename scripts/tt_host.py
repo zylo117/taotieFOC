@@ -31,6 +31,7 @@ R_MODE = 0x11E
 R_MOTION = 0x11F
 R_SPEED_RPM = 0x120
 R_FOLLOW_ERR = 0x121
+R_ENCODER_ANGLE_MDEG = 0x116
 R_STEP_WIDTH = 0x123
 R_ENABLE = 0x124
 R_DISABLE = 0x125
@@ -50,6 +51,7 @@ R_STALL_DETECTED = 0x15D
 R_STALL_EVENTS = 0x15E
 R_STALL_CLEAR = 0x15F
 R_TUNE_PEAK = 0x160
+R_QUICK_STOP = 0x163
 
 # 运动模式
 MODE_POS_FWD, MODE_POS_REV = 0, 1
@@ -225,9 +227,48 @@ class TTHost:
         v = self.read(R_MICROSTEPS)
         return 64 if v is None or v == 0 else int(v)
 
+    def run_steady_trial(self, rpm, accel_rpm_s, sample_s=1.5, spinup_s=0.7) -> dict:
+        """恒速纹波试验：速度模式跑到稳态，只在这段窗口里开评分采样。
+
+        为什么要单独一个方法：普通 run_motion 从启动就开始采样，评分会被加速段
+        的暂态占满，看不出"恒速时抖不抖"。这个才是用户抱怨的那个指标。
+        """
+        self.motion_history.clear()
+        self.write(R_START_RPM, max(10, int(rpm // 2)))
+        self.write(R_MAX_RPM, int(rpm))
+        self.write(R_ACCEL, int(accel_rpm_s))
+        self.write(R_PULSE_COUNT, 0)      # 速度模式 + 0 = 无限跑
+        self.write(R_MODE, 2)             # VELOCITY_FORWARD
+        self.write(R_TUNE_CTRL, 0)        # 先不开采样
+        t0 = time.time()
+        self.write(R_MOTION, 1)
+        self.wait_motion_state(1, 3.0)
+        time.sleep(spinup_s)
+        self.write(R_TUNE_CTRL, 1)
+        time.sleep(sample_s)
+        self.write(R_TUNE_CTRL, 0)
+        self.write(R_MOTION, 0)
+        stopped = self.wait_motion_state(0, 8.0)
+        score = self.read(R_TUNE_SCORE)
+        samples = self.read(R_TUNE_SAMPLES)
+        peak = self.read(R_TUNE_PEAK)
+        return {
+            "started": True,
+            "finished": stopped,
+            "elapsed_s": time.time() - t0,
+            "score_mdeg": None if score is None else _u32(score),
+            "samples": 0 if samples is None else _u32(samples),
+            "peak_mdeg": 0 if peak is None else _u32(peak),
+            "final_err_mdeg": 0,
+        }
+
     def run_motion(self, start_rpm, max_rpm, accel_rpm_s, pulse_count, mode,
-                   timeout=None, poll=True) -> dict:
-        """跑一次规划运动，返回评分/峰值/样本数。调用方负责 enable/disable。"""
+                   timeout=None, poll=True, quick_stop_after_s=None) -> dict:
+        """跑一次规划运动，返回评分/峰值/样本数。调用方负责 enable/disable。
+
+        quick_stop_after_s 不为空时：启动后等这么久就下"快速停车"（0x163=1），
+        用来做急刹冲击标定（按加速度减速，不是瞬间关脉冲）。
+        """
         self.motion_history.clear()
         self.write(R_START_RPM, int(start_rpm))
         self.write(R_MAX_RPM, int(max_rpm))
@@ -236,12 +277,18 @@ class TTHost:
         self.write(R_MODE, int(mode))
         self.write(R_TUNE_CTRL, 1)
         if timeout is None:
-            turns = pulse_count / float(self.microsteps() * 200)
-            accel_s = max(0.0, (max_rpm - start_rpm)) / max(1.0, accel_rpm_s)
-            timeout = max(6.0, turns * 60.0 / max(20.0, max_rpm) * 3.0 + accel_s * 4.0 + 4.0)
+            if quick_stop_after_s is not None:
+                timeout = 20.0
+            else:
+                turns = pulse_count / float(self.microsteps() * 200)
+                accel_s = max(0.0, (max_rpm - start_rpm)) / max(1.0, accel_rpm_s)
+                timeout = max(6.0, turns * 60.0 / max(20.0, max_rpm) * 3.0 + accel_s * 4.0 + 4.0)
         t0 = time.time()
         self.write(R_MOTION, 1)
         started = self.wait_motion_state(1, 3.0)
+        if quick_stop_after_s is not None:
+            time.sleep(max(0.05, quick_stop_after_s))
+            self.write(R_QUICK_STOP, 1)
         finished = self.wait_motion_state(0, timeout)
         elapsed = time.time() - t0
         self.write(R_TUNE_CTRL, 0)

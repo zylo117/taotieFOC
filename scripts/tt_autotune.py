@@ -40,6 +40,7 @@ from tt_host import (
     MODE_ALT_FWD,
     MODE_POS_FWD,
     MODE_POS_REV,
+    MODE_VEL_FWD,
     R_TUNE_PEAK,
     R_TUNE_SCORE,
     R_TUNE_SAMPLES,
@@ -64,7 +65,8 @@ COOLDOWN_S = 0.25
 
 
 class Profile:
-    def __init__(self, name, mode, start_rpm, max_rpm, accel_rpm_s, turns, weight=1.0):
+    def __init__(self, name, mode, start_rpm, max_rpm, accel_rpm_s, turns, weight=1.0,
+                 quick_stop=False, steady=False):
         self.name = name
         self.mode = mode
         self.start_rpm = start_rpm
@@ -72,6 +74,10 @@ class Profile:
         self.accel_rpm_s = accel_rpm_s
         self.turns = turns
         self.weight = weight
+        # True = 恒速跑一小段后下"快速停车"（0x163），用于急刹冲击标定
+        self.quick_stop = quick_stop
+        # True = 只在恒速稳态窗口里采样评分（turns 当作采样秒数）
+        self.steady = steady
 
 
 def build_profiles(max_rpm: float, quick: bool):
@@ -88,6 +94,12 @@ def build_profiles(max_rpm: float, quick: bool):
         Profile("急加速", MODE_POS_FWD, max(10, m * 0.30), max(20, m * 0.85), max(600, m * 14.0), 2.0),
         # 往返 2 圈 = 每程 1 圈：太短（0.5 圈）时换向屏蔽 100ms 会吃掉大半评分样本
         Profile("急转弯往返", MODE_ALT_FWD, max(10, m * 0.35), max(20, m * 0.75), max(600, m * 14.0), 2.0),
+        # 恒速纹波：只统计稳态窗口（加速段不计分）。这是"闭环一开就抖"的直接指标。
+        Profile("恒速纹波", MODE_VEL_FWD, max(20, m * 0.5), max(40, m * 0.75), 1200.0, 1.5,
+                steady=True),
+        # 急刹冲击：恒速跑 0.45s 后下 0x163 快速停车（按加速度减速，不是瞬间关脉冲）。
+        # 只参与"全工况验证"，不参与增益搜索 —— 否则会把正常跟随的整定结果带偏。
+        Profile("急刹冲击", MODE_VEL_FWD, max(10, m * 0.6), m, max(200, m * 5.0), 0.45, quick_stop=True),
     ]
     if quick:
         # 搜索必须包含反向：反向补偿的符号是独立的一条路径（曾因为没投影到
@@ -141,9 +153,18 @@ class Tuner:
         # 0x107 掉电默认是关的。不写这一行，重新上电后第一次整定会"评分无效(samples=0)"，
         # 而且整定出来的是一组开环参数（等于没整定）。
         h.write(0x107, 1)
-        pulse_count = max(2, int(round(profile.turns * self.spr)))
-        result = h.run_motion(profile.start_rpm, profile.max_rpm, profile.accel_rpm_s,
-                              pulse_count, profile.mode)
+        if profile.steady:
+            result = h.run_steady_trial(profile.max_rpm, profile.accel_rpm_s,
+                                        sample_s=profile.turns)
+        elif profile.quick_stop:
+            # 速度模式 + pulse_count=0 -> 固件当作无限跑；到点再下快速停车
+            result = h.run_motion(profile.start_rpm, profile.max_rpm, profile.accel_rpm_s,
+                                  0, profile.mode,
+                                  quick_stop_after_s=profile.turns)
+        else:
+            pulse_count = max(2, int(round(profile.turns * self.spr)))
+            result = h.run_motion(profile.start_rpm, profile.max_rpm, profile.accel_rpm_s,
+                                  pulse_count, profile.mode)
         # 【阶段收尾】等运动真的结束之后再失能。run_motion 已经等到 0x11F=0（沉降完成）。
         h.write(0x11F, 0)
         time.sleep(0.12)

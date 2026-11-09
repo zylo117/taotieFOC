@@ -136,6 +136,21 @@ public:
     // 设置目标速度（转/秒）。
     void setTargetVelocity(float rps);
 
+    // ===== 使能来源 =====
+    // 0 = 上位机控制（0x124/0x125，默认）；1 = 外部 EN 引脚（PC13，低电平使能）。
+    // 外部模式下 PC13 是唯一权威：固件不再用上位机命令直接写芯片 EN，只跟随引脚电平
+    //（故障/用户失能仍然能压住它）。参数写 Flash，重上电保持。
+    enum EnableMode : uint32_t
+    {
+        ENABLE_MODE_HOST = 0U,
+        ENABLE_MODE_EXTERNAL_PIN = 1U
+    };
+    void setEnableMode(uint32_t mode);
+    uint32_t getEnableMode() const;
+    bool isDriverEnabled() const;
+    // 实际 EN 引脚电平（外部模式用；host 模式返回 2 表示"不适用"）
+    uint32_t getExternalEnableLevel() const;
+
     enum MotionMode : uint32_t
     {
         MOTION_MODE_POSITION_FORWARD = 0U,
@@ -214,11 +229,15 @@ public:
     // 读取目标位置步数。
     int32_t getTargetSteps() const;
     // 堵转状态：置位后 stopMotion + 失能，必须写 0x15F=1 清除才能再启动。
-    bool isStallDetected() const;
-    void clearStall();
+    bool isStallDetected() const;    void clearStall();
     // 启用/关闭“堵转自动失能”（默认开；整定脚本会在每个试验结束后自己失能）。
     void setStallAutoDisable(bool enable);
     uint32_t getStallEvents() const;
+    // 快速停车（0x163=1）：按 0x11C 的加速度减速到 0 后就地收尾，不等走完剩余脉冲。
+    // 用来做"急刹冲击"标定：比起直接 stopMotion（瞬间关脉冲）更接近真实急停，
+    // 而且整定器能在这段减速里继续采样，量到冲击峰值。
+    void requestQuickStop();
+    bool isQuickStopActive() const;
     float getEncoderZero() const;
     void setEncoderZero(float zero_angle);
     float getEncoderFilteredAngle() const;
@@ -262,9 +281,12 @@ private:
     float updateSpeedEstimate(uint64_t now_ns);
     void resetSpeedEstimate();
     // 滞后角的平滑与限速：表值不得随速度噪声/方向抖动直接灌进 PID
-    void updateLagAngleFeedforward(float measured_rps);
+    void updateLagAngleFeedforward(float measured_rps, float commanded_rps);
     // 堵转/不转保护：有脉冲在发、轴却长时间不动就停机失能
     void updateStallGuard(uint64_t now_ns);
+    // 使能来源：外部 EN 引脚跟随 / 上位机请求（外部模式下"使能"被忽略）
+    void updateEnableFromExternalPin();
+    void requestDriverEnable(bool want);
     // 实际生效的滞后角前馈量（毫度，已带方向，正=与跟随误差同号）
     int32_t effectiveLagAngleMilliDeg() const;
     void updateExternalPulseChannel(uint64_t now_ns, float encoder_delta_deg);
@@ -522,6 +544,30 @@ private:
     uint16_t stall_last_raw_ = 0U;
     bool stall_armed_ = false;
 
+    // ===== 使能来源（0x161）=====
+    // 外部 EN 接 PC13，低电平使能。外部模式下这个引脚是唯一权威：
+    // 上位机的 0x124/0x125 只改 user_disabled_ 这个"允许位"，不直接写芯片 EN。
+    volatile uint32_t enable_mode_ = ENABLE_MODE_HOST;
+    volatile bool driver_enabled_ = false;
+    volatile uint8_t external_en_level_ = 1U;   // 1=高(失能) 0=低(使能)
+
+    // ===== 快速停车（0x163）=====
+    volatile bool quick_stop_requested_ = false;
+    volatile bool motion_quick_stop_ = false;
+
+    // ===== 起步屏蔽拍数 =====
+    // 规划运动第一拍脉冲频率就从 0 跳到 start_rpm，转子要靠惯性跟上去，
+    // 这十几毫秒里"跟随误差"能到 -2°，是惯性暂态不是丢步。实测 1 圈短行程
+    // 末端多转 0.55~0.9°，几乎全部来自这段 ~10ms 的 ±0.2rps 补偿尖峰。
+    // 这段窗口里把两个环的输入清零（输出也强制 0），等转子跟上再接管。
+    static constexpr uint16_t kMotionStartBlankRamps = 400U;   // 400 x 50us = 20ms
+    volatile uint16_t motion_start_blank_ramps_ = 0U;
+
+    // 速度环输出的一阶平滑状态（抑制把测速噪声直接灌进脉冲频率）
+    float velocity_correction_lpf_ = 0.0f;
+    // 位置环用的跟随误差一阶平滑（约 2ms）
+    float follow_error_lpf_deg_ = 0.0f;
+
     // 滞后角前馈信任度（0.0~1.0）。
     // 滞后角只与速度有关是个简化假设：真实滞后角还取决于负载大小，而本方案
     // 无法接入 TMC2209 的电流环，感知不到负载变化。信任度降到 0.5~0.7 可以
@@ -532,6 +578,16 @@ private:
     // 50% 把最坏情况的偏差减半，同时保留"剔除物理滞后"的作用。
     // 装上真实负载、重新标定滞后角表之后，应该把 0x152 设回 100。
     float lag_angle_feedforward_ratio_ = 0.5f;
+
+    // ===== 滞后角模型的两个可调参数（都存 Flash，见 docs/lag_angle_and_pid.md）=====
+    // 【为什么不写死】滞后角表只在标定时的负载/转速下准；负载一变，表值和真实值
+    // 差多少是未知的，死区必须能跟着调。写死一个 0.7° 只是把"某个负载下的经验值"
+    // 固化进代码，换台机器就不对了。
+    //   lag_accel_coef_mdeg_per_rpm_s：加减速项 ΔL ≈ c·a（物理上来自 J·a/k_t），
+    //       单位"毫度/(RPM/s)"，默认 1 -> 600RPM/s 时约 0.6°。0 = 关闭该项。
+    //   lag_deadband_mdeg：恒速段残差死区（毫度）。表越准可以越小；标定不充分就放大。
+    volatile uint16_t lag_accel_coef_mdeg_per_rpm_s_ = 0U;
+    volatile uint16_t lag_deadband_mdeg_ = 400U;
 
     // 遥测节拍器：控制环每拍推进一格，syncProtocolTelemetry 按档位选刷哪一堆。
     // 以前直接用 rampUpdate 里的 ramp_loop_idx 取模，而那个计数器是 uint16_t，

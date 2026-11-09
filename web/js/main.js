@@ -350,6 +350,38 @@
                 document.getElementById('tabExtFollowBtn').addEventListener('click', () => switchWorkTab('extfollow'));
             document.getElementById('readAllBtn').addEventListener('click', readAllConfig);
             document.getElementById('lagAngleCalibrationBtn').addEventListener('click', openLagAngleCalibration);
+            // 滞后角模型参数：改完立即下发（存 Flash 靠「写入参数到 Flash」按钮）
+            for (const [id, reg] of [['lagAccelCoef', CUSTOM_REGS.LAG_ACCEL_COEF],
+                                     ['lagDeadbandMdeg', CUSTOM_REGS.LAG_DEADBAND_MDEG]]) {
+                document.getElementById(id).addEventListener('change', async (event) => {
+                    if (!state.connected) { log('[WARN] 未连接串口'); return; }
+                    const value = Math.max(0, Math.round(Number(event.target.value) || 0));
+                    try {
+                        await writeRegisterAndWaitAck(reg, value);
+                        log(`[INFO] 0x${reg.toString(16)} = ${value}`);
+                    } catch (error) {
+                        log(`[ERROR] 写 0x${reg.toString(16)} 失败：${error.message}`);
+                    }
+                });
+            }
+            document.getElementById('enableModeSelect').addEventListener('change', async (event) => {                const mode = Number(event.target.value) | 0;
+                if (!state.connected) {
+                    log('[WARN] 未连接串口，使能来源未下发');
+                    return;
+                }
+                try {
+                    await writeRegisterAndWaitAck(CUSTOM_REGS.ENABLE_MODE, mode);
+                    log(`[INFO] 使能来源 = ${mode === 1 ? '外部 EN 引脚（PC13 低有效）' : '上位机控制'}`);
+                    await refreshEnableState();
+                } catch (error) {
+                    log('[ERROR] 设置使能来源失败：' + error.message);
+                    // 写失败就把下拉框拨回固件里的真实值
+                    try {
+                        const real = (await readRegisterValue(CUSTOM_REGS.ENABLE_MODE)) | 0;
+                        event.target.value = String(real & 1);
+                    } catch (e) { /* ignore */ }
+                }
+            });
             document.getElementById('clearStallBtn').addEventListener('click', async () => {
                 if (!state.connected) return;
                 try {
@@ -456,8 +488,14 @@
             document.getElementById('stopBtn').addEventListener('click', stopMotor);
             document.getElementById('startMotionBtn').addEventListener('click', startMotionTest);
             document.getElementById('stopMotionBtn').addEventListener('click', stopMotionTest);
-            document.getElementById('motorEnableBtn').addEventListener('click', () => sendManualMotionCommand(0x124, '电机使能：EN=0'));
-            document.getElementById('motorDisableBtn').addEventListener('click', () => sendManualMotionCommand(0x125, '电机失能：EN=1'));
+            document.getElementById('motorEnableBtn').addEventListener('click', async () => {
+                await sendManualMotionCommand(0x124, '电机使能：EN=0');
+                await refreshEnableState();
+            });
+            document.getElementById('motorDisableBtn').addEventListener('click', async () => {
+                await sendManualMotionCommand(0x125, '电机失能：EN=1');
+                await refreshEnableState();
+            });
             document.getElementById('singleStepBtn').addEventListener('click', async () => {
                 // 从页面下拉框读取参数
                 const startRpm = Number(document.getElementById('startRpmSelect').value);
@@ -744,6 +782,11 @@
             updateTelemetryDisplay();
             ensureWaveTimerAlive();
         }, 200);
+
+        // 外部 EN 电平随时可能被 PLC 改变：每秒回读一次使能状态（不参与控制，只显示）
+        setInterval(() => {
+            if (state.connected) void refreshEnableState();
+        }, 1000);
 
         const originalHandleIncomingFrame = handleIncomingFrame;
         handleIncomingFrame = function (frame) {

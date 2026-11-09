@@ -104,6 +104,11 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         params.angle_velocity_kp = 0U;
         params.angle_velocity_ki = 0U;
         params.angle_velocity_kd = 0U;
+        // 使能来源（0=上位机 / 1=外部 EN 引脚）：网页连上时会读回这个值
+        params.en_mode = static_cast<uint16_t>(owner_.getEnableMode());
+        // 滞后角模型的可调参数（见 docs/lag_angle_and_pid.md）
+        params.lag_accel_coef_mdeg_per_rpm_s = owner_.lag_accel_coef_mdeg_per_rpm_s_;
+        params.lag_deadband_mdeg = owner_.lag_deadband_mdeg_;
         // 角度限速/加速度不存 Flash：它们属于“本次运行设定”，每次按现场需要在界面上调，
         // 存进 Flash 反而会让一个旧值在重启后静默生效。结构体字段保留（置 0）用于兼容。
         params.angle_max_rpm = 0U;
@@ -395,6 +400,37 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         return owner_.protocol_ != nullptr &&
                owner_.protocol_->setCustomParameter(reg, static_cast<uint32_t>(alpha * 1000.0f + 0.5f));
     }
+    if (reg == TMC2209_EXT_PARAM_LAG_ACCEL_COEF)
+    {
+        // 毫度/(RPM/s)：上限 50 已经很夸张（600RPM/s 会给 30°），只做安全钳位
+        const uint32_t clamp_value = value > 50U ? 50U : value;
+        owner_.lag_accel_coef_mdeg_per_rpm_s_ = static_cast<uint16_t>(clamp_value);
+        printf("[PARAM] lag accel coef = %lu mdeg/(RPM/s)\r\n", static_cast<unsigned long>(clamp_value));
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_LAG_DEADBAND_MDEG)
+    {
+        const uint32_t clamp_value = value > 2000U ? 2000U : value;
+        owner_.lag_deadband_mdeg_ = static_cast<uint16_t>(clamp_value);
+        printf("[PARAM] lag deadband = %lu mdeg\r\n", static_cast<unsigned long>(clamp_value));
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ENABLE_MODE)
+    {
+        owner_.setEnableMode(value);
+        printf("[PARAM] enable mode = %s (0x161=%lu)\r\n",
+               value == ClosedLoopController::ENABLE_MODE_EXTERNAL_PIN ? "external EN pin (PC13, low-active)" : "host",
+               static_cast<unsigned long>(value));
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_QUICK_STOP)
+    {
+        if (value != 0U)
+        {
+            owner_.requestQuickStop();
+        }
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_STALL_CLEAR)
     {
         if (value != 0U)
@@ -409,10 +445,8 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         // 显式使能：清除安全锁，允许启动
         owner_.user_disabled_ = false;
         owner_.stopMotion();
-        if (owner_.driver_ != nullptr)
-        {
-            owner_.driver_->setEnable(true);
-        }
+        // 统一入口：外部 EN 模式下这里不会强行把芯片 EN 拉低（引脚说了算）。
+        owner_.requestDriverEnable(true);
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_MOTOR_DISABLE)
@@ -424,10 +458,7 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         owner_.user_disabled_ = true;
         owner_.closed_loop_angle_mode_enabled_ = false;
         owner_.stopMotion();
-        if (owner_.driver_ != nullptr)
-        {
-            owner_.driver_->setEnable(false);
-        }
+        owner_.requestDriverEnable(false);
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_SINGLE_HALF_ROUND_FORWARD_STEPS)
@@ -693,6 +724,36 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_PID_TUNE_PEAK_MDEG)
     {
         *value = owner_.pid_auto_tuner_.peakMilliDegrees();
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_LAG_ACCEL_COEF)
+    {
+        *value = owner_.lag_accel_coef_mdeg_per_rpm_s_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_LAG_DEADBAND_MDEG)
+    {
+        *value = owner_.lag_deadband_mdeg_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ENABLE_MODE)
+    {
+        *value = owner_.getEnableMode();
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ENABLE_STATE)
+    {
+        *value = owner_.isDriverEnabled() ? 1U : 0U;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_EXT_EN_LEVEL)
+    {
+        *value = owner_.getExternalEnableLevel();
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_COMP_RPS_MILLI)
+    {
+        *value = static_cast<uint32_t>(static_cast<int32_t>(owner_.compensated_rps_ * 1000.0f));
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_STALL_DETECTED)

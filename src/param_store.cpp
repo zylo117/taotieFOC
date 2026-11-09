@@ -11,7 +11,8 @@ static const uint32_t kParamFlashBase = 0x0801E000U;
 static const uint32_t kParamMagic = 0x54414F54U;   // 'TAOT'
 static const uint16_t kParamVersionV1 = 1U;
 static const uint16_t kParamVersionV2 = 2U;
-static const uint16_t kParamVersion = 3U;
+static const uint16_t kParamVersionV3 = 3U;
+static const uint16_t kParamVersion = 4U;
 
 // v1 布局：只是为了还能读出旧记录做迁移用。**永远不要拿它写 Flash**。
 // v2 只是在末尾追加了 6 个角度模式增益，所以 v1 的字段偏移完全不变。
@@ -33,6 +34,36 @@ struct PersistedMotorParamsV1
     uint32_t velocity_ki;
     uint32_t velocity_kd;
     uint16_t reserved[7];
+};
+
+// v3 布局（v2 与它同尺寸：v2 的最后 2 字节是 reserved[1]，v3 把它用作 en_mode）。
+// 【为什么必须单独定义】校验和是按“该版本自己的结构大小”算的。v4 在末尾追加了
+// 4 字节，如果拿 sizeof(v4) 去校验一条 v3 记录，会多读 4 个 0xFFFF —— 校验必然
+// 失败，表现为“升级固件后参数莫名其妙丢了、回到编译期默认值”。
+struct PersistedMotorParamsV3
+{
+    uint32_t magic;
+    uint16_t version;
+    uint16_t checksum;
+    uint16_t microsteps;
+    uint16_t run_current_ma;
+    uint16_t hold_current_ma;
+    uint16_t step_pulse_ns;
+    uint16_t angle_max_rpm;
+    uint16_t angle_accel_rpm_s;
+    uint32_t position_kp;
+    uint32_t position_ki;
+    uint32_t position_kd;
+    uint32_t velocity_kp;
+    uint32_t velocity_ki;
+    uint32_t velocity_kd;
+    uint32_t angle_position_kp;
+    uint32_t angle_position_ki;
+    uint32_t angle_position_kd;
+    uint32_t angle_velocity_kp;
+    uint32_t angle_velocity_ki;
+    uint32_t angle_velocity_kd;
+    uint16_t en_mode;
 };
 
 namespace
@@ -74,6 +105,22 @@ namespace
         out->angle_velocity_kp = 200U;     // 0.2
         out->angle_velocity_ki = 0U;
         out->angle_velocity_kd = 0U;
+    }
+
+    // v4 的滞后角模型默认值。
+    // 【实测后把加减速项默认关掉（0）】它在正向确实能把末端过冲从 0.94° 压到 0.5°
+    // 以下，但在反向会把"欠程"放大（实测反向 -0.9° -> -1.6°），说明正反向的真实
+    // 滞后角并不对称（重力/预载），一个纯线性的 c·a 项没有好处。留着寄存器，
+    // 需要时在网页上打开并单独标定。
+    // 死区 400 毫度是"末端过冲 vs 跟踪刚度"的折中：150 时 1 圈末端 +0.65°，
+    // 400 时 +0.45°；再大就会让末端精度掉到 1° 以上。
+    constexpr uint16_t kDefaultLagAccelCoef = 0U;
+    constexpr uint16_t kDefaultLagDeadband = 400U;
+
+    void fillLagModelDefaults(PersistedMotorParams* out)
+    {
+        out->lag_accel_coef_mdeg_per_rpm_s = kDefaultLagAccelCoef;
+        out->lag_deadband_mdeg = kDefaultLagDeadband;
     }
 
     // v3 的 PID 起手值（与实际增益一致，×1000 存储）。
@@ -122,46 +169,47 @@ bool param_store_load(PersistedMotorParams* out)
         return true;
     }
 
-    // v1 / v2 -> v3：字段偏移完全一致，先原样搬过来，再把 PID 重置成新口径的默认值。
-    if (flash_params->version == kParamVersionV2 || flash_params->version == kParamVersionV1)
+    // v2 / v3 -> v4：前面所有字段偏移一致，按 V3 的长度校验并整段搬过来，
+    // 再补上 v4 新增的两个滞后角模型参数（旧记录里没有，用默认值）。
+    if (flash_params->version == kParamVersionV3 || flash_params->version == kParamVersionV2)
     {
-        if (flash_params->version == kParamVersionV1 &&
-            flash_params_v1->checksum != computeChecksumV1(*flash_params_v1))
+        const PersistedMotorParamsV3* v3 =
+            reinterpret_cast<const PersistedMotorParamsV3*>(kParamFlashBase);
+        const uint16_t v3_checksum = checksumOf(
+            reinterpret_cast<const uint8_t*>(v3), sizeof(PersistedMotorParamsV3),
+            offsetof(PersistedMotorParamsV3, checksum) + sizeof(v3->checksum));
+        if (flash_params->checksum != v3_checksum)
         {
             return false;
         }
-        if (flash_params->version == kParamVersionV2 &&
-            flash_params->checksum != computeChecksum(*flash_params))
+        std::memcpy(out, v3, sizeof(PersistedMotorParamsV3));
+        out->version = kParamVersion;
+        fillLagModelDefaults(out);
+        printf("[PARAM] migrated v%u -> v4: kept PID/en_mode, lag-model params = defaults\r\n",
+               static_cast<unsigned>(flash_params->version));
+        return true;
+    }
+
+    // v1 -> v4
+    if (flash_params->version == kParamVersionV1)
+    {
+        if (flash_params_v1->checksum != computeChecksumV1(*flash_params_v1))
         {
             return false;
         }
 
         out->version = kParamVersion;
-        out->microsteps = flash_params->microsteps;
-        out->run_current_ma = flash_params->run_current_ma;
-        out->hold_current_ma = flash_params->hold_current_ma;
-        out->step_pulse_ns = flash_params->step_pulse_ns;
+        out->microsteps = flash_params_v1->microsteps;
+        out->run_current_ma = flash_params_v1->run_current_ma;
+        out->hold_current_ma = flash_params_v1->hold_current_ma;
+        out->step_pulse_ns = flash_params_v1->step_pulse_ns;
         out->angle_max_rpm = 0U;
         out->angle_accel_rpm_s = 0U;
+        out->en_mode = 0U;
         fillPidDefaultsV3(out);
-        if (flash_params->version == kParamVersionV1)
-        {
-            // v1 没有角度字段：它们本来就不再用，统一写 0
-            fillAngleDefaults(out);
-            printf("[PARAM] migrated v1 -> v3: PID reset to new scale (tune again), "
-                   "angle fields unused\r\n");
-        }
-        else
-        {
-            out->angle_position_kp = 0U;
-            out->angle_position_ki = 0U;
-            out->angle_position_kd = 0U;
-            out->angle_velocity_kp = 0U;
-            out->angle_velocity_ki = 0U;
-            out->angle_velocity_kd = 0U;
-            printf("[PARAM] migrated v2 -> v3: velocity-loop gain scale changed "
-                   "(old values were 100x), PID reset to safe defaults -- re-tune, then save\r\n");
-        }
+        fillAngleDefaults(out);
+        fillLagModelDefaults(out);
+        printf("[PARAM] migrated v1 -> v4: PID reset to new scale, lag-model params = defaults\r\n");
         return true;
     }
 

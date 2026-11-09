@@ -271,6 +271,19 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
                c.motion_direction_);
     }
 
+    // ---------- 快速停车请求（急刹冲击标定用）----------
+    // 与 stopMotion() 的区别：stopMotion 是瞬间关脉冲（机械自由滑行），这里按
+    // 0x11C 的加速度真正减速到 0，并在速度到 0 时就地收尾（不要求走完剩余脉冲）。
+    // 这样整定器能在减速段继续采样，量到真正的"急刹冲击"峰值。
+    if (c.quick_stop_requested_ && c.motion_running_ &&
+        c.motion_ramp_stage_ != ClosedLoopController::RAMP_STAGE_SETTLE)
+    {
+        c.quick_stop_requested_ = false;
+        c.motion_quick_stop_ = true;
+        c.motion_ramp_stage_ = ClosedLoopController::RAMP_STAGE_DECEL;
+        c.steps_to_decel_ = 0xFFFFFFFFU;   // 不靠"剩余步数"触发，只靠速度到 0
+    }
+
     // ---------- 全部脉冲发完 ----------
     if (c.motion_steps_emitted_ >= c.motion_pulse_count_)
     {
@@ -435,12 +448,20 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
         c.current_step_speed_ -= c.motion_accel_step_s2_ * dt_ramp_s;
         if (c.current_step_speed_ <= 0.0f)
         {
+            if (c.motion_quick_stop_)
+            {
+                // 急刹完成：把"目标脉冲数"改成已发数，下一拍就走"全部发完 -> SETTLE"。
+                // 注意必须走 else-if：否则紧接的爬行分支会立刻把速度又抬起来。
+                c.current_step_speed_ = 0.0f;
+                c.motion_quick_stop_ = false;
+                c.motion_pulse_count_ = c.motion_steps_emitted_;
+            }
             // 【死锁保护】速度已经减到 0，但还有脉冲没发完（剩余步数 > 0）。
             // 以前这里直接置 0 就不管了：状态机永远停在 DECEL，motion_running_ 一直是真，
             // 上位机等 0x11F 变 0 只能等到超时；电机也确实少走了那一截
             // （实测 2 圈运动停在 25220/25600，差 1.5%）。
             // 现在的处理：用一个小爬行速度把尾巴补完，让“全部发完 -> SETTLE”正常接管。
-            if (remaining_steps > 0U)
+            else if (remaining_steps > 0U)
             {
                 float creep = c.motion_start_step_s_ * 0.5f;
                 if (creep < 400.0f)

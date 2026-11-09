@@ -48,7 +48,18 @@ struct PersistedMotorParams
     uint32_t angle_velocity_kp;
     uint32_t angle_velocity_ki;
     uint32_t angle_velocity_kd;
-    uint16_t reserved[1];       // 预留到字号对齐，方便以后扩展
+    // 【v3 复用原 reserved[0]，结构体大小不变】使能来源：0=上位机，1=外部 EN 引脚(PC13)。
+    // 旧记录这里读出来是 0（=上位机），正好是安全默认值，不需要结构体版本迁移。
+    uint16_t en_mode;
+
+    // 【v4】滞后角模型的两个可调参数（都不该写死，见 docs/lag_angle_and_pid.md）：
+    //   lag_accel_coef_mdeg_per_rpm_s：加速时转子要多落后多少。物理上 ΔL ≈ (J/k)·a，
+    //       所以用"毫度/(RPM/s)"的线性系数，默认 1（600RPM/s 时约 0.6°）。
+    //       0 = 关闭加减速项（退回只按转速查表）。
+    //   lag_deadband_mdeg：恒速段的残差死区（毫度），默认 150。
+    //       它应该和"滞后角表有多准"匹配：表越准可以越小；标定不充分就给它大一点。
+    uint16_t lag_accel_coef_mdeg_per_rpm_s;
+    uint16_t lag_deadband_mdeg;
 };
 
 // 从 Flash 读取参数到 out。返回 true 表示校验通过、内容有效。

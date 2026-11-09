@@ -274,6 +274,7 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
     // 固件原来完全没有参数持久化，掉电后 PID 全丢、回到编译期默认值；
     // 现在只要用户点过一次「写入参数」，重启就能自动恢复。
     uint16_t boot_microsteps = 0U;
+    uint16_t boot_enable_mode = ENABLE_MODE_HOST;
     {
         PersistedMotorParams params = {};
         if (param_store_load(&params))
@@ -301,6 +302,13 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
             {
                 boot_microsteps = params.microsteps;
             }
+            if (params.en_mode <= 1U)
+            {
+                boot_enable_mode = params.en_mode;
+            }
+            // 滞后角模型参数：旧记录（v1/v2/v3）在迁移时已经填了默认值
+            lag_accel_coef_mdeg_per_rpm_s_ = params.lag_accel_coef_mdeg_per_rpm_s;
+            lag_deadband_mdeg_ = (params.lag_deadband_mdeg >= 10U) ? params.lag_deadband_mdeg : 150U;
             if (params.step_pulse_ns >= kMinStepPulseNs && params.step_pulse_ns <= kMaxStepPulseNs)
             {
                 step_pulse_width_ns_ = params.step_pulse_ns;
@@ -329,6 +337,16 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
     // 硬件捕获 + DMA 逐脉冲快照，避免 DIR 在 rampUpdate 里采样时已经翻转。
     input_gpio.gpio_pins = EN_OUT_PIN;
     gpio_init(EN_OUTPUT_PORT, &input_gpio);
+
+    // 外部 EN 输入（PC13，低电平使能）：上拉输入，悬空读高 = 失能，安全侧默认。
+    crm_periph_clock_enable(CRM_GPIOC_PERIPH_CLOCK, TRUE);
+    gpio_init_type ext_en_gpio;
+    gpio_default_para_init(&ext_en_gpio);
+    ext_en_gpio.gpio_mode = GPIO_MODE_INPUT;
+    ext_en_gpio.gpio_pull = GPIO_PULL_UP;
+    ext_en_gpio.gpio_pins = EXT_EN_PIN;
+    gpio_init(EXT_EN_PORT, &ext_en_gpio);
+    external_en_level_ = (gpio_input_data_bit_read(EXT_EN_PORT, EXT_EN_PIN) != RESET) ? 1U : 0U;
 
     position_pid_.setGains(base_position_kp_, base_position_ki_, base_position_kd_);
     velocity_pid_.setGains(base_velocity_kp_, base_velocity_ki_, base_velocity_kd_);
@@ -368,11 +386,19 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
             driver_->setMicrosteps(boot_microsteps);
         }
         driver_->setEnable(false);
+        driver_enabled_ = false;
         driver_->setDirection(false);
         driver_->setStepState(false);
         printf("[PARAM] microsteps active = %u (steps/rev = %lu)\r\n",
                static_cast<unsigned>(driver_->config().microsteps),
                static_cast<unsigned long>(getMicroStepsPerRound(driver_)));
+        // 恢复使能来源（必须在 driver init 之后：setEnableMode 会写一次 EN）。
+        if (boot_enable_mode == ENABLE_MODE_EXTERNAL_PIN)
+        {
+            setEnableMode(ENABLE_MODE_EXTERNAL_PIN);
+            printf("[PARAM] enable mode = external EN pin (PC13, low-active), level=%u\r\n",
+                   static_cast<unsigned>(external_en_level_));
+        }
     }
 
     last_process_time_us_ = 0U;
@@ -562,6 +588,91 @@ void ClosedLoopController::setTargetVelocity(float rps)
     target_velocity_rps_ = rps;
 }
 
+// ===========================================================================
+// 使能来源：上位机 / 外部 EN 引脚（PC13，低电平使能）
+//
+// 为什么要有这个开关：外部脉冲跟随模式下，主控（PLC/上位机）那根 EN 才是
+// 真正的急停/使能线；而网页上也有一个"使能/失能"按钮。两者直接抢同一个
+// 驱动器 EN 脚，就会出现"网页点了使能，外部 EN 还是高电平，芯片到底听谁的"。
+// 现在明确二选一：
+//   HOST      —— 只有 0x124/0x125 能改 EN（默认，兼容旧行为）
+//   EXTERNAL  —— PC13 电平是唯一权威；上位机只能"撤销许可"（失能），不能强行使能
+// 故障（编码器/磁场/堵转）永远能压住使能，不受这个开关影响。
+// ===========================================================================
+void ClosedLoopController::setEnableMode(uint32_t mode)
+{
+    enable_mode_ = (mode == ENABLE_MODE_EXTERNAL_PIN) ? ENABLE_MODE_EXTERNAL_PIN : ENABLE_MODE_HOST;
+    // 切换来源时先关 EN：避免"外部引脚是低"时一改配置电机就自己转起来。
+    // 之后由主机显式 0x124，或由外部引脚拉低来重新使能。
+    if (driver_ != nullptr)
+    {
+        driver_->setEnable(false);
+    }
+    driver_enabled_ = false;
+    external_en_level_ = (gpio_input_data_bit_read(EXT_EN_PORT, EXT_EN_PIN) != RESET) ? 1U : 0U;
+}
+
+uint32_t ClosedLoopController::getEnableMode() const
+{
+    return enable_mode_;
+}
+
+bool ClosedLoopController::isDriverEnabled() const
+{
+    return driver_enabled_;
+}
+
+uint32_t ClosedLoopController::getExternalEnableLevel() const
+{
+    // 上位机模式下这个引脚没有参与控制，返回 2 = 不适用
+    return (enable_mode_ == ENABLE_MODE_EXTERNAL_PIN) ? static_cast<uint32_t>(external_en_level_) : 2U;
+}
+
+// 上位机/故障路径统一走这里：外部模式下"使能"请求被忽略（引脚说了算），
+// 但"失能"永远有效（安全动作不能被配置挡住）。
+void ClosedLoopController::requestDriverEnable(bool want)
+{
+    if (driver_ == nullptr)
+    {
+        return;
+    }
+    if (enable_mode_ == ENABLE_MODE_EXTERNAL_PIN && want)
+    {
+        return;
+    }
+    driver_->setEnable(want);
+    driver_enabled_ = want;
+}
+
+// 每拍调用（rampUpdate 开头）。只有外部模式才真正做事，而且只在电平变化时写 GPIO。
+void ClosedLoopController::updateEnableFromExternalPin()
+{
+    const uint8_t level = (gpio_input_data_bit_read(EXT_EN_PORT, EXT_EN_PIN) != RESET) ? 1U : 0U;
+    external_en_level_ = level;
+    if (driver_ == nullptr || enable_mode_ != ENABLE_MODE_EXTERNAL_PIN)
+    {
+        return;
+    }
+    const bool want = (level == 0U) && !user_disabled_ &&
+                      !fault_monitor_.outputStopped() && !stall_detected_;
+    if (want != driver_enabled_)
+    {
+        // 【这里绝不能 printf】rampUpdate 是 20kHz 控制任务，一行 printf 就是几毫秒停摆。
+        driver_->setEnable(want);
+        driver_enabled_ = want;
+    }
+}
+
+void ClosedLoopController::requestQuickStop()
+{
+    quick_stop_requested_ = true;
+}
+
+bool ClosedLoopController::isQuickStopActive() const
+{
+    return motion_quick_stop_;
+}
+
 void ClosedLoopController::setMotionConfig(float start_rpm, float max_rpm, float accel_rpm_s, uint32_t pulse_count,
                                            MotionMode mode)
 {
@@ -619,6 +730,14 @@ void ClosedLoopController::startMotion()
     }
     // 每次启动重新布防堵转判据：上一个动作结束时的静默计时不能带进新动作。
     stall_armed_ = false;
+
+    // 【外部 EN 模式】引脚是高电平 = 驱动器被外部禁用，这时不能启动运动：
+    // 否则固件会照常发脉冲（电机没电流不转），堵转保护反而会误判。
+    if (enable_mode_ == ENABLE_MODE_EXTERNAL_PIN && external_en_level_ != 0U)
+    {
+        printf("[SAFETY] startMotion rejected: external EN pin is HIGH (disabled)\r\n");
+        return;
+    }
 
     // 【必须停掉残留的 DMA 脉冲序列】step_output_.stop() 原来只在 stopMotion 里调，
     // 而实际使用中很容易“进了角度模式不点停止就直接切回规划运动”。
@@ -726,6 +845,8 @@ void ClosedLoopController::startMotion()
         motion_direction_ = 1;
     }
     motion_speed_rpm_ = motion_start_rpm_;
+    // 起步屏蔽：让位置/速度环在最初的 20ms 里不动作（见头文件注释）
+    motion_start_blank_ramps_ = kMotionStartBlankRamps;
     const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
     const float rpm2step = static_cast<float>(micro_steps_per_round) / 60.0f;
 
@@ -736,7 +857,7 @@ void ClosedLoopController::startMotion()
             printf("[SAFETY] setTargetAngleDeg rejected: motor disabled by user\r\n");
             return;
         }
-        driver_->setEnable(true);
+        requestDriverEnable(true);
         driver_->setDirection(motion_direction_ > 0);
         const uint32_t micro_steps_per_round = getMicroStepsPerRound(driver_);
         // 需要跑motion_pulse_count_个脉冲，速度从motion_start_rpm_用加速度motion_accel_rpm_s_（RPM/s）加速到motion_max_rpm_
@@ -975,8 +1096,11 @@ float ClosedLoopController::updateSpeedEstimate(uint64_t now_ns)
     constexpr float kDisplaySpeedAlpha = 0.0025f;   // 50us / 20ms
     encoder_speed_display_rpm_ += (encoder_speed_rpm_ - encoder_speed_display_rpm_) * kDisplaySpeedAlpha;
 
-    // 滞后角表用的更慢（30ms）：表本身是"转速 -> 滞后角"的稳态映射。
-    constexpr float kLagSpeedAlpha = 0.0017f;
+    // 滞后角表用的速度：5ms 平滑。
+    // 【曾经是 30ms，太慢了】短行程（1 圈 0.4s）里起步段的滞后角估计要 100ms 才跟上，
+    // 这段时间 PID 以为"落后"而多发脉冲 —— 实测 1 圈在 120→1000RPM 参数下多转 0.76°，
+    // 2 圈以上反而不明显（暂态占比小）。5ms 足够压噪声，又能在 15ms 内跟上速度阶跃。
+    constexpr float kLagSpeedAlpha = 0.01f;
     lag_angle_speed_rpm_ += (encoder_speed_rpm_ - lag_angle_speed_rpm_) * kLagSpeedAlpha;
     return encoder_speed_rpm_;
 }
@@ -992,6 +1116,8 @@ void ClosedLoopController::resetSpeedEstimate()
     motion_lag_angle_deg_ = 0.0f;
     last_measured_along_rps_ = 0.0f;
     last_angle_mode_measured_rps_ = 0.0f;
+    velocity_correction_lpf_ = 0.0f;
+    follow_error_lpf_deg_ = 0.0f;
 }
 
 // ===========================================================================
@@ -1014,18 +1140,27 @@ void ClosedLoopController::resetSpeedEstimate()
 //     阶跃直接跳进控制环；
 //   - 表未标定时恒为 0（isFitted()==false），行为等于“不剔除”，与旧版一致。
 // ===========================================================================
-void ClosedLoopController::updateLagAngleFeedforward(float measured_rps)
+void ClosedLoopController::updateLagAngleFeedforward(float measured_rps, float commanded_rps)
 {
     float target_deg = 0.0f;
     if (lag_angle_.isFitted())
     {
-        const float speed_rpm = fast_abs(lag_angle_speed_rpm_);
+        // 【速度取"指令速度"和"实测速度"里较大的那个】
+        // 表的物理含义是"在某个磁场转速下转子要落后多少"，而磁场转速就是**指令速度**
+        //（脉冲频率），不是实测速度。只用实测速度有两个坑：
+        //  1) 起步瞬间实测还没起来，滞后角估计是 0，PID 以为落后而多发脉冲 ——
+        //     实测 1 圈（start=120/max=1000）多转 0.76°，改用指令速度后降到 0.5° 以内；
+        //  2) 实测速度有 ~8RPM 噪声，会顺着滞后角灌进误差通道。
+        // 取 max 是为了收尾段：指令先到 0，实测还在滑行，这时仍应按实测给滞后角。
+        const float speed_rpm = fmaxf(fast_abs(measured_rps), fast_abs(commanded_rps)) * 60.0f;
         constexpr float kLagFullSpeedRpm = 6.0f;
         const float weight = fast_clamp(speed_rpm / kLagFullSpeedRpm, 0.0f, 1.0f);
         const auto speed_u16 = static_cast<uint16_t>(speed_rpm > 65535.0f ? 65535.0f : speed_rpm);
         const float magnitude_deg =
             static_cast<float>(lag_angle_.getLagAngleMilliDegrees(speed_u16)) / 1000.0f;
-        const float sign = (measured_rps >= 0.0f) ? -1.0f : 1.0f;
+        // 方向：优先看指令（起步时实测还是 0），停下时再看实测
+        const float dir_source = (fast_abs(commanded_rps) > 1.0e-4f) ? commanded_rps : measured_rps;
+        const float sign = (dir_source >= 0.0f) ? -1.0f : 1.0f;
         target_deg = sign * magnitude_deg * weight * lag_angle_feedforward_ratio_;
         // 上限钳位：防止标定数据异常或速度外推把前馈打爆（1200RPM 实测约 3°）。
         constexpr float kMaxLagAngleCompDeg = 5.0f;
@@ -1033,7 +1168,9 @@ void ClosedLoopController::updateLagAngleFeedforward(float measured_rps)
     }
 
     constexpr float kSmoothing = 0.02f;      // 20kHz 下约 2.5ms
-    constexpr float kMaxStepDeg = 0.002f;    // 40°/s
+    // 变化率限幅：200°/s。原来是 40°/s（1.5° 要 37ms），短行程起步段跟不上；
+    // 现在 1.5° 只要 7.5ms，配合上面 5ms 的速度平滑，起步 20ms 内滞后角就到位。
+    constexpr float kMaxStepDeg = 0.01f;
     float next_deg = lag_angle_applied_deg_ + (target_deg - lag_angle_applied_deg_) * kSmoothing;
     const float delta_deg = next_deg - lag_angle_applied_deg_;
     if (delta_deg > kMaxStepDeg)
@@ -1228,6 +1365,9 @@ void ClosedLoopController::updateSettleStage(uint64_t now_ns, float encoder_delt
  */
 void ClosedLoopController::rampUpdate(uint64_t now_ns)
 {
+    // 使能来源跟随：外部 EN 模式下每拍看一次 PC13（只在变化时写 GPIO，不打印）。
+    updateEnableFromExternalPin();
+
     // 推进遥测节拍（1Hz / 100Hz / 本拍不刷），结果留给 syncProtocolTelemetry 消费。
     telemetry_slot_ = telemetry_scheduler_.tick();
 
@@ -1305,7 +1445,9 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
 
     // 【滞后角】每拍都算，供遥测（0x151）、网页「误差不计滞后角」和补偿段共用。
     // 必须放在补偿开关之外：用户不勾闭环补偿时，网页上的滞后角显示也应该是对的。
-    updateLagAngleFeedforward(encoder_speed_rpm_ / 60.0f);
+    // 指令速度取自上一拍（updateTrapezoid 稍后才推进本拍速度，差 50us 可忽略）。
+    updateLagAngleFeedforward(encoder_speed_rpm_ / 60.0f,
+                              current_step_speed_ / static_cast<float>(getStepsPerRound()));
 
     if (closed_loop_angle_mode_enabled_)
     {
@@ -1353,6 +1495,29 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // 之后所有量（参考、误差、修正）都在同一个符号域里，不再需要乘 direction。
         const float measured_along_rps = (encoder_speed_rpm_ / 60.0f) * direction;
 
+        // 【位置误差先过一阶低通（约 2ms）】跟随误差里混着"转子每走一个微步的振铃"
+        // （实测恒速段 RMS 0.18°、峰峰 0.7°，而真实跟踪误差只有零点零几度）。
+        // 不滤波时 kp=80 会把这段振铃放大成 ±4% 的脉冲频率调制 —— 用户听到/看到的
+        // "闭环一开就抖"主要就是它。低通只对位置环生效，速度环另有死区+输出低通。
+        constexpr float kErrAlpha = 0.025f;   // 50us / 2ms
+        follow_error_lpf_deg_ += (motion_follow_error_deg_ - follow_error_lpf_deg_) * kErrAlpha;
+
+        // 【加减速项的滞后角】加速时转子还要额外提供 J·a 的转矩，真实滞后角比
+        // 恒速表值大，且大小与指令加速度成正比（ΔL ≈ c·a）。不建模的话，这 0.5~0.8°
+        // 会被位置环当成丢步补掉，停下来就变成"多转一点"（实测 1/2/4 圈 +0.6~0.9°）。
+        // c 来自 0x166（存 Flash），0 = 关闭。单位：毫度/(RPM/s)。
+        float cmd_accel_rpm_s = 0.0f;
+        if (motion_ramp_stage_ == RAMP_STAGE_ACCEL)
+        {
+            cmd_accel_rpm_s = motion_accel_rpm_s_;
+        }
+        else if (motion_ramp_stage_ == RAMP_STAGE_DECEL)
+        {
+            cmd_accel_rpm_s = -motion_accel_rpm_s_;
+        }
+        const float lag_accel_world_deg =
+            -direction * (static_cast<float>(lag_accel_coef_mdeg_per_rpm_s_) / 1000.0f) * cmd_accel_rpm_s;
+
         // ---------- 1) 剔除物理滞后角 ----------
         // 符号：motion_lag_angle_deg_ 与 motion_follow_error_deg_ 同号（见 updateLagAngleFeedforward）。
         //
@@ -1363,13 +1528,22 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         //   不投影的话，反向落后会被当成“超前”而刹车 —— 实测反向 1 圈只走了 250°，
         //   少 110°，评分 166°（这就是整定验证里“中速反向 252°”的来源）。
         const float effective_error_deg =
-            (motion_follow_error_deg_ - motion_lag_angle_deg_) * direction;
-        // 残差死区：表值不可能完全准（拟合误差 + 负载差异 + 加减速时滞后角本来就更小），
-        // 死区外的部分才进 PID。死区太小（旧值 0.05°）时，0.1° 的表误差就会让 I 项
-        // 慢慢爬、最后多走一截；0.15° 约等于 27 个编码器 LSB，远高于噪声。
-        constexpr float kResidualDeadbandDeg = 0.15f;
+            (follow_error_lpf_deg_ - motion_lag_angle_deg_ - lag_accel_world_deg) * direction;
+        // 残差死区：表值不可能完全准（拟合误差 + 负载差异），死区外的部分才进 PID。
+        // 死区大小来自 0x167（存 Flash），不写死 —— 它必须和"滞后角表在当前负载下有多准"
+        // 匹配：表是带载标定的、负载又变了，就给它大一点；重新标定后再收小。
+        const float kResidualDeadbandDeg = static_cast<float>(lag_deadband_mdeg_) / 1000.0f;
         float pid_error_deg = effective_error_deg;
-        if (pid_error_deg > kResidualDeadbandDeg)
+
+        // 【起步屏蔽】前 20ms 不动作：这段误差是"脉冲频率从 0 跳到 start_rpm"的
+        // 惯性暂态，PID 去补它正好多走那一截（实测 1 圈短行程 +0.55~0.9°）。
+        const bool startup_blank = (motion_start_blank_ramps_ > 0U);
+        if (startup_blank)
+        {
+            --motion_start_blank_ramps_;
+            pid_error_deg = 0.0f;
+        }
+        else if (pid_error_deg > kResidualDeadbandDeg)
         {
             pid_error_deg -= kResidualDeadbandDeg;
         }
@@ -1390,15 +1564,43 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         pos_corr = fast_clamp(pos_corr, -pos_limit, pos_limit);
 
         // ---------- 3) 速度环：只做阻尼 ----------
-        // 【微分先行】D 用实测加速度（-kd·dv/dt），不跟着 v_ref 的台阶跳。
+        // 参考速度 = 规划前馈 + 位置环修正（都在“沿运动方向”域里）。
+        const float v_ref_along_rps = profile_rps + pos_corr;
+        // 【为什么这里必须加死区 + 输出低通】恒速段实测速度估计仍有 ~8RPM 的噪声
+        // （转子每走一个微步的机械振铃 + 传感器噪声，3ms 平滑压不掉）。速度环
+        // kp=0.2 会把 ±8RPM 的噪声变成 ±1.6RPM 的脉冲频率调制 —— 这就是用户看到的
+        // "闭环一开，轴就抖；开环很安静"。位置环不受影响（0.15° 死区远大于 0.03° 噪声），
+        // 噪声全是从速度环这条路灌进来的。
+        //   死区：当前规划速度的 2%（至少 0.02rps≈1.2RPM），以内不动作；
+        //   输出低通：约 3ms，只留 10~30Hz 的阻尼，几百 Hz 的噪声直接滤掉。
+        const float vel_deadband = fast_clamp(profile_rps * 0.02f, 0.02f, 0.20f);
+        float vel_error = v_ref_along_rps - measured_along_rps;
+        if (vel_error > vel_deadband)
+        {
+            vel_error -= vel_deadband;
+        }
+        else if (vel_error < -vel_deadband)
+        {
+            vel_error += vel_deadband;
+        }
+        else
+        {
+            vel_error = 0.0f;
+        }
+        // 起步屏蔽期间速度环也不动作：否则它会按"规划速度 - 实测速度"猛推一把。
+        if (startup_blank)
+        {
+            vel_error = 0.0f;
+        }
         const float vel_limit = fast_clamp(profile_rps * 0.20f, 0.15f, max_rps * 0.35f);
         velocity_pid_.setOutputLimit(vel_limit);
-        const float v_ref_along_rps = profile_rps + pos_corr;
         const float measured_accel_rps2 = (measured_along_rps - last_measured_along_rps_) / dt;
         last_measured_along_rps_ = measured_along_rps;
-        float vel_corr = velocity_pid_.update(v_ref_along_rps - measured_along_rps, dt, 1.0f,
-                                             measured_accel_rps2, true);
-        vel_corr = fast_clamp(vel_corr, -vel_limit, vel_limit);
+        const float vel_corr_raw = velocity_pid_.update(vel_error, dt, 1.0f,
+                                                        measured_accel_rps2, true);
+        constexpr float kVelCorrAlpha = 0.0167f;   // 50us / 3ms
+        velocity_correction_lpf_ += (vel_corr_raw - velocity_correction_lpf_) * kVelCorrAlpha;
+        const float vel_corr = fast_clamp(velocity_correction_lpf_, -vel_limit, vel_limit);
 
         // ---------- 4) 总修正限幅 ----------
         // 即使两个环同时顶满，也不超过规划速度的 1.5 倍；而且不允许把速度拉成反向

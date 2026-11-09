@@ -193,6 +193,31 @@ enum Tmc2209CustomExtensionRegister
     // 0x160 RO：本次试验的峰值 |滞后角补偿后误差|（毫度），配合 0x132 的评分看：
     // 评分小而峰值大 = 偶发冲击/掉步；两个都大 = 整段都在抖。
     TMC2209_EXT_PARAM_PID_TUNE_PEAK_MDEG = 0x160U,
+
+    // ===== 使能来源 / 急刹 / 补偿观测（2026-11 新增）=====
+    // 0x161 R/W：使能来源。0 = 上位机（0x124/0x125，默认）；1 = 外部 EN 引脚（PC13，低有效）。
+    // 外部模式下引脚是唯一权威：上位机只能撤销许可（失能），不能强行使能。
+    // 写 Flash，重上电保持。
+    TMC2209_EXT_PARAM_ENABLE_MODE = 0x161U,
+    // 0x162 RO：驱动器此刻是否使能（1=已使能）。上位机/外部两种来源都适用。
+    TMC2209_EXT_PARAM_ENABLE_STATE = 0x162U,
+    // 0x163 WO：写 1 = 快速停车（按 0x11C 加速度减速到 0 后就地收尾）。
+    // 用于"急刹冲击"标定：比 stopMotion 的瞬间关脉冲更接近真实急停，且整定器能采样。
+    TMC2209_EXT_PARAM_QUICK_STOP = 0x163U,
+    // 0x164 RO：外部 EN 引脚电平（0=低/使能，1=高/失能）；上位机模式返回 2（不适用）。
+    TMC2209_EXT_PARAM_EXT_EN_LEVEL = 0x164U,
+    // 0x165 RO：当前闭环补偿速度（毫转/秒，有符号，沿运动方向）。
+    // 抖动归因用：恒速段这个值应该很小且平稳；它乱跳说明速度环在放大测速噪声。
+    TMC2209_EXT_PARAM_COMP_RPS_MILLI = 0x165U,
+
+    // ===== 滞后角模型参数（都可调、都存 Flash）=====
+    // 0x166 R/W：加减速项系数，单位"毫度/(RPM/s)"。物理上 ΔL ≈ (J/k)·a：
+    //   加速时转子要多落后一点，而这个量只跟加速度成正比。默认 1（600RPM/s 约 0.6°）。
+    //   写 0 = 关闭加减速项（退回只按转速查表）。
+    TMC2209_EXT_PARAM_LAG_ACCEL_COEF = 0x166U,
+    // 0x167 R/W：恒速段残差死区（毫度）。它应该和"滞后角表有多准"匹配：
+    //   表是带载标定的、负载又变了，就给它大一点；重新标定后再收小。
+    TMC2209_EXT_PARAM_LAG_DEADBAND_MDEG = 0x167U,
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -256,8 +281,8 @@ private:
     bool readOfficialRegister(uint8_t reg, uint32_t* value) const;
 
     ClosedLoopDriverProtocolConfig config_;
-    // 扩展参数表长度：覆盖 0x100 ~ 0x160，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x160U - 0x100U + 1U;
+    // 扩展参数表长度：覆盖 0x100 ~ 0x167，新增寄存器时同步这个常量
+    static constexpr uint16_t kCustomParameterCount = 0x167U - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

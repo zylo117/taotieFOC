@@ -63,6 +63,29 @@
                     // 读完就把回填窗口关掉，之后输入框归用户
                     state.pidSyncedFromDevice = true;
                     log('[PID] 已从固件读取当前 PID');
+                    // 【使能来源也要同步】0x161 是掉电保持的：固件里可能是"外部 EN 引脚"，
+                    // 网页下拉框如果还显示"上位机"，用户会以为使能按钮能直接控制芯片 EN。
+                    try {
+                        const mode = await readRegisterValue(CUSTOM_REGS.ENABLE_MODE);
+                        const select = document.getElementById('enableModeSelect');
+                        if (select && Number.isFinite(mode)) select.value = String((mode | 0) & 1);
+                        log(`[INFO] 使能来源 = ${((mode | 0) & 1) === 1 ? '外部 EN 引脚 (PC13 低有效)' : '上位机'}`);
+                    } catch (e) {
+                        log(`[EN] 读取使能来源失败：${e.message}`);
+                    }
+                    await refreshEnableState();
+                    // 滞后角模型参数（0x166/0x167）也要在连接时同步：它们是存 Flash 的
+                    try {
+                        const accelCoef = await readRegisterValue(CUSTOM_REGS.LAG_ACCEL_COEF, 750, 0);
+                        const deadband = await readRegisterValue(CUSTOM_REGS.LAG_DEADBAND_MDEG, 750, 0);
+                        const a = document.getElementById('lagAccelCoef');
+                        const d = document.getElementById('lagDeadbandMdeg');
+                        if (a && Number.isFinite(accelCoef)) a.value = String(accelCoef | 0);
+                        if (d && Number.isFinite(deadband)) d.value = String(deadband | 0);
+                        log(`[INFO] 滞后角模型：加减速系数 ${(accelCoef | 0)} mdeg/(RPM/s)，死区 ${(deadband | 0)} mdeg`);
+                    } catch (e) {
+                        log(`[LAG] 读取滞后角模型参数失败：${e.message}`);
+                    }
                 })();
 
                 setConnBadge('已连接', true);

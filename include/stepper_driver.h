@@ -18,6 +18,13 @@
 #define EN_ACTIVE_LEVEL          false
 #define DIR_FORWARD_LEVEL        false
 
+// 外部使能输入：低电平使能（与驱动器 EN 同极性）。
+// 由 0x161 选择"上位机控制 / 外部引脚控制"；外部模式下它是唯一权威。
+// PC13 在本板没有其它用途（LED2 是 PD13，注意别搞混）。
+#define EXT_EN_PORT              GPIOC
+#define EXT_EN_PIN               GPIO_PINS_13
+#define EXT_EN_ACTIVE_LEVEL      false
+
 #define TMC2209_UART_GPIO        GPIOA
 #define TMC2209_UART_PIN         GPIO_PINS_4
 

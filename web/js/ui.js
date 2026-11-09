@@ -47,6 +47,28 @@
             }
         }
 
+        // 读一次使能状态（0x162）与外部 EN 电平（0x164）并刷新显示。
+        // 外部模式下引脚随时可能被 PLC 拉动，所以主循环里每秒轮询一次。
+        async function refreshEnableState() {
+            if (!state.connected) return;
+            try {
+                const enabled = (await readRegisterValue(CUSTOM_REGS.ENABLE_STATE, 750, 0)) | 0;
+                const level = (await readRegisterValue(CUSTOM_REGS.EXT_EN_LEVEL, 750, 0)) | 0;
+                state.driverEnabled = enabled !== 0;
+                state.externalEnLevel = level;
+                const element = document.getElementById('enableStateReadout');
+                if (element) {
+                    if (level === 2) {
+                        element.textContent = state.driverEnabled ? '已使能（上位机控制）' : '已失能（上位机控制）';
+                    } else {
+                        element.textContent = `${level === 0 ? '引脚低=使能' : '引脚高=失能'} / 驱动器${state.driverEnabled ? '已使能' : '未使能'}`;
+                    }
+                }
+            } catch (error) {
+                // 读不到就保持上次显示，不打断用户操作
+            }
+        }
+
         function updateFaultStatus() {
             const hasFault = state.encoderFault || state.magneticFault || state.outputStopped || state.stallDetected;
             const summary = state.stallDetected ? '堵转锁存' : state.encoderFault ? '编码器读取失败' : state.magneticFault ? '磁场报警' : state.outputStopped ? '已停止输出' : '正常';

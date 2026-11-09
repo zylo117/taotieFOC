@@ -42,6 +42,8 @@
             // 堵转锁存（0x108 bit3 / 0x15D）：固件会停机并失能，必须写 0x15F=1 清除
             stallDetected: false,
             faultFlags: 0,
+            driverEnabled: false,
+            externalEnLevel: 2,
             faultSummary: '正常',
             phaseACurrentA: 0,
             phaseBCurrentA: 0,

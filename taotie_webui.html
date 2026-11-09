@@ -922,6 +922,18 @@
                         <button id="popWaveBtn">弹出波形</button>
                     </div>
                     <div class="field mt">
+                        <label for="enableModeSelect">使能来源（0x161）</label>
+                        <select id="enableModeSelect">
+                            <option value="0">上位机控制（0x124 / 0x125）</option>
+                            <option value="1">外部 EN 引脚（PC13，低电平使能）</option>
+                        </select>
+                        <div class="tiny">
+                            外部模式下 PC13 是唯一权威：上面两个按钮只能"撤销许可"（失能），不能强行使能；
+                            故障/堵转仍然能压住 EN。改完点「写入参数到 Flash」才会掉电保持。
+                            当前状态：<strong id="enableStateReadout">未知</strong>
+                        </div>
+                    </div>
+                    <div class="field mt">
                         <label for="closedLoopEnableInput">闭环补偿（两个模式共用）</label>
                         <label class="checkbox-row">
                             <input id="closedLoopEnableInput" type="checkbox"/>
@@ -1291,6 +1303,24 @@
                             <div class="tiny">角度伺服 / 规划运动 / 外部脉冲跟随都用上面那一组（0x129~0x12E）。<br/>
                                 角度模式的<strong>转速由 0x12F/0x130 的梯形轮廓决定</strong>，Kp 只管跟踪刚度与抗扰，
                                 不再决定跑多快。写废弃的 0x156~0x15B 会在串口提示。</div>
+                        </div>
+                        <div class="card">
+                            <h3 style="margin-top:0;">滞后角模型（可调，存 Flash）</h3>
+                            <div class="field">
+                                <label>加减速项系数（毫度 / (RPM/s)）</label>
+                                <input id="lagAccelCoef" min="0" max="50" step="1" type="number" value="1"/>
+                            </div>
+                            <div class="field mt">
+                                <label>恒速残差死区（毫度）</label>
+                                <input id="lagDeadbandMdeg" min="10" max="2000" step="10" type="number" value="200"/>
+                            </div>
+                            <div class="tiny mt">
+                                加速时转子要多落后 ΔL ≈ c·a（物理上来自 J·a/k_t），c 就是上面这个系数：
+                                1 表示 600RPM/s 时多算 0.6°。把它建模掉，就不会把"加速必然的滞后"
+                                当丢步补掉（那会让末端多转）。<br/>
+                                死区要和"滞后角表有多准"匹配：表是带载标的、负载变了就调大；重新标定后再收小。
+                                两个值都随「写入参数到 Flash」保存。
+                            </div>
                         </div>
                         <div class="field mt">
                             <button id="savePidToFlashBtn" type="button">写入 PID 参数到 Flash</button>
