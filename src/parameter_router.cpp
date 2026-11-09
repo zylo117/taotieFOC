@@ -75,6 +75,15 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         }
 
         PersistedMotorParams params = {};
+        // 【这些字段以前根本没填，一直是 0】结构体是 `= {}` 初始化的，
+        // 而保存代码只写了 PID：于是 Flash 里 microsteps/step_pulse_ns 永远是 0，
+        // 重启后驱动器退回编译期默认微步（32），而脉冲数/滞后角表都是 64 口径 ——
+        // 表现为“重新上电后行程正好差一倍”。现在按现场真实值一起存。
+        params.microsteps = owner_.driver_ != nullptr ? owner_.driver_->config().microsteps : 0U;
+        params.step_pulse_ns = static_cast<uint16_t>(
+            owner_.step_pulse_width_ns_ > 65535U ? 65535U : owner_.step_pulse_width_ns_);
+        params.run_current_ma = 0U;
+        params.hold_current_ma = 0U;
         // PID 用上位机口径（×1000 的整数），与 param_store.h 注释一致。
         // 【必须存 base_*，不能存 live 的 position_pid_.kp】applyGainScales() 会在运行时
         // 把 kp/ki/kd 乘上速度/加速/误差相关的系数（planner 自适应路径），如果存 live 值，
@@ -679,6 +688,11 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_PID_TUNE_SAMPLE_COUNT)
     {
         *value = owner_.pid_auto_tuner_.sampleCount();
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_PID_TUNE_PEAK_MDEG)
+    {
+        *value = owner_.pid_auto_tuner_.peakMilliDegrees();
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_STALL_DETECTED)

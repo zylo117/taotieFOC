@@ -47,6 +47,8 @@ const CUSTOM_REGS = {
     PID_TUNE_CONTROL: 0x131,
     PID_TUNE_SCORE_MDEG: 0x132,
     PID_TUNE_SAMPLE_COUNT: 0x133,
+    // 本次试验的峰值 |误差|（毫度），与 0x132 评分配合看：评分小/峰值大 = 偶发冲击
+    PID_TUNE_PEAK_MDEG: 0x160,
     MOTION_SCHEDULED_STEPS: 0x134,
     MOTION_COMMAND_SPEED_MRPM: 0x135,
     SPEED_RPM: 0x120,

@@ -58,6 +58,20 @@ uint32_t PidAutoTuner::sampleCount() const
     return sample_count_;
 }
 
+uint32_t PidAutoTuner::peakMilliDegrees() const
+{
+    const float peak_mdeg = peak_error_deg_ * 1000.0f;
+    if (!std::isfinite(peak_mdeg) || peak_mdeg < 0.0f)
+    {
+        return 0U;
+    }
+    if (peak_mdeg >= static_cast<float>(UINT32_MAX))
+    {
+        return UINT32_MAX - 1U;
+    }
+    return static_cast<uint32_t>(peak_mdeg);
+}
+
 uint32_t PidAutoTuner::scoreMilliDegrees() const
 {
     if (sample_count_ < 4U)

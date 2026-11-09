@@ -190,6 +190,9 @@ enum Tmc2209CustomExtensionRegister
     TMC2209_EXT_PARAM_STALL_EVENTS = 0x15EU,
     // 0x15F WO：写 1 清除堵转锁存（同时解除 output_stopped_）
     TMC2209_EXT_PARAM_STALL_CLEAR = 0x15FU,
+    // 0x160 RO：本次试验的峰值 |滞后角补偿后误差|（毫度），配合 0x132 的评分看：
+    // 评分小而峰值大 = 偶发冲击/掉步；两个都大 = 整段都在抖。
+    TMC2209_EXT_PARAM_PID_TUNE_PEAK_MDEG = 0x160U,
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -253,8 +256,8 @@ private:
     bool readOfficialRegister(uint8_t reg, uint32_t* value) const;
 
     ClosedLoopDriverProtocolConfig config_;
-    // 扩展参数表长度：覆盖 0x100 ~ 0x15F，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x15FU - 0x100U + 1U;
+    // 扩展参数表长度：覆盖 0x100 ~ 0x160，新增寄存器时同步这个常量
+    static constexpr uint16_t kCustomParameterCount = 0x160U - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

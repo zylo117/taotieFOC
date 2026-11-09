@@ -433,9 +433,30 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
     else if (c.motion_ramp_stage_ == ClosedLoopController::RAMP_STAGE_DECEL)
     {
         c.current_step_speed_ -= c.motion_accel_step_s2_ * dt_ramp_s;
-        if (c.current_step_speed_ < 0.0f)
+        if (c.current_step_speed_ <= 0.0f)
         {
-            c.current_step_speed_ = 0.0f;
+            // 【死锁保护】速度已经减到 0，但还有脉冲没发完（剩余步数 > 0）。
+            // 以前这里直接置 0 就不管了：状态机永远停在 DECEL，motion_running_ 一直是真，
+            // 上位机等 0x11F 变 0 只能等到超时；电机也确实少走了那一截
+            // （实测 2 圈运动停在 25220/25600，差 1.5%）。
+            // 现在的处理：用一个小爬行速度把尾巴补完，让“全部发完 -> SETTLE”正常接管。
+            if (remaining_steps > 0U)
+            {
+                float creep = c.motion_start_step_s_ * 0.5f;
+                if (creep < 400.0f)
+                {
+                    creep = 400.0f;          // 至少 400 微步/s，低于这个 emit 会长时间不足 1 步/拍
+                }
+                if (creep > c.motion_max_step_s_)
+                {
+                    creep = c.motion_max_step_s_;
+                }
+                c.current_step_speed_ = creep;
+            }
+            else
+            {
+                c.current_step_speed_ = 0.0f;
+            }
         }
     }
 
@@ -518,43 +539,53 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
         return false;  // 本拍不需要发脉冲
     }
 
-    auto num_steps = static_cast<uint32_t>(std::floor(c.compensated_motion_step_accumulator_));
-    if (num_steps > c.max_step_per_ramp)
-    {
-        c.max_step_per_ramp = num_steps;
-    }
-
-    auto num_original_command_steps = static_cast<uint32_t>(std::floor(c.motion_step_accumulator_));
+    // ---------- 实发 vs 记账：两个累加器必须各记各的 ----------
+    // 【本次修复的核心】旧实现把“记账值”钳到不超过“实发值”：
+    //     if (num_original_command_steps > num_steps) num_original_command_steps = num_steps;
+    // 它的本意是“没发出去的不能记成走过了”，但副作用更严重：只要补偿在**减速**
+    // （PID 认为超前了），实发就小于规划，于是记账也跟着少记，规划累计永远到不了
+    // pulse_count_ —— 表现为运动停在 25220/25600（差 1.5%）、状态机卡在 DECEL，
+    // 上位机等 0x11F 变 0 只能等到超时。
+    // 正确语义：
+    //   记账 = "规划应该走到哪"（命令位置参考），只受剩余行程限制；
+    //   实发 = "真正发了几个脉冲"，受剩余行程与出口容量限制。
+    // 两者之差就是补偿量，跟随误差里自然看得出来。
+    uint32_t remaining_steps = 0xFFFFFFFFU;
     if (!c.closed_loop_angle_mode_enabled_)
     {
         const uint32_t remaining_total_steps = c.motion_pulse_count_ - c.motion_steps_emitted_;
         const uint32_t leg_steps_emitted = alternating_motion && c.motion_leg_reversed_
             ? c.motion_steps_emitted_ - c.motion_leg_pulse_count_
             : c.motion_steps_emitted_;
-        const uint32_t remaining_steps = alternating_motion
+        remaining_steps = alternating_motion
             ? (c.motion_leg_reversed_ ? remaining_total_steps : c.motion_leg_pulse_count_ - leg_steps_emitted)
             : remaining_total_steps;
-        if (num_steps > remaining_steps)
-        {
-            num_steps = remaining_steps;
-        }
+    }
+
+    // 实发步数：补偿累加器可能为负（补偿在刹车），此时本窗不发。
+    uint32_t num_steps = 0U;
+    if (c.compensated_motion_step_accumulator_ > 0.0f)
+    {
+        num_steps = static_cast<uint32_t>(std::floor(c.compensated_motion_step_accumulator_));
+    }
+    if (num_steps > c.max_step_per_ramp)
+    {
+        c.max_step_per_ramp = num_steps;
+    }
+    if (num_steps > remaining_steps)
+    {
+        num_steps = remaining_steps;
     }
     if (num_steps > MAX_PULSE_ARR_LEN)
     {
         num_steps = MAX_PULSE_ARR_LEN;
     }
 
-    // 【记账不能超过实发】上面的 remaining / MAX_PULSE_ARR_LEN 钳位只作用于 num_steps。
-    // 如果不把 num_original_command_steps 也压到不超过实发，本窗根本没发那么多脉冲，
-    // 记账却照样加上去 —— 段结束判据（看记账值）会提前满足，最后几微步压根没发出去，
-    // 于是每段行程被悄悄少掉一点（实测 (counted-commanded)=+21 / (emitted-counted)=-21，
-    // 净 0 只是两头偏差互相抵消，不是“没问题”）；同时命令位置会比真正发出去的
-    // 脉冲领先，跟随误差因此带一个假分量。
-    // 注意这里只“下调”记账值：当补偿让实发多于原始命令时，仍按原始命令记账，
-    // 这样命令位置不会被 PID 自己的输出推着走（那是另一个问题的根源，保持原语义）。
-    if (num_original_command_steps > num_steps)
+    // 规划（记账）步数：只受剩余行程限制，不受本窗实发限制。
+    auto num_original_command_steps = static_cast<uint32_t>(std::floor(c.motion_step_accumulator_));
+    if (num_original_command_steps > remaining_steps)
     {
-        num_original_command_steps = num_steps;
+        num_original_command_steps = remaining_steps;
     }
 
 #ifdef USE_SOFT_PULSE
@@ -610,8 +641,19 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
         // 才并进 motion_steps_delivered_signed，用作跟随误差的命令位置。
         c.motion_dma_pending_signed = c.motion_direction_ * static_cast<int32_t>(num_original_command_steps);
     }
-    c.motion_step_accumulator_ -= num_original_command_steps;
-    c.compensated_motion_step_accumulator_ -= num_steps;
+    c.motion_step_accumulator_ -= static_cast<float>(num_original_command_steps);
+    c.compensated_motion_step_accumulator_ -= static_cast<float>(num_steps);
+    // 累加器限幅：补偿长期单向时，被减的那一侧会漂出合理范围
+    // （负太多意味着“欠发”的债越积越多，正太多意味着一次发不完）。
+    // 这里不改变稳态行为，只防止极端参数把累加器推到浮点精度之外。
+    if (c.compensated_motion_step_accumulator_ > 256.0f)
+    {
+        c.compensated_motion_step_accumulator_ = 256.0f;
+    }
+    else if (c.compensated_motion_step_accumulator_ < -256.0f)
+    {
+        c.compensated_motion_step_accumulator_ = -256.0f;
+    }
 
     return false;
 }

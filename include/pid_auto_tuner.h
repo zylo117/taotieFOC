@@ -13,6 +13,9 @@ public:
     void finishTrial();
     uint32_t sampleCount() const;
     uint32_t scoreMilliDegrees() const;
+    // 本次试验的峰值 |误差|（毫度）。评分里已经含 0.35 倍峰值项，
+    // 但整定时把 RMS 和峰值分开看更有用：RMS 小、峰值大 = 有偶发冲击/掉步。
+    uint32_t peakMilliDegrees() const;
 
 private:
     bool collecting_;
