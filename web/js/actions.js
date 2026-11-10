@@ -223,14 +223,13 @@
 
         // ===================== 运动源门控（与固件 0x16D 的绝对互斥对齐）=====================
         // 固件在外部脉冲模式下会拒绝一切内部运动（startMotion / 目标角 / 校准会打
-        // [SOURCE] rejected）。这里把对应控件置灰：不是安全边界（边界在固件），
+        // [SOURCE] rejected）。这里把**随手运动类**控件置灰：不是安全边界（边界在固件），
         // 而是让用户不用先踩一次拒绝才知道不能用。
+        // 标定/整定类**不置灰**：它们的入口会先自动接管运动通道（ensureInternalMotionSource），
+        // 置灰反而造成"标定只能归零无法运动"（2026-11-10 实机反馈）。
         const INTERNAL_MOTION_CONTROL_IDS = [
             'sendTargetBtn', 'zeroBtn',                       // 目标角/归零（角度模式）
-            'startMotionBtn',                                 // 规划运动启动（tab 里，双保险）
-            'tuneBtn', 'startTuneBtn',                        // PID 自动整定（会驱动电机）
-            'lagAngleCalibrationBtn', 'startLagAngleCalibrationBtn',  // 滞后角校准
-            'startShockCalibrationBtn'                        // 冲击标定
+            'startMotionBtn'                                  // 规划运动启动（本来就在内部 tab 里）
         ];
 
         function applyMotionSourceGate() {
@@ -250,8 +249,31 @@
                 if (tabBtn && tabBtn.parentElement) tabBtn.parentElement.appendChild(banner);
             }
             banner.style.display = external ? '' : 'none';
-            banner.textContent = '当前运动源：外部脉冲跟随（固件上电默认）。内部规划/角度/整定/标定已禁用 —— '
-                + '上面切到「内部规划运动」tab 才会交还运动通道；两种模式的运动信号绝对互斥。';
+            banner.textContent = '当前运动源：外部脉冲跟随（固件上电默认）。发送目标/归零/启动已禁用 —— '
+                + '上面切到「内部规划运动」tab 交还运动通道；标定/整定入口点击时会自动接管。两种运动信号绝对互斥。';
+        }
+
+        // ===================== 标定/整定入口的自动接管（2026-11-10 实机反馈）=====================
+        // 上电默认外部跟随后，标定/整定发出的内部运动会被固件互斥门全部拒掉
+        // （表现："只能归零无法运动"）。入口现在先调本函数：等 ACK 写 0x16D=0，
+        // 固件原子地停跟随 + 交还通道，然后同步显示。互斥不变量没有松动 ——
+        // 接管后外部 PUL 被忽略，直到用户显式切回跟随（tab 或 0x16D=1）。
+        async function ensureInternalMotionSource(reason) {
+            if (state.motionSource === 0) return true;
+            if (!state.connected) {
+                log('[WARN] 未连接串口，' + reason + '未启动');
+                return false;
+            }
+            try {
+                await writeRegisterAndWaitAck(CUSTOM_REGS.MOTION_SOURCE, 0);
+            } catch (error) {
+                log('[ERROR] ' + reason + ' 接管运动通道失败（0x16D 写内部）：' + error.message);
+                return false;
+            }
+            state.motionSource = 0;
+            switchWorkTab('motion', true);   // 只同步显示；寄存器已写，skipWrite 防重复写
+            log('[INFO] ' + reason + '：已自动切到内部规划模式（外部跟随已关闭；用完请手动切回）');
+            return true;
         }
 
         // ===================== 工作模式 tab =====================

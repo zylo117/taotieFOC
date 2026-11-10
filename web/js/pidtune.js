@@ -295,6 +295,12 @@
                 appendTuneLog('未连接串口，无法启动整定');
                 return;
             }
+            // 整定会驱动电机：外部跟随模式下先自动接管运动通道（固件互斥门）。
+            if (!(await ensureInternalMotionSource('PID 自动整定'))) {
+                appendTuneLog('运动通道接管失败，未启动整定');
+                renderTuneActionRows(false);
+                return;
+            }
 
             state.autoTuneActive = true;
             state.autoTuneCancelled = false;

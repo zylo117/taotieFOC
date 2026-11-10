@@ -237,6 +237,11 @@
             setStatus('尚未连接串口');
             return;
         }
+        // 外部跟随模式下自动接管运动通道（同滞后角标定：否则冲击运动被固件互斥门拒）。
+        if (!(await ensureInternalMotionSource('冲击标定'))) {
+            setStatus('运动通道接管失败（见日志），未启动');
+            return;
+        }
         const config = readConfig();
         const modes = [];
         if (config.testOpenLoop) modes.push(false);

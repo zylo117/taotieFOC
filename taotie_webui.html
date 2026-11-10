@@ -809,6 +809,20 @@
     </style>
 </head>
 <body>
+<!-- ===== 急停（固定右下角，任何页面状态下都可见可点）=====
+     0x16E：立即断脉冲 + 失能驱动器（EN 拉低后 H 桥高阻，转子自由滑行 ——
+     电气上比"断脉冲但保持励磁"温和）。注意机械上失去保持矩：垂直轴会掉。
+     与规划卡里的「缓停」不同级：这是异常情况下拍的按钮，所以又大又红又固定。
+     【位置是修出来的，别挪回脚本之后】main.js 在加载时就执行 bindControls()，
+     元素必须在脚本运行前存在于 DOM ——原来放在 <script> 之后导致
+     getElementById 拿到 null，急停按钮从未绑上监听（2026-11-10 实机反馈）。
+     position:fixed 与 DOM 位置无关，放这里视觉完全一样。 -->
+<button id="emergencyStopBtn" type="button"
+        style="position:fixed;right:22px;bottom:22px;z-index:9999;width:96px;height:96px;border-radius:50%;
+               border:4px solid #7f1d1d;background:radial-gradient(circle at 35% 30%, #ef4444, #b91c1c 70%);
+               color:#fff;font-size:22px;font-weight:800;letter-spacing:2px;cursor:pointer;
+               box-shadow:0 6px 18px rgba(185,28,28,0.55), inset 0 -6px 12px rgba(0,0,0,0.35);"
+        title="急停（0x16E）：立即断脉冲 + 失能驱动器。恢复需点「使能」。">急停</button>
 <div class="app">
     <header class="topbar">
         <div>
@@ -885,9 +899,8 @@
                 <div class="inline">
                     <button class="primary" id="sendTargetBtn">发送目标位置</button>
                     <button id="zeroBtn">归零</button>
-                    <!-- 原「停止」= 立即断脉冲。现在拆成两个：这里变「缓停」（走 0x163 减速斜坡，
-                         避免高速直接断脉冲的反电动势冲击）；立即断+失能挪到右下角红色急停钮（0x16E）。 -->
-                    <button id="stopBtn">缓停（减速停止）</button>
+                    <!-- 这里的「缓停」是全局唯一的减速停止（0x163）；立即断+失能是右下角红色急停钮（0x16E）。
+                         原归零隔壁那个重复的缓停已删（2026-11-10）：两处入口只留一处，避免语义漂移。 -->
                 </div>
 
                 <div class="status-line">
@@ -1038,7 +1051,7 @@
                     </div>
                     <div class="inline mt">
                         <button class="primary" id="startMotionBtn">启动</button>
-                        <button id="stopMotionBtn">缓停（减速停止）</button>
+                        <button id="stopMotionBtn">缓停</button>
                         <button class="warn" id="singleStepBtn">半圈正向脉冲</button>
                     </div>
                     <div class="tiny mt">说明：脉冲数就是实际下发给驱动器的 STEP 个数，1 个 STEP = 1 个微步，
@@ -1552,29 +1565,19 @@
         </table>
     </dialog>
 
-    <script src="web/js/constants.js?v=20261110b"></script>
-    <script src="web/js/utils.js?v=20261110b"></script>
-    <script src="web/js/state.js?v=20261110b"></script>
-    <script src="web/js/protocol.js?v=20261110b"></script>
-    <script src="web/js/rx.js?v=20261110b"></script>
-    <script src="web/js/ui.js?v=20261110b"></script>
-    <script src="web/js/waveform.js?v=20261110b"></script>
-    <script src="web/js/lagangle.js?v=20261110b"></script>
-    <script src="web/js/pidtune.js?v=20261110b"></script>
-    <script src="web/js/enccal.js?v=20261110b"></script>
-    <script src="web/js/shock.js?v=20261110b"></script>
-    <script src="web/js/actions.js?v=20261110b"></script>
-    <script src="web/js/main.js?v=20261110b"></script>
-<!-- ===== 急停（固定右下角，任何页面状态下都可见可点）=====
-     0x16E：立即断脉冲 + 失能驱动器（EN 拉低后 H 桥高阻，转子自由滑行 ——
-     电气上比"断脉冲但保持励磁"温和）。注意机械上失去保持矩：垂直轴会掉。
-     与右上角的「缓停」不同级：这是异常情况下拍的按钮，所以又大又红又固定。 -->
-<button id="emergencyStopBtn" type="button"
-        style="position:fixed;right:22px;bottom:22px;z-index:9999;width:96px;height:96px;border-radius:50%;
-               border:4px solid #7f1d1d;background:radial-gradient(circle at 35% 30%, #ef4444, #b91c1c 70%);
-               color:#fff;font-size:22px;font-weight:800;letter-spacing:2px;cursor:pointer;
-               box-shadow:0 6px 18px rgba(185,28,28,0.55), inset 0 -6px 12px rgba(0,0,0,0.35);"
-        title="急停（0x16E）：立即断脉冲 + 失能驱动器。恢复需点「使能」。">急停</button>
+    <script src="web/js/constants.js?v=20261110c"></script>
+    <script src="web/js/utils.js?v=20261110c"></script>
+    <script src="web/js/state.js?v=20261110c"></script>
+    <script src="web/js/protocol.js?v=20261110c"></script>
+    <script src="web/js/rx.js?v=20261110c"></script>
+    <script src="web/js/ui.js?v=20261110c"></script>
+    <script src="web/js/waveform.js?v=20261110c"></script>
+    <script src="web/js/lagangle.js?v=20261110c"></script>
+    <script src="web/js/pidtune.js?v=20261110c"></script>
+    <script src="web/js/enccal.js?v=20261110c"></script>
+    <script src="web/js/shock.js?v=20261110c"></script>
+    <script src="web/js/actions.js?v=20261110c"></script>
+    <script src="web/js/main.js?v=20261110c"></script>
 
 </body>
 </html>

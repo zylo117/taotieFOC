@@ -298,15 +298,6 @@
             log(`[INFO] 脉冲运动：start=${startRpm} RPM max=${maxRpm} RPM accel=${accelRpm} RPM/s pulse=${pulseCount} mode=${motionMode} window=${windowMs}ms step=${stepPulseWidthNs}ns encFilter=${encoderFilterWindow}`);
         }
 
-        async function stopMotionTest() {
-            stopWaveCapture();
-            if (state.connected) {
-                await writeRegister(0x11F, 0);
-            }
-            state.motionSpeedRpm = 0;
-            log('[WARN] 发送停止测速命令');
-        }
-
         async function sendManualMotionCommand(reg, message) {
             if (state.autoTuneActive) {
                 if (reg === 0x125) {
@@ -487,11 +478,13 @@
                 ensureMotionTabForPositionControl();
                 zeroEncoder();
             });
-            document.getElementById('stopBtn').addEventListener('click', stopMotor);
+            // stopBtn（归零隔壁的缓停）已删除：全局唯一「缓停」入口挪到规划卡
+            // （stopMotionBtn → stopMotor/0x163）。这里不能再绑已不存在的元素，
+            // 否则 addEventListener(null) 抛异常，bindControls 后半段全部失效。
             const emergencyStopBtn = document.getElementById('emergencyStopBtn');
             if (emergencyStopBtn) emergencyStopBtn.addEventListener('click', emergencyStop);
             document.getElementById('startMotionBtn').addEventListener('click', startMotionTest);
-            document.getElementById('stopMotionBtn').addEventListener('click', stopMotionTest);
+            document.getElementById('stopMotionBtn').addEventListener('click', stopMotor);
             document.getElementById('motorEnableBtn').addEventListener('click', async () => {
                 await sendManualMotionCommand(0x124, '电机使能：EN=0');
                 await refreshEnableState();
@@ -530,6 +523,9 @@
                     log('[WARN] 尚未连接串口，无法执行磁编码器校准');
                     return;
                 }
+                // 校准要"回零 + 逐段扫描"（内部运动）：外部跟随模式下先自动接管通道，
+                // 否则就是实机反馈的"校准只能归零无法运动"（固件侧 0x136 也有同款兜底）。
+                if (!(await ensureInternalMotionSource('磁编码器校准'))) return;
                 await writeRegister(CUSTOM_REGS.CALIBRATE_ENCODER, 1);
                 log('[INFO] 已发送磁编码器校准触发命令');
             });

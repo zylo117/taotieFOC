@@ -451,6 +451,12 @@
                 document.getElementById('lagAngleStatus').textContent = '请先连接串口';
                 return;
             }
+            // 外部跟随模式下自动接管运动通道 —— 否则整个扫描被固件互斥门拒绝，
+            // 就是实机反馈的"滞后角标定无法正常运动"。
+            if (!(await ensureInternalMotionSource('滞后角标定'))) {
+                document.getElementById('lagAngleStatus').textContent = '运动通道接管失败（见日志），未启动扫描';
+                return;
+            }
             let config;
             try {
                 config = lagAngleSweepConfig();
