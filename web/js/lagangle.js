@@ -454,6 +454,11 @@
             let config;
             try {
                 config = lagAngleSweepConfig();
+                // 【共振带自动避让】见 excludeResonanceBandSpeeds 注释。
+                config.speeds = await excludeResonanceBandSpeeds(config.speeds, '滞后角校准');
+                if (config.speeds.length < 2) {
+                    throw new Error('避开共振带后不足 2 个速度点，无法拟合；请调整速度范围或共振带设置');
+                }
             } catch (error) {
                 document.getElementById('lagAngleStatus').textContent = error.message;
                 return;

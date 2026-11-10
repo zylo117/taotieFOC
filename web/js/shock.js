@@ -245,6 +245,13 @@
             setStatus('请至少勾选开环或闭环');
             return;
         }
+        // 【共振带自动避让】默认速度列表 [300,600,1200] 正好压在默认共振带 300~600 上：
+        // 落带内的组合会被固件钳到带下限巡航，峰值冲击数据归属到假速度上。剔除。
+        config.speeds = await excludeResonanceBandSpeeds(config.speeds, '冲击标定');
+        if (config.speeds.length === 0) {
+            setStatus('速度全部落在共振带内，请调整速度列表或共振带范围');
+            return;
+        }
 
         SHOCK.running = true;
         SHOCK.cancelled = false;

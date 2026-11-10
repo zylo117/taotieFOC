@@ -80,12 +80,13 @@ class Profile:
         self.steady = steady
 
 
-def build_profiles(max_rpm: float, quick: bool):
+def build_profiles(max_rpm: float, quick: bool, cap: float = MAX_TUNE_RPM):
     """按"慢速 / 中速 / 高速 / 反向 / 急加速 / 急转弯"六类工况组织。
 
-    max_rpm 会被硬钉在 250 以内（用户要求先低速整定，避开 300~800RPM 共振）。
+    max_rpm 会被硬钉在 cap（默认 250，用户要求先低速整定避开共振）以内；
+    cap 会根据固件共振带（0x16F/0x170）再往下压，见 main() 里的"共振带感知"。
     """
-    m = min(max_rpm, MAX_TUNE_RPM)
+    m = min(max_rpm, cap)
     p = [
         Profile("慢速正向", MODE_POS_FWD, max(5, m * 0.15), max(10, m * 0.25), max(60, m * 1.2), 1.0),
         Profile("中速正向", MODE_POS_FWD, max(10, m * 0.35), max(20, m * 0.65), max(120, m * 2.4), 1.5),
@@ -318,6 +319,18 @@ def main() -> int:
         if faults & 0x04:
             print("!! 输出已被封锁（fault bit2）。先排查故障，或写 0x15F=1 清堵转锁存。")
             return 2
+
+        # 【运动源互斥】新固件上电默认"外部脉冲跟随"，内部运动（本脚本的 0x11F=1）
+        # 会被固件拒绝并打 [SOURCE] rejected。这里显式切到内部规划再整定。
+        # 结束时**留在内部模式**不自动切回：切回外部会重新励磁锁轴（用户可能已经
+        # 失能走开）；需要外部跟随是显式操作（网页 tab / 写 0x16D=1），不该由脚本代劳。
+        original_source = host.read(0x16D)
+        if original_source is not None and (original_source & 1):
+            if not host.write(0x16D, 0):
+                print("!! 无法把运动源切到内部规划（0x16D 写失败 / 固件不支持），退出")
+                return 2
+            print("运动源：外部脉冲跟随 -> 内部规划（整定结束保持在内部模式，需要外部跟随请显式切换）")
+
         host.clear_stall()
         host.set_pid(*pid)
         lag_ff = max(0, min(100, args.lag_ff))
@@ -332,8 +345,20 @@ def main() -> int:
             print("!! 没收到编码器遥测（0x116），检查 USB CDC 连接")
             return 2
 
-        profiles = build_profiles(args.max_rpm, args.quick)
-        search_profiles = build_profiles(args.max_rpm, True)
+        # 【共振带感知】固件会把落进共振带 [0x16F, 0x170] 的巡航目标钳到带下限。
+        # 用户若把共振带调到整定转速范围内（比如 100~400），每个工况都会被钳在带边，
+        # "高速正向"实际跑不到高速 —— 工况语义乱掉。整定上限主动压到（带下限-50）。
+        tune_cap = MAX_TUNE_RPM
+        res_lo = host.read(0x16F)
+        res_hi = host.read(0x170)
+        if res_lo is not None and res_hi is not None and res_hi > res_lo:
+            if float(res_lo) - 50.0 < tune_cap:
+                tune_cap = max(60.0, float(res_lo) - 50.0)
+                print("共振带 [%d, %d] RPM：整定转速上限主动降到 %.0f RPM（离带留 50RPM 余量）"
+                      % (res_lo, res_hi, tune_cap))
+
+        profiles = build_profiles(args.max_rpm, args.quick, cap=tune_cap)
+        search_profiles = build_profiles(args.max_rpm, True, cap=tune_cap)
         print("工况：%s" % "、".join("%s(%.0f→%.0fRPM, %0.fRPM/s)" %
                                     (p.name, p.start_rpm, p.max_rpm, p.accel_rpm_s) for p in profiles))
         print("搜索只用：%s（最后再用全部工况验证）" % "、".join(p.name for p in search_profiles))
@@ -392,7 +417,7 @@ def main() -> int:
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "port": args.port,
             "microsteps": microsteps,
-            "max_rpm": min(args.max_rpm, MAX_TUNE_RPM),
+            "max_rpm": min(args.max_rpm, tune_cap),
             "profiles": [p.__dict__ for p in profiles],
             "start_gains": start,
             "best_gains": best,

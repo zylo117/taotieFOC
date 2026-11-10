@@ -15,6 +15,34 @@
             await writeRegister(CUSTOM_REGS.ANGLE_ACCEL_RPM_S, angleAccelRpm);
         }
 
+        // ===== 共振带自动避让（滞后角校准 / 冲击标定等"速度归属型"扫速共用）=====
+        // 固件 0x16F/0x170：巡航目标落进 [lo,hi] 会被钳到共振带下限 —— 对正常运动是对的
+        // （不在共振点上驻留），但对标定是灾难：这个采样点的"速度"是假的，
+        // 滞后角/冲击峰值会被归属到电机根本没跑过的速度上，拟合曲线直接失真。
+        // 所以扫速采样开始前把落带内的点剔除（0 保留：它不参与运动）。
+        // hi<=lo（含 hi=0）= 固件共振带关闭，不筛。旧固件读不到寄存器也不筛。
+        async function excludeResonanceBandSpeeds(speedList, label) {
+            let lo = NaN;
+            let hi = NaN;
+            try {
+                lo = await readRegisterValue(CUSTOM_REGS.RESONANCE_LO_RPM);
+                hi = await readRegisterValue(CUSTOM_REGS.RESONANCE_HI_RPM);
+            } catch (e) {
+                return speedList;
+            }
+            if (!Number.isFinite(lo) || !Number.isFinite(hi)) return speedList;
+            lo = lo | 0;
+            hi = hi | 0;
+            if (hi <= lo) return speedList;
+            const kept = speedList.filter((r) => !(r > 0 && r >= lo && r <= hi));
+            const dropped = speedList.length - kept.length;
+            if (dropped > 0) {
+                log(`[${label}] 共振带 [${lo}, ${hi}] RPM：自动剔除 ${dropped} 个扫速点（剩 ${kept.length} 个，`
+                    + '落带内的点会被固件钳速，测出来的滞后角/冲击数据会归属到错误的速度上）');
+            }
+            return kept;
+        }
+
         // ===== 串口生命周期：断开 / 拔线检测 / 安全重连 =====
         // 没有这些，拔线后 state.connected 永远卡在 true、reader 泄漏、
         // 重连还会在旧 port 上叠第二个 reader；所有 await 中的读写请求也永远挂着。
