@@ -2,6 +2,7 @@
 
 #include "closed_loop_controller.h"
 #include "param_store.h"
+#include "usb_cdc_protocol.h"   // 单例计数（0x169~0x16C 只读）
 
 #include <cstdio>
 
@@ -45,6 +46,66 @@ namespace
         const float max_gain = maxPidGain(reg);
         return gain > max_gain ? max_gain : gain;
     }
+
+    // 主机不可写的寄存器：纯遥测/计数器/一次性 WO。
+    // 只影响主机写入路径（router.write）；固件内部注入遥测走 protocol_->setCustomParameter，
+    // 不经过这里，所以把地址列进来不会挡住刷新。
+    // 判据：0x120 转速、0x137/0x138 CPU、0x116 角度、0x121 误差这类“只读遥测”，
+    // 以及本批新增的 0x168~0x16C 计数器。（WO 触发器如 0x163/0x16E 不在此列 ——
+    // 它们必须可写，只是读回无意义。）
+    bool isHostReadOnlyRegister(uint16_t reg)
+    {
+        switch (reg)
+        {
+        case TMC2209_EXT_PARAM_FAULT_STATUS:
+        case TMC2209_EXT_PARAM_ENCODER_FAULT:
+        case TMC2209_EXT_PARAM_MAGNETIC_FAULT:
+        case TMC2209_EXT_PARAM_OUTPUT_STOP:
+        case TMC2209_EXT_PARAM_POS_LOOP_HZ:
+        case TMC2209_EXT_PARAM_VEL_LOOP_HZ:
+        case TMC2209_EXT_PARAM_CUR_LOOP_HZ:
+        case TMC2209_EXT_PARAM_LAST_FAULT:
+        case TMC2209_EXT_PARAM_ACTUAL_POSITION:
+        case TMC2209_EXT_PARAM_FOLLOW_ERROR:
+        case TMC2209_EXT_PARAM_ENCODER_RAW:
+        case TMC2209_EXT_PARAM_ENCODER_ANGLE_MDEG:
+        case TMC2209_EXT_PARAM_MAGNETIC_HIGH:
+        case TMC2209_EXT_PARAM_MAGNETIC_LOW:
+        case TMC2209_EXT_PARAM_SPEED_RPM:
+        case TMC2209_EXT_PARAM_POSITION_DEG:
+        case TMC2209_EXT_PARAM_PID_TUNE_SCORE_MDEG:
+        case TMC2209_EXT_PARAM_PID_TUNE_SAMPLE_COUNT:
+        case TMC2209_EXT_PARAM_MOTION_SCHEDULED_STEPS:
+        case TMC2209_EXT_PARAM_MOTION_COMMAND_SPEED_MRPM:
+        case TMC2209_EXT_PARAM_CPU_USAGE_CENTIPERCENT:
+        case TMC2209_EXT_PARAM_CONTROL_TASK_USAGE_CENTIPERCENT:
+        case TMC2209_EXT_PARAM_LAG_ANGLE_QUERY_MDEG:
+        case TMC2209_EXT_PARAM_LAG_ANGLE_POINT_COUNT:
+        case TMC2209_EXT_PARAM_LAG_ANGLE_FIT_SLOPE:
+        case TMC2209_EXT_PARAM_LAG_ANGLE_FIT_INTERCEPT:
+        case TMC2209_EXT_PARAM_LAG_ANGLE_FIT_EXPONENT:
+        case TMC2209_EXT_PARAM_LAG_ANGLE_MDEG:
+        case TMC2209_EXT_PARAM_EXT_FOLLOW_CMD_STEPS:
+        case TMC2209_EXT_PARAM_EXT_FOLLOW_EMITTED_STEPS:
+        case TMC2209_EXT_PARAM_EXT_FOLLOW_BACKLOG:
+        case TMC2209_EXT_PARAM_EXT_FOLLOW_DROPPED:
+        case TMC2209_EXT_PARAM_EXT_FOLLOW_WINDOW_REVERSALS:
+        case TMC2209_EXT_PARAM_ENABLE_STATE:
+        case TMC2209_EXT_PARAM_EXT_EN_LEVEL:
+        case TMC2209_EXT_PARAM_COMP_RPS_MILLI:
+        case TMC2209_EXT_PARAM_STALL_DETECTED:
+        case TMC2209_EXT_PARAM_STALL_EVENTS:
+        case TMC2209_EXT_PARAM_PID_TUNE_PEAK_MDEG:
+        case TMC2209_EXT_PARAM_EN_GLITCH_COUNT:
+        case TMC2209_EXT_PARAM_RX_OVERFLOW_COUNT:
+        case TMC2209_EXT_PARAM_RX_CRC_FAIL_COUNT:
+        case TMC2209_EXT_PARAM_TX_DROP_COUNT:
+        case TMC2209_EXT_PARAM_WRITE_DENIED_COUNT:
+            return true;
+        default:
+            return false;
+        }
+    }
 }
 
 ParameterRouter::ParameterRouter(ClosedLoopController& owner) : owner_(owner)
@@ -53,6 +114,21 @@ ParameterRouter::ParameterRouter(ClosedLoopController& owner) : owner_(owner)
 
 bool ParameterRouter::write(uint16_t reg, uint32_t value)
 {
+    // 【只读寄存器门】以前主机写任何地址都回"成功 ACK + 你写的值"，而
+    // custom_parameters_ 表被脏值污染（下次 kSlow 刷新前读回的就是脏的）——
+    // 协议层不该骗人。现在显式列出主机不可写的寄存器：拒绝并让 bridge 把 ACK
+    // 换成"当前真实值"（reg 能配对，waitAck 不挂死；比较数值即知被拒）。
+    // 注意遥测注入走 protocol_->setCustomParameter 直写表，**不经过这里**，不受影响。
+    if (isHostReadOnlyRegister(reg))
+    {
+        UsbCdcProtocolBridge* bridge = UsbCdcProtocolBridge::instance();
+        if (bridge != nullptr)
+        {
+            bridge->recordWriteDenied();
+        }
+        return false;
+    }
+
     // 【Flash 写入的拒绝条件】flash_write 走"读整扇区→擦→整扇区回写"，
     // AT32F403A 单 bank：擦除+编程期间所有取指停摆 **几十毫秒**，
     // 20kHz 控制环整段消失，而 TMR2 还在按最后一窗的周期发脉冲 —— 必丢步。
@@ -75,10 +151,11 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
     }
     if (reg == TMC2209_EXT_PARAM_SAVE_PARAMS)
     {
-        // 【写入会 stall Flash 总线几毫秒】运动中绝对不能做，否则会丢脉冲。
-        if (owner_.motion_running_ || owner_.closed_loop_angle_mode_enabled_)
+        // 【写入会 stall Flash 总线几十毫秒】运动中绝对不能做，否则会丢脉冲。
+        const char* danger = motion_danger();
+        if (danger != nullptr)
         {
-            printf("[PARAM] save rejected: motion is running\r\n");
+            printf("[PARAM] save rejected: %s is active\r\n", danger);
             owner_.param_save_ok_ = false;
             return true;
         }
@@ -122,6 +199,11 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         // 滞后角模型的可调参数（见 docs/lag_angle_and_pid.md）
         params.lag_accel_coef_mdeg_per_rpm_s = owner_.lag_accel_coef_mdeg_per_rpm_s_;
         params.lag_deadband_mdeg = owner_.lag_deadband_mdeg_;
+        // v5：运动源 + 共振带。运动源是"设备形态"（PLC 直连 vs 网页调试），
+        // 重启必须保持；共振带是这台机器的物理属性，更该持久。
+        params.motion_source = static_cast<uint16_t>(owner_.getMotionSource());
+        params.resonance_lo_rpm = owner_.resonance_lo_rpm_;
+        params.resonance_hi_rpm = owner_.resonance_hi_rpm_;
         // 角度限速/加速度不存 Flash：它们属于“本次运行设定”，每次按现场需要在界面上调，
         // 存进 Flash 反而会让一个旧值在重启后静默生效。结构体字段保留（置 0）用于兼容。
         params.angle_max_rpm = 0U;
@@ -222,6 +304,17 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         {
             return true;
         }
+        // 【fit() 之后紧跟 saveToFlash()，同样 stall 总线几十毫秒】原来这条路径
+        // 完全没有运动门，比 0x154 更隐蔽：滞后角整定的收尾就是"写 0x141 拟合并存 Flash"，
+        // 如果此时电机还在扫速运动，擦除窗口内控制环消失 → 丢步。整定流程应已停转，
+        // 但这是安全不变量，固件侧必须自己挡（上位机 bug 不能变成丢步）。
+        const char* danger = motion_danger();
+        if (danger != nullptr)
+        {
+            printf("[LAG] fit rejected: %s is active\r\n", danger);
+            owner_.lag_angle_fit_saved_ = false;
+            return true;
+        }
         owner_.lag_angle_fit_saved_ = owner_.lag_angle_.fit() && owner_.lag_angle_.saveToFlash();
         return owner_.lag_angle_fit_saved_;
     }
@@ -313,7 +406,10 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
     }
     if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_ENABLE)
     {
-        owner_.enableExternalPulseFollow(value != 0U);
+        // 0x149 是 0x16D 运动源的"跟随开关"别名：走同一个 setMotionSource，
+        // 两个寄存器永远同步（以前各写各的，切一半会出现"跟随开着但运动源显示内部"）。
+        owner_.setMotionSource(value != 0U ? ClosedLoopController::MOTION_SOURCE_EXTERNAL
+                                           : ClosedLoopController::MOTION_SOURCE_INTERNAL);
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_EXT_FOLLOW_MAX_STEP_S)
@@ -442,6 +538,41 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         {
             owner_.requestQuickStop();
         }
+        return true;
+    }
+    // ===== 运动源 / 急停 / 共振带（2026-11 第二批）=====
+    if (reg == TMC2209_EXT_PARAM_MOTION_SOURCE)
+    {
+        owner_.setMotionSource(value);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_EMERGENCY_STOP)
+    {
+        if (value != 0U)
+        {
+            owner_.emergencyStop();
+        }
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_RESONANCE_LO_RPM)
+    {
+        owner_.resonance_lo_rpm_ = static_cast<uint16_t>(value > 6000U ? 6000U : value);
+        printf("[RESONANCE] band lo = %lu rpm\r\n", static_cast<unsigned long>(owner_.resonance_lo_rpm_));
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_RESONANCE_HI_RPM)
+    {
+        owner_.resonance_hi_rpm_ = static_cast<uint16_t>(value > 6000U ? 6000U : value);
+        printf("[RESONANCE] band hi = %lu rpm\r\n", static_cast<unsigned long>(owner_.resonance_hi_rpm_));
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_RESONANCE_BYPASS)
+    {
+        owner_.resonance_bypass_ = value != 0U;
+        printf("[RESONANCE] bypass = %u (%s)\r\n",
+               owner_.resonance_bypass_ ? 1U : 0U,
+               owner_.resonance_bypass_ ? "in-band cruising allowed (auto-test)"
+                                        : "band enforced for planned motion");
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_STALL_CLEAR)
@@ -752,6 +883,51 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_ENABLE_MODE)
     {
         *value = owner_.getEnableMode();
+        return true;
+    }
+    // ===== 运动源 / 共振带 / 可观测计数器（2026-11 第二批）=====
+    if (reg == TMC2209_EXT_PARAM_MOTION_SOURCE)
+    {
+        *value = owner_.getMotionSource();
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_RESONANCE_LO_RPM)
+    {
+        *value = owner_.resonance_lo_rpm_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_RESONANCE_HI_RPM)
+    {
+        *value = owner_.resonance_hi_rpm_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_RESONANCE_BYPASS)
+    {
+        *value = owner_.resonance_bypass_ ? 1U : 0U;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_EN_GLITCH_COUNT)
+    {
+        *value = owner_.en_glitch_count_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_RX_OVERFLOW_COUNT ||
+        reg == TMC2209_EXT_PARAM_RX_CRC_FAIL_COUNT ||
+        reg == TMC2209_EXT_PARAM_TX_DROP_COUNT ||
+        reg == TMC2209_EXT_PARAM_WRITE_DENIED_COUNT)
+    {
+        UsbCdcProtocolBridge* bridge = UsbCdcProtocolBridge::instance();
+        if (bridge != nullptr)
+        {
+            *value = (reg == TMC2209_EXT_PARAM_RX_OVERFLOW_COUNT) ? bridge->rxOverflowCount()
+                   : (reg == TMC2209_EXT_PARAM_RX_CRC_FAIL_COUNT) ? bridge->rxCrcFailCount()
+                   : (reg == TMC2209_EXT_PARAM_TX_DROP_COUNT) ? bridge->txDropCount()
+                   : bridge->writeDeniedCount();
+        }
+        else
+        {
+            *value = 0U;
+        }
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_ENABLE_STATE)

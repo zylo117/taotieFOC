@@ -218,6 +218,34 @@ enum Tmc2209CustomExtensionRegister
     // 0x167 R/W：恒速段残差死区（毫度）。它应该和"滞后角表有多准"匹配：
     //   表是带载标定的、负载又变了，就给它大一点；重新标定后再收小。
     TMC2209_EXT_PARAM_LAG_DEADBAND_MDEG = 0x167U,
+
+    // ===== 可观测计数器 + 运动源互斥 + 急停 + 共振带（2026-11 第二批新增）=====
+    // RO 一组（写会被拒绝并计入 0x16C，ACK 回读当前真实值而不是"你写的值"）：
+    // 0x168 RO：外部 EN（PC13）被消抖吸收的毛刺次数。持续增长 = EN 线受干扰。
+    TMC2209_EXT_PARAM_EN_GLITCH_COUNT = 0x168U,
+    // 0x169 RO：USB RX 缓冲溢出次数（丢的是半帧以上的残留段）。
+    TMC2209_EXT_PARAM_RX_OVERFLOW_COUNT = 0x169U,
+    // 0x16A RO：CRC 校验失败帧数。
+    TMC2209_EXT_PARAM_RX_CRC_FAIL_COUNT = 0x16AU,
+    // 0x16B RO：响应队列满被丢弃的 TX 帧数（主机收不到的 ACK 都记在这）。
+    TMC2209_EXT_PARAM_TX_DROP_COUNT = 0x16BU,
+    // 0x16C RO：被拒绝的写次数（写只读寄存器/运动中保存等）。
+    TMC2209_EXT_PARAM_WRITE_DENIED_COUNT = 0x16CU,
+    // R/W（存 Flash，上电生效）：运动源，**绝对互斥**。
+    //   1 = 外部脉冲跟随（默认）：上电即监听 PB5/PB4，规划运动/角度模式/目标角
+    //       一律被拒绝（网页对应控件禁用，寄存器读数照常展示）。
+    //   0 = 内部规划：网页可以操作，外部 PUL 输入被忽略。
+    // 切换语义见 ClosedLoopController::setMotionSource()。
+    TMC2209_EXT_PARAM_MOTION_SOURCE = 0x16DU,
+    // WO：写 1 = 急停 —— 立即断脉冲 + 失能驱动器（比 0x163 缓停更狠，网页右下角红钮）。
+    TMC2209_EXT_PARAM_EMERGENCY_STOP = 0x16EU,
+    // R/W（存 Flash）：共振速度区间 [lo, hi]（RPM）。默认 300~600，用户可调。
+    // 生效点：规划运动/速度模式的巡航目标速度落进区间 → 钳到 lo（快切通过，
+    // 不在带内驻留）；写 hi=0 或 lo>=hi 视为关闭。自动测试通过 0x171 旁路。
+    TMC2209_EXT_PARAM_RESONANCE_LO_RPM = 0x16FU,
+    TMC2209_EXT_PARAM_RESONANCE_HI_RPM = 0x170U,
+    // R/W（不存 Flash，上电=0）：1 = 共振自动测试/扫频模式，临时允许在带内巡航。
+    TMC2209_EXT_PARAM_RESONANCE_BYPASS = 0x171U,
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -282,7 +310,7 @@ private:
 
     ClosedLoopDriverProtocolConfig config_;
     // 扩展参数表长度：覆盖 0x100 ~ 0x167，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x167U - 0x100U + 1U;
+    static constexpr uint16_t kCustomParameterCount = 0x171U - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

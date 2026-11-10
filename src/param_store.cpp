@@ -12,7 +12,40 @@ static const uint32_t kParamMagic = 0x54414F54U;   // 'TAOT'
 static const uint16_t kParamVersionV1 = 1U;
 static const uint16_t kParamVersionV2 = 2U;
 static const uint16_t kParamVersionV3 = 3U;
-static const uint16_t kParamVersion = 4U;
+static const uint16_t kParamVersionV4 = 4U;
+static const uint16_t kParamVersion = 5U;
+
+// v4 布局（v5 追加字段之前的最后形态）。**只为迁移读旧记录用**。
+// 【为什么必须单独定义】校验和按“该版本自己的结构大小”算：v5 在末尾追加了 6 字节，
+// 拿 sizeof(v5) 校验一条 v4 记录会多读 6 个 0xFFFF，校验必失败，表现为
+// “升级固件后运动源/共振带之外的所有参数莫名回到编译期默认值”。
+struct PersistedMotorParamsV4
+{
+    uint32_t magic;
+    uint16_t version;
+    uint16_t checksum;
+    uint16_t microsteps;
+    uint16_t run_current_ma;
+    uint16_t hold_current_ma;
+    uint16_t step_pulse_ns;
+    uint16_t angle_max_rpm;
+    uint16_t angle_accel_rpm_s;
+    uint32_t position_kp;
+    uint32_t position_ki;
+    uint32_t position_kd;
+    uint32_t velocity_kp;
+    uint32_t velocity_ki;
+    uint32_t velocity_kd;
+    uint32_t angle_position_kp;
+    uint32_t angle_position_ki;
+    uint32_t angle_position_kd;
+    uint32_t angle_velocity_kp;
+    uint32_t angle_velocity_ki;
+    uint32_t angle_velocity_kd;
+    uint16_t en_mode;
+    uint16_t lag_accel_coef_mdeg_per_rpm_s;
+    uint16_t lag_deadband_mdeg;
+};
 
 // v1 布局：只是为了还能读出旧记录做迁移用。**永远不要拿它写 Flash**。
 // v2 只是在末尾追加了 6 个角度模式增益，所以 v1 的字段偏移完全不变。
@@ -138,6 +171,15 @@ namespace
         out->velocity_ki = 0U;       // 0
         out->velocity_kd = 0U;       // 0
     }
+
+    // v5 默认：运动源=外部脉冲跟随（用户的需求形态：PLC 脉冲直连），
+    // 共振带 300~600 RPM（实测剧烈抖动区，用户可在网页调，写 hi=0 关闭）。
+    void fillMotionDefaults(PersistedMotorParams* out)
+    {
+        out->motion_source = 1U;
+        out->resonance_lo_rpm = 300U;
+        out->resonance_hi_rpm = 600U;
+    }
 }
 
 bool param_store_load(PersistedMotorParams* out)
@@ -169,8 +211,8 @@ bool param_store_load(PersistedMotorParams* out)
         return true;
     }
 
-    // v2 / v3 -> v4：前面所有字段偏移一致，按 V3 的长度校验并整段搬过来，
-    // 再补上 v4 新增的两个滞后角模型参数（旧记录里没有，用默认值）。
+    // v2 / v3 -> v5：前面所有字段偏移一致，按 V3 的长度校验并整段搬过来，
+    // 再补上 v4/v5 新增的字段（旧记录里没有，用默认值）。
     if (flash_params->version == kParamVersionV3 || flash_params->version == kParamVersionV2)
     {
         const PersistedMotorParamsV3* v3 =
@@ -185,12 +227,36 @@ bool param_store_load(PersistedMotorParams* out)
         std::memcpy(out, v3, sizeof(PersistedMotorParamsV3));
         out->version = kParamVersion;
         fillLagModelDefaults(out);
-        printf("[PARAM] migrated v%u -> v4: kept PID/en_mode, lag-model params = defaults\r\n",
+        fillMotionDefaults(out);
+        printf("[PARAM] migrated v%u -> v5: kept PID/en_mode, lag-model + motion defaults\r\n",
                static_cast<unsigned>(flash_params->version));
         return true;
     }
 
-    // v1 -> v4
+    // v4 -> v5：偏移一致（v5 只在末尾追加 3 个 uint16），按 V4 长度校验后整段搬，
+    // 再填运动源/共振带默认值。
+    if (flash_params->version == kParamVersionV4)
+    {
+        const PersistedMotorParamsV4* v4 =
+            reinterpret_cast<const PersistedMotorParamsV4*>(kParamFlashBase);
+        const uint16_t v4_checksum = checksumOf(
+            reinterpret_cast<const uint8_t*>(v4), sizeof(PersistedMotorParamsV4),
+            offsetof(PersistedMotorParamsV4, checksum) + sizeof(v4->checksum));
+        if (flash_params->checksum != v4_checksum)
+        {
+            return false;
+        }
+        std::memcpy(out, v4, sizeof(PersistedMotorParamsV4));
+        out->version = kParamVersion;
+        fillMotionDefaults(out);
+        printf("[PARAM] migrated v4 -> v5: kept all, motion_source=%u resonance=[%u,%u]\r\n",
+               static_cast<unsigned>(out->motion_source),
+               static_cast<unsigned>(out->resonance_lo_rpm),
+               static_cast<unsigned>(out->resonance_hi_rpm));
+        return true;
+    }
+
+    // v1 -> v5
     if (flash_params->version == kParamVersionV1)
     {
         if (flash_params_v1->checksum != computeChecksumV1(*flash_params_v1))
@@ -209,7 +275,8 @@ bool param_store_load(PersistedMotorParams* out)
         fillPidDefaultsV3(out);
         fillAngleDefaults(out);
         fillLagModelDefaults(out);
-        printf("[PARAM] migrated v1 -> v4: PID reset to new scale, lag-model params = defaults\r\n");
+        fillMotionDefaults(out);
+        printf("[PARAM] migrated v1 -> v5: PID reset to new scale, defaults for lag/motion\r\n");
         return true;
     }
 

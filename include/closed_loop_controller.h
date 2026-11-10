@@ -210,7 +210,7 @@ public:
     //   闭环补偿关（0x107=0）→ 开环，按限速把积压发完，1:1 转发
     //   闭环补偿开（0x107=1）→ 在上面叠位置/速度环 PID 修正，用编码器保证实际到位
     // 与 0x11E/0x11F 的规划运动互斥（跟随时 startMotion() 直接忽略）。
-    void enableExternalPulseFollow(bool enable);
+    void enableExternalPulseFollow(bool enable, bool energize_driver = true);
     bool isExternalPulseFollowEnabled() const;
     // 跟随限速（步/s）。0 = 跟随 angle_max_rpm_ 换算出的能力上限（推荐）。
     void setExternalPulseMaxStepRate(uint32_t steps_per_second);
@@ -238,6 +238,19 @@ public:
     // 而且整定器能在这段减速里继续采样，量到冲击峰值。
     void requestQuickStop();
     bool isQuickStopActive() const;
+    // ===== 运动源绝对互斥（0x16D）+ 急停（0x16E）=====
+    // 运动源二选一，且**同一时刻只有一套信号能驱动脉冲**：
+    //   EXTERNAL(1，默认)：上电即外部脉冲跟随，规划运动/角度模式/目标角全部拒绝，
+    //                      网页对应控件禁用，只读展示照常刷新。
+    //   INTERNAL(0)：网页可操作内部规划/角度模式，外部 PUL 输入被忽略。
+    enum MotionSource { MOTION_SOURCE_INTERNAL = 0U, MOTION_SOURCE_EXTERNAL = 1U };
+    // 切换运动源。切到外部：先停内部运动，再开跟随；切到内部：关跟随（脉冲通道交还规划器）。
+    // energize_on_switch=false：上电默认外部模式时用 —— 预备通道但**不给驱动器电流**
+    // （EN 由使能来源策略决定），电机不会一上电就抱死发热。
+    void setMotionSource(uint32_t source, bool energize_on_switch = true);
+    uint32_t getMotionSource() const { return motion_source_; }
+    // 急停：立即断脉冲 + 失能驱动器（比 requestQuickStop 的减速停车更彻底）。
+    void emergencyStop();
     float getEncoderZero() const;
     void setEncoderZero(float zero_angle);
     float getEncoderFilteredAngle() const;
@@ -566,6 +579,13 @@ private:
     // 外部 EN 接 PC13，低电平使能。外部模式下这个引脚是唯一权威：
     // 上位机的 0x124/0x125 只改 user_disabled_ 这个"允许位"，不直接写芯片 EN。
     volatile uint32_t enable_mode_ = ENABLE_MODE_HOST;
+    // 运动源（0x16D）：默认外部脉冲跟随。见 MotionSource 枚举。
+    volatile uint32_t motion_source_ = MOTION_SOURCE_EXTERNAL;
+    // 共振速度区间（0x16F/0x170）：巡航目标落进区间就钳到 lo，不在带内驻留。
+    // 默认 300~600 RPM（用户实测的剧烈抖动区）。hi=0 或 lo>=hi 关闭该逻辑。
+    volatile uint16_t resonance_lo_rpm_ = 300U;
+    volatile uint16_t resonance_hi_rpm_ = 600U;
+    volatile bool resonance_bypass_ = false;   // 0x171：共振自动测试临时旁路
     volatile bool driver_enabled_ = false;
     volatile uint8_t external_en_level_ = 1U;   // 1=高(失能) 0=低(使能)
     // 【消抖状态】PC13 来自 PLC/接触器，几百 ns~几 µs 的毛刺很常见。逐拍单样本

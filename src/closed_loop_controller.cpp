@@ -275,6 +275,9 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
     // 现在只要用户点过一次「写入参数」，重启就能自动恢复。
     uint16_t boot_microsteps = 0U;
     uint16_t boot_enable_mode = ENABLE_MODE_HOST;
+    uint32_t boot_motion_source = MOTION_SOURCE_EXTERNAL;   // 上电默认：外部脉冲跟随
+    uint16_t boot_res_lo = 300U;
+    uint16_t boot_res_hi = 600U;
     {
         PersistedMotorParams params = {};
         if (param_store_load(&params))
@@ -306,6 +309,11 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
             {
                 boot_enable_mode = params.en_mode;
             }
+            // v5：运动源 + 共振带（旧记录迁移时已填默认值）
+            boot_motion_source = (params.motion_source <= 1U) ? params.motion_source
+                                                              : MOTION_SOURCE_EXTERNAL;
+            boot_res_lo = params.resonance_lo_rpm;
+            boot_res_hi = params.resonance_hi_rpm;
             // 滞后角模型参数：旧记录（v1/v2/v3）在迁移时已经填了默认值
             lag_accel_coef_mdeg_per_rpm_s_ = params.lag_accel_coef_mdeg_per_rpm_s;
             lag_deadband_mdeg_ = (params.lag_deadband_mdeg >= 10U) ? params.lag_deadband_mdeg : 150U;
@@ -405,6 +413,13 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
         }
     }
 
+    // 【上电应用运动源 + 共振带】flash 读取失败也要应用编译期默认值
+    // （外部跟随 + 300~600 RPM 共振带）。energize=false：只预备脉冲通道，
+    // 驱动器电流由使能来源策略决定 —— 上电即抱死发热不可接受。
+    resonance_lo_rpm_ = boot_res_lo;
+    resonance_hi_rpm_ = boot_res_hi;
+    setMotionSource(boot_motion_source, /*energize_on_switch=*/false);
+
     last_process_time_us_ = 0U;
 }
 
@@ -500,9 +515,10 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
         angle_deg = 360.0f;
     }
 
-    if (external_pulse_follower_.isEnabled())
+    if (external_pulse_follower_.isEnabled() || motion_source_ == MOTION_SOURCE_EXTERNAL)
     {
-        printf("[EXT_FOLLOW] setTargetAngleDeg ignored: external pulse follow is active\r\n");
+        printf("[SOURCE] setTargetAngleDeg rejected: motion source is EXTERNAL follow "
+               "(write 0x16D=0 / switch to internal plan first)\r\n");
         return;
     }
 
@@ -733,6 +749,54 @@ bool ClosedLoopController::isQuickStopActive() const
     return motion_quick_stop_;
 }
 
+// 急停（0x16E=1，网页右下角红钮）：立即断脉冲 + 失能驱动器。
+// 为什么失能：步进电机在高速运行中被"断脉冲但保持励磁"时，绕组里感应的
+// 反电动势会经 H 桥泵电流回驱动芯片（伤机的那一下）；EN 拉低后 H 桥高阻，
+// 转子带着绕组自由滑行，电气上最温和。机械代价是失去保持矩（垂直轴会掉），
+// 这是"急停"本身的语义，不是本实现的选择。
+void ClosedLoopController::emergencyStop()
+{
+    closed_loop_angle_mode_enabled_ = false;
+    stopMotion();
+    // 与 0x125 相同的"用户主动失能"锁：之后自动测试循环里的 0x11F=1 不会
+    // 把电流偷偷打开，必须显式 0x124 重新使能。
+    user_disabled_ = true;
+    requestDriverEnable(false);
+    // 调用方是 USB/串口任务（0x16E 处理路径），printf 安全。
+    printf("[ESTOP] emergency stop: pulses cut, driver disabled\r\n");
+}
+
+// 切换运动源（0x16D）。外部↔内部是**信号通道的交还/接管**：
+// enableExternalPulseFollow() 本身已经做了两套状态机的互清（共用 DDA/TMR2），
+// 这里补的是"意图"层：外部模式下 startMotion/setTargetAngleDeg 会被
+// follower 的 isEnabled() 门拒绝（那里已有），0x149 与本寄存器保持一致由
+// ParameterRouter 在两侧同步。
+void ClosedLoopController::setMotionSource(uint32_t source, bool energize_on_switch)
+{
+    const uint32_t src = (source == 0U) ? MOTION_SOURCE_INTERNAL : MOTION_SOURCE_EXTERNAL;
+    if (src == motion_source_ &&
+        external_pulse_follower_.isEnabled() == (src == MOTION_SOURCE_EXTERNAL))
+    {
+        return;   // 状态一致，不折腾（避免每次连接重放一遍切换日志）
+    }
+    motion_source_ = src;
+    if (src == MOTION_SOURCE_EXTERNAL)
+    {
+        // 外部模式优先保证"通道立即交还"：运动中切过来会瞬间断脉冲，
+        // 反电动势风险同 emergencyStop 的说明，但"切换"本身就是用户主动动作。
+        // energize_on_switch=false 用于上电默认外部模式：预备通道但不给电流。
+        stopMotion();
+        enableExternalPulseFollow(true, energize_on_switch);
+    }
+    else
+    {
+        enableExternalPulseFollow(false);
+    }
+    printf("[SOURCE] motion source = %s\r\n",
+           src == MOTION_SOURCE_EXTERNAL ? "EXTERNAL PULSE FOLLOW (internal motion locked)"
+                                         : "INTERNAL PLAN (external PUL ignored)");
+}
+
 void ClosedLoopController::setMotionConfig(float start_rpm, float max_rpm, float accel_rpm_s, uint32_t pulse_count,
                                            MotionMode mode)
 {
@@ -848,10 +912,13 @@ void ClosedLoopController::startMotion()
         return;
     }
 
-    // 跟随模式下不接受规划运动：命令位置完全由外部脉冲决定，两套逻辑同时跑必然打架
-    if (external_pulse_follower_.isEnabled())
+    // 【运动源绝对互斥】外部跟随模式（0x16D=1，上电默认）下拒绝一切内部运动：
+    // 命令位置归属外部 PUL/DIR，两套逻辑同时跑必然打架。
+    // 要用规划/角度模式，先写 0x16D=0（网页切「内部规划模式」）。
+    if (external_pulse_follower_.isEnabled() || motion_source_ == MOTION_SOURCE_EXTERNAL)
     {
-        printf("[EXT_FOLLOW] startMotion ignored: external pulse follow is active\r\n");
+        printf("[SOURCE] startMotion rejected: motion source is EXTERNAL follow "
+               "(write 0x16D=0 / switch to internal plan first)\r\n");
         return;
     }
 
@@ -881,6 +948,36 @@ void ClosedLoopController::startMotion()
     if (motion_max_rpm_ < motion_start_rpm_)
     {
         motion_max_rpm_ = motion_start_rpm_;
+    }
+
+    // 【共振带】巡航目标速度落进 [lo,hi] 就钳到 lo：带只能在加速/减速途中"快切"
+    // 穿过，不允许驻留共振。共振自动测试写 0x171=1 旁路；校准段间也静默钳位
+    // （校准的 startMotion 由控制任务调用，printf 会停摆 8ms —— 违反"转动时不打印"）。
+    if (!resonance_bypass_ && resonance_hi_rpm_ > resonance_lo_rpm_)
+    {
+        if (motion_max_rpm_ > static_cast<float>(resonance_lo_rpm_) &&
+            motion_max_rpm_ < static_cast<float>(resonance_hi_rpm_))
+        {
+            const uint16_t was_rpm = static_cast<uint16_t>(motion_max_rpm_);
+            motion_max_rpm_ = static_cast<float>(resonance_lo_rpm_);
+            if (calibration_stage_ == CALIBRATION_IDLE)
+            {
+                printf("[RESONANCE] cruise %u rpm inside band [%u,%u] -> clamped to %u "
+                       "(0x171=1 to bypass)\r\n",
+                       was_rpm, static_cast<unsigned>(resonance_lo_rpm_),
+                       static_cast<unsigned>(resonance_hi_rpm_),
+                       static_cast<unsigned>(resonance_lo_rpm_));
+            }
+        }
+        if (motion_start_rpm_ > static_cast<float>(resonance_lo_rpm_) &&
+            motion_start_rpm_ < static_cast<float>(resonance_hi_rpm_))
+        {
+            motion_start_rpm_ = static_cast<float>(resonance_lo_rpm_);
+        }
+        if (motion_max_rpm_ < motion_start_rpm_)
+        {
+            motion_max_rpm_ = motion_start_rpm_;
+        }
     }
 
     closed_loop_angle_mode_enabled_ = false;
@@ -1925,7 +2022,7 @@ void ClosedLoopController::runExternalPulseFollow(uint64_t delta_ramp_ns)
     external_pulse_follower_.update(delta_ramp_ns);
 }
 
-void ClosedLoopController::enableExternalPulseFollow(bool enable)
+void ClosedLoopController::enableExternalPulseFollow(bool enable, bool energize_driver)
 {
     if (external_pulse_follower_.isEnabled() == enable)
     {
@@ -1977,14 +2074,26 @@ void ClosedLoopController::enableExternalPulseFollow(bool enable)
     external_pulse_follower_.setPrimePending(true);
     external_pulse_follower_.setEnabled(true);
 
-    if (driver_ != nullptr && !fault_monitor_.encoderFaultActive() && !fault_monitor_.magneticFaultActive())
+    // 驱动器励磁：跟随要电流才有意义，但**上电时不能强行励磁** —— 通不通电流
+    // 由使能来源策略决定（host：等 0x124；external：看 EN 引脚电平）。
+    // energize_driver=false（boot 路径）只"预备"通道，EN 交给策略，电机不会一上电就抱死发热。
+    // 顺带修正一个旧违背：外部 EN 模式下这里原本也会 setEnable(true) —— 引脚是高
+    // （外部失能）时被 0x149 开跟随会强行给电流，违反"引脚是唯一权威"。现在外部模式
+    // 完全不碰 EN，最多 200µs（消抖 4 拍）内由 updateEnableFromExternalPin 归位。
+    if (energize_driver && driver_ != nullptr &&
+        !fault_monitor_.encoderFaultActive() && !fault_monitor_.magneticFaultActive())
     {
-        driver_->setEnable(true);
+        if (enable_mode_ != ENABLE_MODE_EXTERNAL_PIN)
+        {
+            driver_->setEnable(true);
+            driver_enabled_ = true;
+        }
         driver_->setDirection(true);
     }
-    printf("[EXT_FOLLOW] enabled: 1 pulse = 1 microstep, %lu steps/rev, compensation=%u\r\n",
+    printf("[EXT_FOLLOW] armed: 1 pulse = 1 microstep, %lu steps/rev, compensation=%u energize=%u\r\n",
            static_cast<unsigned long>(getMicroStepsPerRound(driver_)),
-           closed_loop_compensation_enabled_ ? 1U : 0U);
+           closed_loop_compensation_enabled_ ? 1U : 0U,
+           energize_driver ? 1U : 0U);
 }
 
 bool ClosedLoopController::isExternalPulseFollowEnabled() const

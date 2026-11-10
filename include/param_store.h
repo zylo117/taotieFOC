@@ -60,6 +60,17 @@ struct PersistedMotorParams
     //       它应该和"滞后角表有多准"匹配：表越准可以越小；标定不充分就给它大一点。
     uint16_t lag_accel_coef_mdeg_per_rpm_s;
     uint16_t lag_deadband_mdeg;
+
+    // 【v5】运动源 + 共振速度区间。
+    //   motion_source：0=内部规划，1=外部脉冲跟随（**默认 1**）。做成可存是因为
+    //       "上电默认进哪种模式"是设备形态问题（PLC 集成 vs 网页调试），不同用户
+    //       答案不同；而且它是运动信号的绝对互斥开关，重启后必须保持用户的选择。
+    //   resonance_lo/hi_rpm：共振区间 [lo,hi]，默认 300~600（实测剧烈抖动带）。
+    //       规划/速度模式的巡航目标落进区间会被钳到 lo（"快切通过"），
+    //       自动测试用 0x171 旁路。0~0 或 lo>=hi 表示关闭。
+    uint16_t motion_source;
+    uint16_t resonance_lo_rpm;
+    uint16_t resonance_hi_rpm;
 };
 
 // 从 Flash 读取参数到 out。返回 true 表示校验通过、内容有效。

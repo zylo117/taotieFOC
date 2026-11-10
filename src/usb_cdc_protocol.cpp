@@ -45,10 +45,13 @@ UsbCdcProtocolBridge::UsbCdcProtocolBridge()
 {
 }
 
+UsbCdcProtocolBridge* UsbCdcProtocolBridge::s_instance_ = nullptr;
+
 void UsbCdcProtocolBridge::init(ClosedLoopController* controller, void* udev)
 {
     controller_ = controller;
     udev_ = udev;
+    s_instance_ = this;
 }
 
 void UsbCdcProtocolBridge::poll()
@@ -59,17 +62,24 @@ void UsbCdcProtocolBridge::poll()
     }
 
     uint8_t recv_buf[kMaxRxBytes];
-    const uint16_t rx_len = usb_vcp_get_rxdata(udev_, recv_buf);
-    if (rx_len > 0U)
+    // 【一次 poll 最多排空 4 包】原来每 poll 只取一个 64B 包：上位机连发配置读
+    // （readAllConfig 一次 26 帧）时包在端点 FIFO 里排队，下一 poll 才取下一包，
+    // 一旦上层解析慢半拍就靠 128B 缓冲硬扛，溢出静默丢帧。CDC FS 的 OUT FIFO
+    // 只有两包深度，一次取到 4 包（256B）足够吸收任何合法突发。
+    for (uint8_t pkt = 0U; pkt < 4U; ++pkt)
     {
-        // printf("[USB_RX] packet_len=%u\r\n", static_cast<unsigned>(rx_len));
+        const uint16_t rx_len = usb_vcp_get_rxdata(udev_, recv_buf);
+        if (rx_len == 0U)
+        {
+            break;
+        }
         if (rx_len > sizeof(rx_buffer_) - rx_buffer_len_)
         {
             // 【不要在 1ms 的高频路径里 printf】
             // 这里原来用 printf 报缓冲区溢出，带 2 个参数。poll() 跑在 1KB 栈的 usb_task 里，
             // 叠上 recv_buf[64] 和 handleFrame 调用链直接栈溢出；
             // 配上 configCHECK_FOR_STACK_OVERFLOW 就是整个系统停机。
-            // 现在只做静默丢弃 + 计数，需要时用 getRxOverflowCount() 读。
+            // 现在只做静默丢弃 + 计数，用只读寄存器 0x169 读。
             ++rx_overflow_count_;
             rx_buffer_len_ = 0U;
         }
@@ -242,8 +252,19 @@ void UsbCdcProtocolBridge::handleFrame(const uint8_t* frame, uint16_t len)
         {
             controller_->setTargetStep(static_cast<int32_t>(value));
         }
-        controller_->writeParameter(reg, value);
-        sendFrame(0x82U, reg, value);
+        if (!controller_->writeParameter(reg, value))
+        {
+            // 写入被拒绝（只读寄存器/越界）：ACK 照发但内容换成**当前真实值**。
+            // 上位机的 waitAck 仍能配对（reg 相同）不会挂超时，而比较数值就会发现
+            // "写进去的不是我写的"——以前写只读地址也回"成功 ACK+你写的值"，是纯骗。
+            uint32_t actual = value;
+            (void)controller_->readParameter(reg, &actual);
+            sendFrame(0x82U, reg, actual);
+        }
+        else
+        {
+            sendFrame(0x82U, reg, value);
+        }
     }
 }
 
@@ -283,7 +304,12 @@ bool UsbCdcProtocolBridge::sendFrame(uint8_t cmd, uint16_t reg, uint32_t value)
 
     if (!queued)
     {
-        // printf("[USB_TX] QUEUE_FULL cmd=0x%02X reg=0x%04X\r\n", cmd, reg);
+        // 响应队列满丢帧：以前连计数都没有，主机只能靠超时反推。
+        // 遥测帧不算丢（单槽被新值覆盖本来就是"只保留最新"的设计）。
+        if (cmd != 0x10U)
+        {
+            tx_drop_count_++;
+        }
     }
     return queued;
 }
@@ -295,55 +321,65 @@ void UsbCdcProtocolBridge::flushTxQueue()
         return;
     }
 
-    uint8_t frame[10];
-    bool is_response = false;
-    bool has_frame = false;
-    uint16_t telemetry_generation = 0U;
+    // 【循环发到端点 FIFO 忙为止】原来每次 poll 只发一帧：校准表导出路径每 poll
+    // 恰好压一帧响应，响应又严格优先于遥测 —— 结果 dump 全程 0x10 遥测一帧都出不去
+    // （0x120 转速/0x121 误差/0x11F 状态全冻结），网页波形假死。
+    // 公平性：响应连发满 8 帧就先放行一帧遥测；单次 poll 上限 24 帧防止独占任务。
+    uint8_t response_streak = 0U;
+    for (uint8_t guard = 0U; guard < 24U; ++guard)
+    {
+        uint8_t frame[10];
+        bool is_response = false;
+        bool has_frame = false;
+        uint16_t telemetry_generation = 0U;
 
-    taskENTER_CRITICAL();
-    if (tx_response_count_ > 0U)
-    {
-        memcpy(frame, tx_response_queue_[tx_response_head_], sizeof(frame));
-        is_response = true;
-        has_frame = true;
-    }
-    else if (tx_telemetry_pending_)
-    {
-        memcpy(frame, tx_telemetry_frame_, sizeof(frame));
-        telemetry_generation = tx_telemetry_generation_;
-        has_frame = true;
-    }
-    taskEXIT_CRITICAL();
-
-    if (!has_frame || usb_vcp_send_data(udev_, frame, sizeof(frame)) != SUCCESS)
-    {
-        return;
-    }
-
-    if (is_response)
-    {
         taskENTER_CRITICAL();
-        if (tx_response_count_ > 0U)
+        if (tx_response_count_ > 0U &&
+            !(tx_telemetry_pending_ && response_streak >= 8U))
         {
-            tx_response_head_ = static_cast<uint8_t>((tx_response_head_ + 1U) % 16U);
-            tx_response_count_--;
+            memcpy(frame, tx_response_queue_[tx_response_head_], sizeof(frame));
+            is_response = true;
+            has_frame = true;
+        }
+        else if (tx_telemetry_pending_)
+        {
+            memcpy(frame, tx_telemetry_frame_, sizeof(frame));
+            telemetry_generation = tx_telemetry_generation_;
+            has_frame = true;
         }
         taskEXIT_CRITICAL();
-    }
-    else
-    {
-        taskENTER_CRITICAL();
-        if (tx_telemetry_pending_ && tx_telemetry_generation_ == telemetry_generation)
-        {
-            tx_telemetry_pending_ = false;
-        }
-        taskEXIT_CRITICAL();
-    }
 
-    if (frame[2] != 0x10U)
-    {
-        const uint16_t reg = (static_cast<uint16_t>(frame[3]) << 8U) | frame[4];
-        // printf("[USB_TX] START cmd=0x%02X reg=0x%04X\r\n", frame[2], reg);
+        if (!has_frame)
+        {
+            return;
+        }
+        if (usb_vcp_send_data(udev_, frame, sizeof(frame)) != SUCCESS)
+        {
+            // 端点 FIFO 还没腾出来：帧仍在队列里，下个 poll 继续。
+            return;
+        }
+
+        if (is_response)
+        {
+            taskENTER_CRITICAL();
+            if (tx_response_count_ > 0U)
+            {
+                tx_response_head_ = static_cast<uint8_t>((tx_response_head_ + 1U) % 16U);
+                tx_response_count_--;
+            }
+            taskEXIT_CRITICAL();
+            response_streak++;
+        }
+        else
+        {
+            taskENTER_CRITICAL();
+            if (tx_telemetry_pending_ && tx_telemetry_generation_ == telemetry_generation)
+            {
+                tx_telemetry_pending_ = false;
+            }
+            taskEXIT_CRITICAL();
+            response_streak = 0U;
+        }
     }
 }
 
