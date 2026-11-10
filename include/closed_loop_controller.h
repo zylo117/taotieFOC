@@ -210,7 +210,7 @@ public:
     //   闭环补偿关（0x107=0）→ 开环，按限速把积压发完，1:1 转发
     //   闭环补偿开（0x107=1）→ 在上面叠位置/速度环 PID 修正，用编码器保证实际到位
     // 与 0x11E/0x11F 的规划运动互斥（跟随时 startMotion() 直接忽略）。
-    void enableExternalPulseFollow(bool enable, bool energize_driver = true);
+    void enableExternalPulseFollow(bool enable);
     bool isExternalPulseFollowEnabled() const;
     // 跟随限速（步/s）。0 = 跟随 angle_max_rpm_ 换算出的能力上限（推荐）。
     void setExternalPulseMaxStepRate(uint32_t steps_per_second);
@@ -245,10 +245,10 @@ public:
     //   INTERNAL(0)：网页可操作内部规划/角度模式，外部 PUL 输入被忽略。
     enum MotionSource { MOTION_SOURCE_INTERNAL = 0U, MOTION_SOURCE_EXTERNAL = 1U };
     // 切换运动源。切到外部：先停内部运动，再开跟随；切到内部：关跟随（脉冲通道交还规划器）。
-    // energize_on_switch：切到外部时是否立即给驱动器电流（EXTERNAL_PIN 模式下永远由
-    // PC13 第一拍决定，不受此参数影响）。上电应用默认运动源时也用 true —— 跟随模式
-    // 的语义就是"上电即可跟随"，false 会让 host 使能模式开机后无法判断是否在跟随。
-    void setMotionSource(uint32_t source, bool energize_on_switch = true);
+    // 【切换从不碰 EN】进入外部模式只是"进模式"：驱动器通不通电流由外部 EN 引脚
+    // （PC13）决定（跟随模式下引脚自动是使能权威，上拉悬空=失能，PLC 拉低=使能）；
+    // 退出到内部模式按 0x161 策略接管（host：等 0x124；external：仍看引脚）。
+    void setMotionSource(uint32_t source);
     uint32_t getMotionSource() const { return motion_source_; }
     // 校准/整定入口的公共前置：外部跟随时自动接管为内部源（原子切换 + [CALIB] 日志）。
     void ensureInternalSourceForCalibration(const char* who);
@@ -300,8 +300,10 @@ private:
     void updateLagAngleFeedforward(float measured_rps, float commanded_rps);
     // 堵转/不转保护：有脉冲在发、轴却长时间不动就停机失能
     void updateStallGuard(uint64_t now_ns);
-    // 使能来源：外部 EN 引脚跟随 / 上位机请求（外部模式下"使能"被忽略）
+    // 使能来源：外部 EN 引脚跟随 / 上位机请求（引脚权威模式下"使能"被忽略）
     void updateEnableFromExternalPin();
+    // EN 使能权威是否为外部引脚：0x161=external 或 运动源=外部跟随（见 cpp 注释）
+    bool enableAuthorityIsExternalPin() const;
     void requestDriverEnable(bool want);
     // 实际生效的滞后角前馈量（毫度，已带方向，正=与跟随误差同号）
     int32_t effectiveLagAngleMilliDeg() const;

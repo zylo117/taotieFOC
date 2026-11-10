@@ -96,7 +96,7 @@ const CUSTOM_REGS = {
     ENABLE_MODE: 0x161,      // 0=上位机 1=外部 EN 引脚(PC13 低有效)，存 Flash
     ENABLE_STATE: 0x162,     // RO：驱动器实际是否使能
     QUICK_STOP: 0x163,       // WO 1=快速停车（按 0x11C 减速后就地收尾）
-    EXT_EN_LEVEL: 0x164,     // RO：外部 EN 引脚电平（2=上位机模式不适用）
+    EXT_EN_LEVEL: 0x164,     // RO：外部 EN 引脚电平（跟随模式自动权威；2=仅内部规划+上位机使能时不适用）
     COMP_RPS_MILLI: 0x165,   // RO：闭环补偿速度 mRPS，抖动归因用
     LAG_ACCEL_COEF: 0x166,   // R/W：滞后角加减速项系数，毫度/(RPM/s)，存 Flash
     LAG_DEADBAND_MDEG: 0x167,// R/W：恒速段残差死区，毫度，存 Flash

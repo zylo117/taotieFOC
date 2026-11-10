@@ -415,16 +415,14 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
 
     // 【上电应用运动源 + 共振带】flash 读取失败也要应用编译期默认值
     // （外部跟随 + 300~600 RPM 共振带）。
-    // 【为什么 energize=true（2026-11-10 实机反馈修正）】原设计 energize=false 是怕
-    // 上电即抱死发热，但实测后果更糟：host 使能模式下开机进外部跟随 = 驱动器不带电，
-    // 上位机完全无法判断"到底进没进跟随模式"，必须网页切一次内部再切回来才励磁。
-    // 跟随模式的语义就是"上电即可跟随"，励磁是应有之义。使能来源策略仍然被尊重：
-    // enableExternalPulseFollow(energize=true) 内部只在 HOST 模式直接 setEnable(true)；
-    // EXTERNAL_PIN 模式它不碰 EN，由 PC13 第一拍 updateEnableFromExternalPin 决定 ——
-    // "外部 EN 低电平使能"因此在两种模式下上电即刻生效。
+    // 【开机=进模式，不带电——带电与否看外部 EN 引脚（2026-11-10 用户明确）】
+    // 跟随模式下 EN 权威永远是 PC13：上电后最多 200µs（消抖 4 拍）内
+    // updateEnableFromExternalPin 按引脚电平决定通不通电流。PC13 内部上拉，
+    // 未接 PLC 时悬空读高 = 失能（不发热）；PLC 拉低即刻可使能，无需任何
+    // 网页操作。原 energize 参数已删——"进外部模式"和"给电流"彻底解耦。
     resonance_lo_rpm_ = boot_res_lo;
     resonance_hi_rpm_ = boot_res_hi;
-    setMotionSource(boot_motion_source, /*energize_on_switch=*/true);
+    setMotionSource(boot_motion_source);
 
     last_process_time_us_ = 0U;
 }
@@ -625,10 +623,12 @@ void ClosedLoopController::setTargetVelocity(float rps)
 // 为什么要有这个开关：外部脉冲跟随模式下，主控（PLC/上位机）那根 EN 才是
 // 真正的急停/使能线；而网页上也有一个"使能/失能"按钮。两者直接抢同一个
 // 驱动器 EN 脚，就会出现"网页点了使能，外部 EN 还是高电平，芯片到底听谁的"。
-// 现在明确二选一：
-//   HOST      —— 只有 0x124/0x125 能改 EN（默认，兼容旧行为）
-//   EXTERNAL  —— PC13 电平是唯一权威；上位机只能"撤销许可"（失能），不能强行使能
-// 故障（编码器/磁场/堵转）永远能压住使能，不受这个开关影响。
+// 规则（2026-11-10 与用户敲定）：
+//   · 运动源=外部跟随（0x16D=1，上电默认）：**引脚自动是权威**，开机只是进模式，
+//     通不通电流看 PC13 电平（上拉悬空=高=失能不发热；PLC 拉低=使能）。
+//   · 运动源=内部规划：按 0x161 选——HOST（默认，只有 0x124/0x125 能动 EN）
+//     或 EXTERNAL（引脚权威，同跟随模式）。
+// 故障（编码器/磁场/堵转）和失能请求永远能压住使能，不受这些开关影响。
 // ===========================================================================
 void ClosedLoopController::setEnableMode(uint32_t mode)
 {
@@ -659,11 +659,23 @@ bool ClosedLoopController::isDriverEnabled() const
 
 uint32_t ClosedLoopController::getExternalEnableLevel() const
 {
-    // 上位机模式下这个引脚没有参与控制，返回 2 = 不适用
-    return (enable_mode_ == ENABLE_MODE_EXTERNAL_PIN) ? static_cast<uint32_t>(external_en_level_) : 2U;
+    // 引脚没有参与控制时返回 2 = 不适用（只有内部模式 + host 使能才是这种情况）
+    return enableAuthorityIsExternalPin() ? static_cast<uint32_t>(external_en_level_) : 2U;
 }
 
-// 上位机/故障路径统一走这里：外部模式下"使能"请求被忽略（引脚说了算），
+// 【EN 使能权威判定】两种情况下外部 EN 引脚（PC13）是使能权威：
+//   ① 用户显式选择"外部 EN 引脚"模式（0x161=1，任何运动源下都有效）；
+//   ② 运动源是外部脉冲跟随（0x16D=1，上电默认）——跟随模式的语义就是
+//     "PLC 说了算"：开机/切换只决定通道归谁，通不通电流看 PLC 的 EN 线
+//     （2026-11-10 用户明确：不是开机强制使能，是否使能看外部 EN 电平）。
+// 权威是引脚时，上位机只能"撤销失能锁"（0x124 清 user_disabled_），
+// 不能隔着 PLC 强行使能；失能（0x125/急停/故障）永远有效。
+bool ClosedLoopController::enableAuthorityIsExternalPin() const
+{
+    return enable_mode_ == ENABLE_MODE_EXTERNAL_PIN || motion_source_ == MOTION_SOURCE_EXTERNAL;
+}
+
+// 上位机/故障路径统一走这里：引脚权威模式下"使能"请求被忽略（引脚说了算），
 // 但"失能"永远有效（安全动作不能被配置挡住）。
 void ClosedLoopController::requestDriverEnable(bool want)
 {
@@ -671,7 +683,7 @@ void ClosedLoopController::requestDriverEnable(bool want)
     {
         return;
     }
-    if (enable_mode_ == ENABLE_MODE_EXTERNAL_PIN && want)
+    if (enableAuthorityIsExternalPin() && want)
     {
         return;
     }
@@ -721,7 +733,7 @@ void ClosedLoopController::updateEnableFromExternalPin()
         external_en_candidate_ = external_en_stable_;
     }
 
-    if (driver_ == nullptr || enable_mode_ != ENABLE_MODE_EXTERNAL_PIN)
+    if (driver_ == nullptr || !enableAuthorityIsExternalPin())
     {
         return;
     }
@@ -782,7 +794,10 @@ void ClosedLoopController::emergencyStop()
 // 这里补的是"意图"层：外部模式下 startMotion/setTargetAngleDeg 会被
 // follower 的 isEnabled() 门拒绝（那里已有），0x149 与本寄存器保持一致由
 // ParameterRouter 在两侧同步。
-void ClosedLoopController::setMotionSource(uint32_t source, bool energize_on_switch)
+// 【切换不碰 EN】进入外部模式只是"进模式"，驱动器通不通电流由外部 EN 引脚
+// （PC13）决定（见 enableExternalPulseFollow）；退出到内部模式也不动 EN，
+// 由 0x161 使能来源策略接管（host：等 0x124；external：仍看引脚）。
+void ClosedLoopController::setMotionSource(uint32_t source)
 {
     const uint32_t src = (source == 0U) ? MOTION_SOURCE_INTERNAL : MOTION_SOURCE_EXTERNAL;
     if (src == motion_source_ &&
@@ -795,16 +810,15 @@ void ClosedLoopController::setMotionSource(uint32_t source, bool energize_on_swi
     {
         // 外部模式优先保证"通道立即交还"：运动中切过来会瞬间断脉冲，
         // 反电动势风险同 emergencyStop 的说明，但"切换"本身就是用户主动动作。
-        // energize_on_switch=false 用于上电默认外部模式：预备通道但不给电流。
         stopMotion();
-        enableExternalPulseFollow(true, energize_on_switch);
+        enableExternalPulseFollow(true);
     }
     else
     {
         enableExternalPulseFollow(false);
     }
     printf("[SOURCE] motion source = %s\r\n",
-           src == MOTION_SOURCE_EXTERNAL ? "EXTERNAL PULSE FOLLOW (internal motion locked)"
+           src == MOTION_SOURCE_EXTERNAL ? "EXTERNAL PULSE FOLLOW (internal motion locked, EN by pin)"
                                          : "INTERNAL PLAN (external PUL ignored)");
 }
 
@@ -820,7 +834,7 @@ void ClosedLoopController::ensureInternalSourceForCalibration(const char* who)
         return;   // 已在内部模式，不重放日志
     }
     printf("[CALIB] %s: motion channel taken for INTERNAL (was external follow)\r\n", who);
-    setMotionSource(MOTION_SOURCE_INTERNAL, /*energize_on_switch=*/true);
+    setMotionSource(MOTION_SOURCE_INTERNAL);
 }
 
 void ClosedLoopController::setMotionConfig(float start_rpm, float max_rpm, float accel_rpm_s, uint32_t pulse_count,
@@ -2048,7 +2062,7 @@ void ClosedLoopController::runExternalPulseFollow(uint64_t delta_ramp_ns)
     external_pulse_follower_.update(delta_ramp_ns);
 }
 
-void ClosedLoopController::enableExternalPulseFollow(bool enable, bool energize_driver)
+void ClosedLoopController::enableExternalPulseFollow(bool enable)
 {
     if (external_pulse_follower_.isEnabled() == enable)
     {
@@ -2104,26 +2118,19 @@ void ClosedLoopController::enableExternalPulseFollow(bool enable, bool energize_
     external_pulse_follower_.setEnabled(true);
     motion_running_ = true;   // <-- 发布写必须留在最后，不要动它的位置
 
-    // 驱动器励磁：跟随要电流才有意义，但**上电时不能强行励磁** —— 通不通电流
-    // 由使能来源策略决定（host：等 0x124；external：看 EN 引脚电平）。
-    // energize_driver=false（boot 路径）只"预备"通道，EN 交给策略，电机不会一上电就抱死发热。
-    // 顺带修正一个旧违背：外部 EN 模式下这里原本也会 setEnable(true) —— 引脚是高
-    // （外部失能）时被 0x149 开跟随会强行给电流，违反"引脚是唯一权威"。现在外部模式
-    // 完全不碰 EN，最多 200µs（消抖 4 拍）内由 updateEnableFromExternalPin 归位。
-    if (energize_driver && driver_ != nullptr &&
+    // 【EN 权威 = 外部 EN 引脚（PC13），这里永远不碰 EN】（2026-11-10 用户明确）
+    // 外部脉冲跟随模式的语义：开机/切换只是"进入模式"（脉冲通道交还给跟随器），
+    // 通不通电流由 PLC 那根 EN 线决定：低=使能、高=失能。最多 200µs（消抖 4 拍）
+    // 内由 updateEnableFromExternalPin 按引脚电平归位。
+    // 内部使能按钮（0x124）在跟随模式下只能"撤销失能锁"，不能隔着 PLC 强行使能。
+    if (driver_ != nullptr &&
         !fault_monitor_.encoderFaultActive() && !fault_monitor_.magneticFaultActive())
     {
-        if (enable_mode_ != ENABLE_MODE_EXTERNAL_PIN)
-        {
-            driver_->setEnable(true);
-            driver_enabled_ = true;
-        }
         driver_->setDirection(true);
     }
-    printf("[EXT_FOLLOW] armed: 1 pulse = 1 microstep, %lu steps/rev, compensation=%u energize=%u\r\n",
+    printf("[EXT_FOLLOW] armed: 1 pulse = 1 microstep, %lu steps/rev, compensation=%u (EN by pin)\r\n",
            static_cast<unsigned long>(getMicroStepsPerRound(driver_)),
-           closed_loop_compensation_enabled_ ? 1U : 0U,
-           energize_driver ? 1U : 0U);
+           closed_loop_compensation_enabled_ ? 1U : 0U);
 }
 
 bool ClosedLoopController::isExternalPulseFollowEnabled() const
