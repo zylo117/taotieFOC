@@ -553,7 +553,8 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
 
     target_angle_deg_ = angle_deg;
     closed_loop_compensation_enabled_ = true;
-    closed_loop_angle_mode_enabled_ = true;
+    // 注意：closed_loop_angle_mode_enabled_ / motion_running_ 是"发布写"，
+    // 统一挪到函数末尾（见结尾【发布写】注释），中间态必须让控制任务看成 idle。
     // angle_position_tolerance_deg_ = 0.1f;
     step_pulse_width_ns_ = 200U;
     k_step_pulse_ticks = std::ceil(static_cast<float>(step_pulse_width_ns_) / static_cast<float>(stepper_common::target_tick_time));
@@ -562,7 +563,6 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
     position_pid_.resetDeriv();
     velocity_pid_.resetIntegral();
     velocity_pid_.resetDeriv();
-    motion_running_ = true;
     motion_paused_ = false;
     motion_first_run_ = true;
     motion_steps_emitted_ = 0U;
@@ -596,6 +596,11 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
     {
         driver_->setEnable(true);
     }
+    // 【发布写】所有字段准备完毕，最后各用单个对齐字写原子放行（USB 任务随时可能被
+    // TMR4 拍抢占，中间的半配置状态绝不能带上 enabled/running，否则控制任务会用
+    // 旧的累加器/脉宽跑一拍 —— 表现为"设角度后第一下抽一下"）。顺序别改。
+    closed_loop_angle_mode_enabled_ = true;
+    motion_running_ = true;
 }
 
 float ClosedLoopController::getTargetAngleErrorDeg() const
@@ -2069,10 +2074,14 @@ void ClosedLoopController::enableExternalPulseFollow(bool enable, bool energize_
 
     motion_encoder_previous_raw_ = encoder_ != nullptr ? encoder_->readFilteredRaw() : encoder_filtered_raw_;
     motion_encoder_reference_valid_ = encoder_ != nullptr;
+    // 【发布顺序 = 无锁并发契约】本函数跑在 USB 任务（优先级 2），控制任务是优先级 3：
+    // TMR4 拍一到就能在**任意两行之间**抢占这里。规则：中间态一律保持 motion_running_=false
+    //（控制任务对 idle 状态不碰任何运动字段），所有字段准备完毕后，最后一步才用
+    // 单个对齐字写（M4 上原子）把状态"发布"成运行中。反过来停止路径先写 running=false。
     // 让跟随误差（编码器行程 - 命令行程）照常计算：0x121 和波形图都靠它
-    motion_running_ = true;
     external_pulse_follower_.setPrimePending(true);
     external_pulse_follower_.setEnabled(true);
+    motion_running_ = true;   // <-- 发布写必须留在最后，不要动它的位置
 
     // 驱动器励磁：跟随要电流才有意义，但**上电时不能强行励磁** —— 通不通电流
     // 由使能来源策略决定（host：等 0x124；external：看 EN 引脚电平）。
