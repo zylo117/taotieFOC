@@ -15,19 +15,76 @@
             await writeRegister(CUSTOM_REGS.ANGLE_ACCEL_RPM_S, angleAccelRpm);
         }
 
+        // ===== 串口生命周期：断开 / 拔线检测 / 安全重连 =====
+        // 没有这些，拔线后 state.connected 永远卡在 true、reader 泄漏、
+        // 重连还会在旧 port 上叠第二个 reader；所有 await 中的读写请求也永远挂着。
+
+        function rejectAllPendingWaiters(message) {
+            for (const waiters of state.registerReadWaiters.values()) {
+                for (const w of (Array.isArray(waiters) ? waiters : [waiters])) {
+                    window.clearTimeout(w.timeout);
+                    try { w.reject(new Error(message)); } catch (e) { /* 已结束，忽略 */ }
+                }
+            }
+            state.registerReadWaiters.clear();
+            for (const w of state.registerWriteAckWaiters.values()) {
+                window.clearTimeout(w.timeout);
+                try { w.reject(new Error(message)); } catch (e) { /* 已结束，忽略 */ }
+            }
+            state.registerWriteAckWaiters.clear();
+        }
+
+        async function disconnectSerial(reason) {
+            const port = state.port;
+            if (!port && !state.connected) return;
+            // 先清状态：所有 await 中的调用再检查 connected 就会提前失败，
+            // 而不是拿着已释放的 writer 继续写。
+            state.connected = false;
+            state.readGeneration += 1;   // 作废当代 readLoop 的收尾权
+            stopWaveCapture();
+            if (state.waveStartDelayTimer) {
+                window.clearTimeout(state.waveStartDelayTimer);
+                state.waveStartDelayTimer = null;
+            }
+            rejectAllPendingWaiters('串口已断开');
+            const reader = state.reader;
+            const writer = state.writer;
+            state.reader = null;
+            state.writer = null;
+            // 顺序：cancel 让 read() 带 done 返回 → releaseLock → close。
+            try { if (reader) await reader.cancel(); } catch (e) { /* 已断，正常 */ }
+            try { if (reader) { await reader.closed.catch(() => {}); reader.releaseLock(); } } catch (e) {}
+            try { if (writer) writer.releaseLock(); } catch (e) {}
+            try { if (port) { port.ondisconnect = null; await port.close(); } } catch (e) {}
+            if (state.port === port) state.port = null;
+            setConnBadge('未连接', false);
+            log('[INFO] 串口已断开' + (reason ? '（' + reason + '）' : '') + ' —— 电机状态不变（固件保持当前模式继续运行）');
+        }
+
         async function connectSerial() {
+            let portObj = null;
             try {
                 if (!('serial' in navigator)) {
                     log('[WARN] 当前浏览器不支持 Web Serial API，请使用 Chrome / Edge');
                     return;
                 }
+                // 已经连着就先干净地断开：否则旧 reader 还在消费，新连接会叠两个读循环。
+                if (state.connected || state.port) {
+                    await disconnectSerial('重连前清理');
+                }
 
-                const portObj = await navigator.serial.requestPort();
+                portObj = await navigator.serial.requestPort();
                 const baud = Number(document.getElementById('baudRate').value || 115200);
                 await portObj.open({baudRate: baud});
+                // 物理拔出（没走我们按钮的那种）：浏览器在原 port 对象上发 disconnect 事件。
+                // 挂上它，拔线 1 秒内界面就变"未连接"并释放资源，而不是等读超时。
+                portObj.ondisconnect = () => {
+                    if (state.port === portObj) void disconnectSerial('设备拔出');
+                };
 
                 state.port = portObj;
                 state.connected = true;
+                state.readGeneration += 1;
                 // 新连接：允许 ensureMotionDefaultsForAngleControl 重新下发一次默认值
                 state.angleDefaultsApplied = false;
                 // 新连接：允许 PID 输入框从固件回填一次（之后输入框归用户，不再被固件值覆盖）
@@ -86,6 +143,28 @@
                     } catch (e) {
                         log(`[LAG] 读取滞后角模型参数失败：${e.message}`);
                     }
+                    // 【连接时同步运动源 + 共振带】两者都存 Flash，重启后和页面默认值
+                    // 不一定一致；尤其固件上电默认外部跟随 —— 界面必须跟着切过去，
+                    // 否则用户对着灰不拉几还能点的“内部”按钮以为能动车。
+                    try {
+                        const src = await readRegisterValue(CUSTOM_REGS.MOTION_SOURCE);
+                        const lo = await readRegisterValue(CUSTOM_REGS.RESONANCE_LO_RPM);
+                        const hi = await readRegisterValue(CUSTOM_REGS.RESONANCE_HI_RPM);
+                        if (Number.isFinite(src)) {
+                            const s = (src | 0) !== 0 ? 1 : 0;
+                            if (s !== state.motionSource) switchWorkTab(s === 0 ? 'motion' : 'extfollow', true);
+                        }
+                        const loEl = document.getElementById('resonanceLoRpmInput');
+                        const hiEl = document.getElementById('resonanceHiRpmInput');
+                        if (loEl && Number.isFinite(lo)) loEl.value = String(lo | 0);
+                        if (hiEl && Number.isFinite(hi)) hiEl.value = String(hi | 0);
+                        if (Number.isFinite(src)) {
+                            log('[INFO] 运动源 = ' + ((src | 0) !== 0 ? '外部脉冲跟随（内部运动已互斥禁用）' : '内部规划')
+                                + `，共振带 [${(lo | 0)}, ${(hi | 0)}] RPM`);
+                        }
+                    } catch (e) {
+                        log('[INFO] 运动源/共振带回读失败（旧固件没有 0x16D~0x170 就是这个）：' + e.message);
+                    }
                 })();
 
                 setConnBadge('已连接', true);
@@ -96,21 +175,72 @@
 
                 readLoop();
             } catch (err) {
+                // 半途失败（用户取消选择/占用中打开失败）：把半途打开的 port 收拾干净，
+                // 不留 connected=true 的假连接。
+                if (portObj) {
+                    if (state.port === portObj) {
+                        await disconnectSerial('连接流程中断').catch(() => {});
+                    } else {
+                        try { portObj.ondisconnect = null; await portObj.close(); } catch (e) {}
+                    }
+                }
+                state.connected = false;
+                state.port = null;
+                state.reader = null;
+                state.writer = null;
                 log('[ERROR] 串口连接失败：' + (err && err.message ? err.message : String(err)));
                 setConnBadge('未连接', false);
             }
+        }
+
+        // ===================== 运动源门控（与固件 0x16D 的绝对互斥对齐）=====================
+        // 固件在外部脉冲模式下会拒绝一切内部运动（startMotion / 目标角 / 校准会打
+        // [SOURCE] rejected）。这里把对应控件置灰：不是安全边界（边界在固件），
+        // 而是让用户不用先踩一次拒绝才知道不能用。
+        const INTERNAL_MOTION_CONTROL_IDS = [
+            'sendTargetBtn', 'zeroBtn',                       // 目标角/归零（角度模式）
+            'startMotionBtn',                                 // 规划运动启动（tab 里，双保险）
+            'tuneBtn', 'startTuneBtn',                        // PID 自动整定（会驱动电机）
+            'lagAngleCalibrationBtn', 'startLagAngleCalibrationBtn',  // 滞后角校准
+            'startShockCalibrationBtn'                        // 冲击标定
+        ];
+
+        function applyMotionSourceGate() {
+            const external = state.motionSource !== 0;
+            for (const id of INTERNAL_MOTION_CONTROL_IDS) {
+                const el = document.getElementById(id);
+                if (el) el.disabled = external;
+            }
+            let banner = document.getElementById('motionSourceBanner');
+            if (!banner) {
+                banner = document.createElement('div');
+                banner.id = 'motionSourceBanner';
+                banner.className = 'tiny';
+                banner.style.cssText = 'margin:8px 0;padding:6px 10px;border-radius:8px;'
+                    + 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.45);';
+                const tabBtn = document.getElementById('tabMotionBtn');
+                if (tabBtn && tabBtn.parentElement) tabBtn.parentElement.appendChild(banner);
+            }
+            banner.style.display = external ? '' : 'none';
+            banner.textContent = '当前运动源：外部脉冲跟随（固件上电默认）。内部规划/角度/整定/标定已禁用 —— '
+                + '上面切到「内部规划运动」tab 才会交还运动通道；两种模式的运动信号绝对互斥。';
         }
 
         // ===================== 工作模式 tab =====================
         // 测速控制和外部脉冲跟随共用同一个 STEP 输出通道（TMR2/DMA），固件里本来就是互斥的：
         // 外部跟随使能时 rampUpdate 直接走 updateExternalPulseChannel 并 return。
         // 所以这里不让它们同时出现：切 tab 就同时切固件的 0x149。
-        function switchWorkTab(tab) {
+        function switchWorkTab(tab, skipWrite) {
             const isMotion = tab === 'motion';
             document.getElementById('cardMotion').style.display = isMotion ? '' : 'none';
             document.getElementById('cardExtFollow').style.display = isMotion ? 'none' : '';
             document.getElementById('tabMotionBtn').className = isMotion ? 'primary' : '';
             document.getElementById('tabExtFollowBtn').className = isMotion ? '' : 'primary';
+            // 门控状态跟 tab 一致（外部 tab 禁用内部运动控件）
+            state.motionSource = isMotion ? 0 : 1;
+            applyMotionSourceGate();
+            const extInput = document.getElementById('extFollowEnableInput');
+            if (extInput && document.activeElement !== extInput) extInput.checked = !isMotion;
 
             // 【波形采集开关跟着 tab 走】
             // pushWaveSample 只看 state.waveCaptureActive，而这个标志原来只由「启动」按钮置位。
@@ -130,7 +260,9 @@
                 stopWaveCapture();  // 先清空历史，延迟启动在使能完成后的 then 里
                 const closedLoopInput = document.getElementById('closedLoopEnableInput');
                 if (closedLoopInput) closedLoopInput.checked = false;
-                if (state.connected) {
+                // skipWrite：显示同步（boot 回读），不回写补偿开关 —— 固件跟随通道
+                // 本来就不走 PID，多写一枪只是徒增串口流量。
+                if (state.connected && !skipWrite) {
                     writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0)
                         .catch((error) => log('[ERROR] 关闭闭环补偿失败：' + error.message));
                 }
@@ -140,7 +272,19 @@
                 log('[INFO] 已切到' + (isMotion ? '内部规划运动' : '外部脉冲运动') + '（未连接串口，模式未下发）');
                 return;
             }
-            writeRegister(CUSTOM_REGS.EXT_FOLLOW_ENABLE, isMotion ? 0 : 1)
+            if (skipWrite) {
+                // 状态本来就是从固件读回来的，不用再写回去（写了反而可能触发一次重放日志）。
+                // 外部模式顺手恢复波形采集（延迟避开创动），让回读同步后面板有数据。
+                if (!isMotion) {
+                    state.waveStartDelayTimer = window.setTimeout(() => {
+                        state.waveStartDelayTimer = null;
+                        startWaveCapture();
+                    }, 500);
+                }
+                log('[INFO] 工作界面已同步为' + (isMotion ? '内部规划运动' : '外部脉冲运动（固件上电默认）'));
+                return;
+            }
+            writeRegister(CUSTOM_REGS.MOTION_SOURCE, isMotion ? 0 : 1)
                 .then(() => {
                     const input = document.getElementById('extFollowEnableInput');
                     if (input) input.checked = !isMotion;
@@ -155,21 +299,41 @@
                         }, 500);
                     }
                 })
-                .catch((error) => log('[ERROR] 切换模式失败：' + error.message));
+                .catch((error) => {
+                    // 写失败：固件没切换，UI 也得跟着回滚，否则显示和现实相反
+                    state.motionSource = isMotion ? 1 : 0;
+                    applyMotionSourceGate();
+                    log('[ERROR] 切换模式失败：' + error.message);
+                });
         }
 
         async function readLoop() {
             if (!state.reader) return;
+            const myReader = state.reader;
+            const myGen = state.readGeneration;
             try {
                 while (true) {
-                    const {value, done} = await state.reader.read();
+                    const {value, done} = await myReader.read();
                     if (done) break;
                     if (!value || value.length === 0) continue;
-                    appendRxBytes(value);
+                    // 逐帧 try/catch：单个坏帧（解析器抛错）绝不能连 readLoop 一起带走，
+                    // 否则 reader 不再被消费，之后所有回包堆积、界面彻底静止。
+                    try {
+                        appendRxBytes(value);
+                    } catch (frameError) {
+                        log('[WARN] 处理一帧返回数据出错（已跳过该帧）：' + frameError.message);
+                    }
                 }
             } catch (err) {
-                log('[ERROR] 串口读取出现错误：' + err.message);
-                setConnBadge('未连接', false);
+                // 断开/重连会让旧 reader 抛错，这属于正常收尾；只有当代连接才算真错误。
+                if (state.readGeneration === myGen) {
+                    log('[ERROR] 串口读取出现错误：' + err.message);
+                }
+            }
+            // 只有仍是当代连接时才更新徽标/清状态（重连后的旧循环不能踩新连接的状态）。
+            if (state.readGeneration === myGen && state.connected) {
+                log('[WARN] 串口读取结束（设备可能已被拔出）');
+                void disconnectSerial('设备拔出 / 读取结束');
             }
         }
 
@@ -440,11 +604,23 @@
                 CUSTOM_REGS.VELOCITY_KP,
                 CUSTOM_REGS.VELOCITY_KI,
                 CUSTOM_REGS.VELOCITY_KD,
-                CUSTOM_REGS.POSITION_LEAD_ALPHA
+                CUSTOM_REGS.POSITION_LEAD_ALPHA,
+                CUSTOM_REGS.MOTION_SOURCE,
+                CUSTOM_REGS.RESONANCE_LO_RPM,
+                CUSTOM_REGS.RESONANCE_HI_RPM
             ];
-            regs.forEach(async (reg) => {
-                await readRegister(reg);
-            });
+            // 【串行读，不要 26 个并发】forEach(async) 会把 26 个读请求一口气全压进
+            // 写通道：固件单包响应，队列深了会触发丢帧（0x16B）和等待超时假象。
+            // 逐条 await，每条等自己的 0x82 回包再发下一条。
+            (async () => {
+                for (const reg of regs) {
+                    try {
+                        await readRegister(reg);
+                    } catch (error) {
+                        log('[WARN] 读取 0x' + reg.toString(16).toUpperCase() + ' 失败：' + error.message);
+                    }
+                }
+            })();
         }
 
         async function stopMotor() {
@@ -453,9 +629,32 @@
                 state.autoTuneCancelled = true;
                 appendTuneLog('收到停止命令，正在安全终止整定');
             }
-            log('[WARN] 发送停止命令，释放闭环保持');
+            // 【缓停】写 0x163 而不是 0x11F=0：按 0x11C 的加速度减速到 0 就地收尾。
+            // 高速运行中直接断脉冲（原行为），绕组反电动势会经 H 桥泵电流冲击驱动器；
+            // 斜坡减速把这股能量摊到减速全程。立即断+失能是右下角红色「急停」(0x16E) 的事。
+            log('[WARN] 缓停：按减速斜坡停住（比直接断脉冲反电动势温和）');
             if (state.connected) {
-                await writeRegister(0x11F, 0);
+                await writeRegister(CUSTOM_REGS.QUICK_STOP, 1);
+            }
+        }
+
+        // 【急停】右下角红色圆钮：立即断脉冲 + 失能驱动器（固件 [ESTOP]）。
+        // 恢复要显式点「使能」（固件置了用户失能锁，自动测试循环唤不醒它）。
+        async function emergencyStop() {
+            stopWaveCapture();
+            if (state.autoTuneActive) {
+                state.autoTuneCancelled = true;
+                appendTuneLog('急停：整定中止');
+            }
+            if (!state.connected) {
+                log('[WARN] 未连接串口，急停按钮无法下发（必要时直接断电）');
+                return;
+            }
+            try {
+                await writeRegisterAndWaitAck(CUSTOM_REGS.EMERGENCY_STOP, 1);
+                log('[WARN] ⚠ 急停已执行：脉冲立断 + 驱动器失能（垂直轴会掉！恢复点「使能」）');
+            } catch (error) {
+                log('[ERROR] 急停下发失败：' + error.message + ' —— 电机在动请直接断电！');
             }
         }
 

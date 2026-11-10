@@ -346,6 +346,8 @@
 
         function bindControls() {
             document.getElementById('connectBtn').addEventListener('click', connectSerial);
+            const disconnectBtn = document.getElementById('disconnectBtn');
+            if (disconnectBtn) disconnectBtn.addEventListener('click', () => disconnectSerial('手动断开'));
                 document.getElementById('tabMotionBtn').addEventListener('click', () => switchWorkTab('motion'));
                 document.getElementById('tabExtFollowBtn').addEventListener('click', () => switchWorkTab('extfollow'));
             document.getElementById('readAllBtn').addEventListener('click', readAllConfig);
@@ -486,6 +488,8 @@
                 zeroEncoder();
             });
             document.getElementById('stopBtn').addEventListener('click', stopMotor);
+            const emergencyStopBtn = document.getElementById('emergencyStopBtn');
+            if (emergencyStopBtn) emergencyStopBtn.addEventListener('click', emergencyStop);
             document.getElementById('startMotionBtn').addEventListener('click', startMotionTest);
             document.getElementById('stopMotionBtn').addEventListener('click', stopMotionTest);
             document.getElementById('motorEnableBtn').addEventListener('click', async () => {
@@ -633,10 +637,32 @@
                     return;
                 }
                 await writeRegister(CUSTOM_REGS.EXT_FOLLOW_ENABLE, this.checked ? 1 : 0);
+                // 0x149 是 0x16D 的别名：勾选框动了，UI 门控状态跟着走
+                state.motionSource = this.checked ? 1 : 0;
+                applyMotionSourceGate();
                 log(this.checked
-                    ? '[INFO] 外部脉冲跟随已开启：PB5/PB4 的脉冲将 1:1 驱动电机'
-                    : '[INFO] 外部脉冲跟随已关闭');
+                    ? '[INFO] 外部脉冲跟随已开启：PB5/PB4 的脉冲将 1:1 驱动电机（内部运动已被固件互斥拒绝）'
+                    : '[INFO] 外部脉冲跟随已关闭，通道交还内部规划');
             });
+
+            // ===== 共振速度区间（0x16F/0x170，存 Flash）=====
+            for (const [inputId, register, label] of [
+                ['resonanceLoRpmInput', CUSTOM_REGS.RESONANCE_LO_RPM, '共振带下限'],
+                ['resonanceHiRpmInput', CUSTOM_REGS.RESONANCE_HI_RPM, '共振带上限']]) {
+                const el = document.getElementById(inputId);
+                if (!el) continue;
+                el.addEventListener('change', async function () {
+                    const value = clamp(Math.round(Number(this.value) || 0), 0, 6000);
+                    this.value = String(value);
+                    if (!state.connected) return;
+                    try {
+                        await writeRegisterAndWaitAck(register, value);
+                        log(`[INFO] ${label}=${value} RPM（固件回读一致）`);
+                    } catch (error) {
+                        log('[ERROR] ' + label + '写入失败：' + error.message);
+                    }
+                });
+            }
 
             document.getElementById('extFollowMaxStepSInput').addEventListener('change', async function () {
                 const value = clamp(Math.round(Number(this.value) || 0), 0, 2560000);

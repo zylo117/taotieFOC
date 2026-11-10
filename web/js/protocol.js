@@ -2,6 +2,24 @@
 // Depends on: CUSTOM_REGS (constants.js), state (state.js), buildFrame (utils.js), log (ui).
 // Load order: constants -> utils -> state -> protocol -> ...
 
+        // 【写超时】设备被拔掉时 writer.write() 的 Promise 可能永远不 settle
+        // （既不 resolve 也不 reject），没有超时就会把所有调用链（含自动整定循环）
+        // 永久卡住，界面看上去“死了”。2.5s 足够覆盖正常 USB 枚举抖动。
+        async function writeFrameTimeout(frame, timeoutMs = 2500) {
+            let timer = null;
+            try {
+                await Promise.race([
+                    state.writer.write(frame),
+                    new Promise((_, reject) => {
+                        timer = window.setTimeout(() =>
+                            reject(new Error('串口写入超时 ' + timeoutMs + 'ms（设备可能已被拔掉）')), timeoutMs);
+                    })
+                ]);
+            } finally {
+                if (timer !== null) window.clearTimeout(timer);
+            }
+        }
+
         async function readRegister(reg) {
             if (!state.connected || !state.writer) {
                 log('[WARN] 尚未连接串口，无法读取寄存器');
@@ -9,7 +27,7 @@
             }
             const frame = buildFrame(0x01, reg, 0);
             if (state.autoTuneActive) state.tuneLastCommand = `READ 0x${reg.toString(16).padStart(4, '0')} cmd=0x01`;
-            await state.writer.write(frame);
+            await writeFrameTimeout(frame);
             log(`[TX] READ reg=0x${reg.toString(16).padStart(4, '0')} cmd=0x01`);
             return frame;
         }
@@ -69,7 +87,7 @@
             }
             const frame = buildFrame(0x02, reg, value >>> 0);
             if (state.autoTuneActive) state.tuneLastCommand = `WRITE 0x${reg.toString(16).padStart(4, '0')} value=${value} cmd=0x02`;
-            await state.writer.write(frame);
+            await writeFrameTimeout(frame);
             log(`[TX] WRITE reg=0x${reg.toString(16).padStart(4, '0')} cmd=0x02 value=${value}`);
         }
 

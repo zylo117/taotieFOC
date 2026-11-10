@@ -100,6 +100,19 @@ const CUSTOM_REGS = {
     COMP_RPS_MILLI: 0x165,   // RO：闭环补偿速度 mRPS，抖动归因用
     LAG_ACCEL_COEF: 0x166,   // R/W：滞后角加减速项系数，毫度/(RPM/s)，存 Flash
     LAG_DEADBAND_MDEG: 0x167,// R/W：恒速段残差死区，毫度，存 Flash
+    // ===== 可观测计数器（RO）+ 运动源互斥 + 急停 + 共振带（2026-11 第二批）=====
+    EN_GLITCH_COUNT: 0x168,       // RO：外部 EN(PC13) 被消抖吸收的毛刺次数
+    RX_OVERFLOW_COUNT: 0x169,     // RO：USB RX 缓冲溢出次数
+    RX_CRC_FAIL_COUNT: 0x16A,     // RO：CRC 校验失败帧数
+    TX_DROP_COUNT: 0x16B,         // RO：响应队列满丢帧数
+    WRITE_DENIED_COUNT: 0x16C,    // RO：被拒绝的写次数（写只读寄存器等）
+    // R/W（存 Flash，上电生效）：运动源，绝对互斥。1=外部脉冲跟随（默认），0=内部规划。
+    // 外部模式下固件拒绝一切内部运动（规划/角度/目标角），本 UI 同步禁用相关控件。
+    MOTION_SOURCE: 0x16D,
+    EMERGENCY_STOP: 0x16E,        // WO：写 1=急停（立即断脉冲 + 失能驱动器）
+    RESONANCE_LO_RPM: 0x16F,      // R/W（存 Flash）：共振带下限，默认 300
+    RESONANCE_HI_RPM: 0x170,      // R/W（存 Flash）：共振带上限，默认 600（hi=0 关闭）
+    RESONANCE_BYPASS: 0x171,      // R/W（不存 Flash）：1=自动测试临时允许带内巡航
     CPU_USAGE_CENTIPERCENT: 0x137,
     CONTROL_TASK_USAGE_CENTIPERCENT: 0x138,
     MAX_RPM: 0x11B,

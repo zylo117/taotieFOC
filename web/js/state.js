@@ -7,6 +7,9 @@
             port: null,
             reader: null,
             writer: null,
+            // 每次连接代次 +1：readLoop 收尾时发现自己已经不是当代（被断开/重连顶替）
+            // 就静默退出，不去清新的连接状态。
+            readGeneration: 0,
             registerReadWaiters: new Map(),
             registerWriteAckWaiters: new Map(),
             lastEncoderTelemetryAt: 0,
@@ -96,6 +99,10 @@
             , lagAngleCalibrationCancelled: false
             , lagAngleMaxSpeedRpm: 3000
             , motionRunning: false
+            // 运动源：0=内部规划 1=外部脉冲跟随（固件 0x16D）。默认按“内部”渲染，
+            // 连上新固件后由 0x16D 回读纠正为外部；老固件没有 0x16D 时不会被误锁。
+            // 真正的互斥权威在固件（它会拒绝并打印 [SOURCE]），UI 禁用只是防呆。
+            , motionSource: 0
             , encoderJitterSamples: []
             , encoderJitterRangeDeg: 0
             , encoderJitterSampleCount: 0

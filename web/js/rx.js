@@ -144,6 +144,20 @@
                 const input = document.getElementById('extFollowEnableInput');
                 if (document.activeElement !== input) input.checked = frame.value !== 0;
             }
+            if (frame.reg === CUSTOM_REGS.MOTION_SOURCE) {
+                const src = (frame.value >>> 0) !== 0 ? 1 : 0;
+                if (src !== state.motionSource) {
+                    // 固件真实状态（如上电默认外部跟随）→ 同步整个工作界面，
+                    // skipWrite=1 只同步显示，不回写寄存器（避免读→写→读打环）。
+                    switchWorkTab(src === 0 ? 'motion' : 'extfollow', true);
+                }
+            }
+            if (frame.reg === CUSTOM_REGS.RESONANCE_LO_RPM || frame.reg === CUSTOM_REGS.RESONANCE_HI_RPM) {
+                const inputId = frame.reg === CUSTOM_REGS.RESONANCE_LO_RPM
+                    ? 'resonanceLoRpmInput' : 'resonanceHiRpmInput';
+                const input = document.getElementById(inputId);
+                if (input && document.activeElement !== input) input.value = String(frame.value >>> 0);
+            }
             if (frame.reg === CUSTOM_REGS.EXT_FOLLOW_MAX_STEP_S) {
                 const input = document.getElementById('extFollowMaxStepSInput');
                 if (document.activeElement !== input) input.value = String(frame.value >>> 0);
