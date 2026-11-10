@@ -181,6 +181,13 @@ static void usb_device_init(void)
     usbd_connect(&g_usb_core);
 }
 
+// 【优先级不变量】此 IRQ 注册在优先级 0（main.cpp:179 nvic_irq_enable(...,0,0)），
+// 高于 FreeRTOS configMAX_SYSCALL_INTERRUPT_PRIORITY（=1，见 FreeRTOSConfig.h）。
+// 也就是说这个中断**不在内核可托管的抢占窗口内**：里面（含它调用的 usbd_irq_handler
+// → cdc_class 各回调）**绝对不能调用任何 FreeRTOS API**（xSemaphore*/xQueue*/vTaskNotify*
+// /pvPortMalloc 等），否则 configASSERT 会炸、或在校准表 dump 高负载时随机复位/丢包。
+// 现有实现满足这一点：中断只搬运 g_rxlen / 环形缓冲，真正的收发在 usb_task 任务上下文。
+// 详细约束见 include/FreeRTOSConfig.h:165 附近。
 extern "C" void USBFS_L_CAN1_RX0_IRQHandler(void)
 {
     usbd_irq_handler(&g_usb_core);
