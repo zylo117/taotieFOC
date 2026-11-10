@@ -94,6 +94,17 @@ bool StepOutputChannel::emit(uint32_t num_steps, bool direction, bool direction_
     }
 #endif
 
+    // 【TMR2 是 16 位定时器：PR 写进 >0xFFFF 的值会按 mod 65536 截断】
+    // 控制任务停摆 20ms 后窗口预算暴涨，小步数窗口的 step_ticks 轻松超过 65535
+    // （250 步/s 的爬行速度单步周期就 ~62500 tick，已经贴边）——截断后脉冲
+    // 周期变成完全无关的随机值，表现是"卡一下之后猛地抽一下"。
+    // 封顶到 0xFFFF：宁可低速段被压到最快可表示周期（仍是单调可预期的），
+    // 也不要 mod 截断出来的乱序周期。
+    if (step_ticks > 0xFFFFU)
+    {
+        step_ticks = 0xFFFFU;
+    }
+
     // 预算窗口转 uint32（任务阻塞极端情况下 remaining_ticks 可能很大，封顶防溢出）。
     const uint64_t budget_ticks_wide = spread_enabled
         ? (remaining_ticks * static_cast<uint64_t>(STEP_SEQ_SPREAD_PERMILLE)) / 1000ULL

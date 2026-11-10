@@ -22,6 +22,11 @@ namespace
 {
     constexpr float k_two_pi = 6.28318530718f;
 
+    // 【TMR2 是 16 位定时器】PR 收到 >0xFFFF 的值会 mod 65536 截断成随机周期。
+    // 控制任务停摆后窗口预算暴涨，小步数窗口的单步间隔能轻松超 16 位——
+    // 序列里写出的每一个值都必须在这里做最终钳位（emit 那边还有第一道）。
+    constexpr uint32_t kMaxArrTicks = 0xFFFFU;
+
 #if STEP_SEQ_MODE == 2
     // 谐波注入的相位（rad），跨 ramp 窗口连续累加：
     // 如果每个窗口都从 0 相位重启，就等于 20kHz 的锯齿调频，会产生一大堆无用边带。
@@ -36,7 +41,8 @@ namespace step_sequencer
     {
 #if STEP_SEQ_MODE == 0
         // ---- 档位 0：恒速突发，整窗用最小步距一口气打完，剩余时间全留给 guard ----
-        const uint32_t base = (base_ticks < min_ticks) ? min_ticks : base_ticks;
+        const uint32_t base_raw = (base_ticks < min_ticks) ? min_ticks : base_ticks;
+        const uint32_t base = (base_raw > kMaxArrTicks) ? kMaxArrTicks : base_raw;
         for (uint32_t i = 1; i < seq_count - 1; i++)  // 头尾是换向 guard，不是脉冲
         {
             seq[i] = base;
@@ -94,6 +100,13 @@ namespace step_sequencer
                 }
             }
 
+            // 最终 16 位钳位（写进 seq 前的最后一道，见 kMaxArrTicks 注释）。
+            // 钳位后序列总长会短于预算：序列跑完 timer 停在末格 guard 周期，
+            // 下一窗正常重装 —— 宁可暂停一下，不要随机周期乱抽。
+            if (ticks > kMaxArrTicks)
+            {
+                ticks = kMaxArrTicks;
+            }
             seq[i] = ticks;
             budget -= ticks;
             steps_left--;
