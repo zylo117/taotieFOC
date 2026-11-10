@@ -414,11 +414,17 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
     }
 
     // 【上电应用运动源 + 共振带】flash 读取失败也要应用编译期默认值
-    // （外部跟随 + 300~600 RPM 共振带）。energize=false：只预备脉冲通道，
-    // 驱动器电流由使能来源策略决定 —— 上电即抱死发热不可接受。
+    // （外部跟随 + 300~600 RPM 共振带）。
+    // 【为什么 energize=true（2026-11-10 实机反馈修正）】原设计 energize=false 是怕
+    // 上电即抱死发热，但实测后果更糟：host 使能模式下开机进外部跟随 = 驱动器不带电，
+    // 上位机完全无法判断"到底进没进跟随模式"，必须网页切一次内部再切回来才励磁。
+    // 跟随模式的语义就是"上电即可跟随"，励磁是应有之义。使能来源策略仍然被尊重：
+    // enableExternalPulseFollow(energize=true) 内部只在 HOST 模式直接 setEnable(true)；
+    // EXTERNAL_PIN 模式它不碰 EN，由 PC13 第一拍 updateEnableFromExternalPin 决定 ——
+    // "外部 EN 低电平使能"因此在两种模式下上电即刻生效。
     resonance_lo_rpm_ = boot_res_lo;
     resonance_hi_rpm_ = boot_res_hi;
-    setMotionSource(boot_motion_source, /*energize_on_switch=*/false);
+    setMotionSource(boot_motion_source, /*energize_on_switch=*/true);
 
     last_process_time_us_ = 0U;
 }
@@ -729,69 +735,6 @@ void ClosedLoopController::updateEnableFromExternalPin()
     }
 }
 
-// ===========================================================================
-// 自适应降噪（0x172）：静止时自动加大编码器滤波窗口，一有动作当拍切回。
-//
-// 背景：TMR5 高频多样本平均实测无效已停用（main.cpp），而滑动平均窗在 20kHz 下
-// 加大是真正能按 √N 压噪声的 —— 代价只有群延迟（滤波器自带前馈补偿）和"响应变慢"。
-// "响应慢"只在静止时是免费的，所以策略只在静止时加大窗：
-//   静止判据（全部满足，连续 200ms）：
-//     · |编码器速度| < 5 RPM（空载静止实测 <1 RPM，留 5 倍余量）
-//     · 无规划运动 / 无角度模式 / 无校准状态机在跑
-//     · 外部跟随开启时：命令==已发（backlog 0）—— 有积压 = 马上要出脉冲，不算静止
-//   退出：任一条件破 → **当拍**切回小窗（0x148 的用户值），不等计数。
-// 换窗路径与手动 0x148 完全相同（requestFilterWindow → 采样中断重配），
-// 本函数不 printf（跑在 20kHz 控制任务）。生效窗口从 0x148 读回（active_）。
-// ===========================================================================
-void ClosedLoopController::updateAdaptiveFilterWindow()
-{
-    if (!adaptive_filter_enabled_ || encoder_ == nullptr)
-    {
-        adaptive_still_beats_ = 0U;
-        return;
-    }
-
-    // 运动/校准中的判定宁严勿松：只要有任何"即将动"的形态就不许加大窗。
-    bool still;
-    if (external_pulse_follower_.isEnabled())
-    {
-        // 跟随模式下 motion_running_ 按设计恒为 true（见 enableExternalPulseFollow），
-        // 静止判据是"编码器不动 且 无待转发积压"——有积压 = 下一拍就要出脉冲。
-        still = (fabsf(encoder_speed_rpm_) < kAdaptiveStillRpm) &&
-                (external_pulse_follower_.backlogSteps() == 0U) &&
-                (calibration_stage_ == CALIBRATION_IDLE);
-    }
-    else
-    {
-        still = (fabsf(encoder_speed_rpm_) < kAdaptiveStillRpm) &&
-                !motion_running_ && !closed_loop_angle_mode_enabled_ &&
-                (calibration_stage_ == CALIBRATION_IDLE);
-    }
-
-    uint16_t wanted;
-    if (still)
-    {
-        // 加大窗要"连续 200ms 静止"，防止走走停停的工况在窗间来回抖
-        if (adaptive_still_beats_ < kAdaptiveStillBeats)
-        {
-            ++adaptive_still_beats_;
-        }
-        wanted = (adaptive_still_beats_ >= kAdaptiveStillBeats) ? adaptive_stationary_window_
-                                                                : encoder_filter_window_;
-    }
-    else
-    {
-        adaptive_still_beats_ = 0U;
-        wanted = encoder_filter_window_;  // 运动窗口 = 用户 0x148 的值
-    }
-
-    if (wanted != encoder_filter_window_active_)
-    {
-        encoder_->requestFilterWindow(wanted);
-        encoder_filter_window_active_ = wanted;
-    }
-}
-
 void ClosedLoopController::requestQuickStop()
 {
     // 角度模式（位置伺服）没有"固定行程终点"可以慢慢减到 0，
@@ -863,6 +806,21 @@ void ClosedLoopController::setMotionSource(uint32_t source, bool energize_on_swi
     printf("[SOURCE] motion source = %s\r\n",
            src == MOTION_SOURCE_EXTERNAL ? "EXTERNAL PULSE FOLLOW (internal motion locked)"
                                          : "INTERNAL PLAN (external PUL ignored)");
+}
+
+// 校准/整定入口的公共前置：外部跟随模式下接管运动通道切到内部规划。
+// 与手动切换（router 0x16D）走同一个 setMotionSource，互斥语义完全一致；
+// 区别只有两点：① 由固件在校准开始时自动执行；② 打印 [CALIB] 让日志能解释
+// "为什么运动源自己变了"。调用方：0x136 磁编码器校准。网页的滞后角/冲击/PID
+// 整定入口在前端先写 0x16D=0（带界面同步），固件侧不需要再兜一层。
+void ClosedLoopController::ensureInternalSourceForCalibration(const char* who)
+{
+    if (motion_source_ == MOTION_SOURCE_INTERNAL && !external_pulse_follower_.isEnabled())
+    {
+        return;   // 已在内部模式，不重放日志
+    }
+    printf("[CALIB] %s: motion channel taken for INTERNAL (was external follow)\r\n", who);
+    setMotionSource(MOTION_SOURCE_INTERNAL, /*energize_on_switch=*/true);
 }
 
 void ClosedLoopController::setMotionConfig(float start_rpm, float max_rpm, float accel_rpm_s, uint32_t pulse_count,
@@ -1630,10 +1588,6 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     const float encoder_delta_deg = refreshEncoderFeedback(now_ns);
     // ②b 堵转/不转保护：有脉冲在发、编码器却不动 —— 先停机失能，别让驱动一直灌电流
     updateStallGuard(now_ns);
-
-    // ②c 自适应降噪（0x172，默认关）：放在模式分派之前 —— 跟随/规划/角度/空闲
-    //     所有路径都只有这一个公共上游，且 encoder_speed_rpm_ 刚刷完是新鲜的。
-    updateAdaptiveFilterWindow();
 
     // ③ 校准状态机（每拍驱动；HOMING/MOVING 阶段会反过来修饰速度规划）
     updateEncoderCalibration(encoder_filtered_raw_);
@@ -2414,6 +2368,12 @@ bool ClosedLoopController::readCalibrationTableChecksum(uint32_t* checksum) cons
 // ===========================================================================
 void ClosedLoopController::calibrateEncoder()
 {
+    // 【校准必须持有内部运动通道】校准要做"回零 + 逐段扫描"，全靠
+    // setTargetAngleDeg / startMotion —— 而这两者在外部跟随模式下都被互斥门拒。
+    // 上电默认外部跟随后，不接管就会"只能归零无法运动"（2026-11-10 实机反馈）。
+    // 接管 = 和网页手动切内部完全相同的一次原子切换：从此刻起外部 PUL 被忽略，
+    // 直到用户显式切回 —— 互斥不变量没有松动，只是校准入口替用户做了切换并留日志。
+    ensureInternalSourceForCalibration("encoder calib (0x136)");
     calibrator_.start();
 }
 

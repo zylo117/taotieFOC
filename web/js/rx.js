@@ -158,14 +158,6 @@
                 const input = document.getElementById(inputId);
                 if (input && document.activeElement !== input) input.value = String(frame.value >>> 0);
             }
-            if (frame.reg === CUSTOM_REGS.ADAPTIVE_FILTER) {
-                const input = document.getElementById('adaptiveFilterInput');
-                if (input && document.activeElement !== input) input.checked = (frame.value >>> 0) !== 0;
-            }
-            if (frame.reg === CUSTOM_REGS.ADAPTIVE_STATIONARY_WINDOW) {
-                const input = document.getElementById('adaptiveStationaryWindowInput');
-                if (input && document.activeElement !== input) input.value = String(frame.value >>> 0);
-            }
             if (frame.reg === CUSTOM_REGS.EXT_FOLLOW_MAX_STEP_S) {
                 const input = document.getElementById('extFollowMaxStepSInput');
                 if (document.activeElement !== input) input.value = String(frame.value >>> 0);

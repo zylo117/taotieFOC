@@ -113,8 +113,6 @@ const CUSTOM_REGS = {
     RESONANCE_LO_RPM: 0x16F,      // R/W（存 Flash）：共振带下限，默认 300
     RESONANCE_HI_RPM: 0x170,      // R/W（存 Flash）：共振带上限，默认 600（hi=0 关闭）
     RESONANCE_BYPASS: 0x171,      // R/W（不存 Flash）：1=自动测试临时允许带内巡航
-    ADAPTIVE_FILTER: 0x172,       // R/W（不存 Flash）：1=静止自动加大编码器滤波窗（一动产当拍切回）
-    ADAPTIVE_STATIONARY_WINDOW: 0x173, // R/W（不存 Flash）：静止时窗口样本数，默认 32
     CPU_USAGE_CENTIPERCENT: 0x137,
     CONTROL_TASK_USAGE_CENTIPERCENT: 0x138,
     MAX_RPM: 0x11B,

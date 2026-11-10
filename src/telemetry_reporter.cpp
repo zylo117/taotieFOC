@@ -51,11 +51,7 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
         // 低速档（约 1Hz）：这里是唯一真正改编码器滤波窗口的地方。
         // 滤波器的环形缓冲/累加和正在采样中断里被改，只允许通过 requestFilterWindow
         // 登记请求，由中断自己重配；这里把控住频率，就不会让跟随误差被窗口切换抖出台阶。
-        // 【自适应开启时让位】窗口归属权在 updateAdaptiveFilterWindow（控制任务，响应快），
-        // 这里再按手动值发一遍会把"运动小窗"抢回大窗，两条路径打架。
-        // 关掉自适应后本分支自动恢复接管（0x148 与 active_ 不等时 1s 内切回手动值）。
-        if (!c.adaptive_filter_enabled_ &&
-            c.encoder_ != nullptr && c.encoder_filter_window_ != c.encoder_filter_window_active_)
+        if (c.encoder_ != nullptr && c.encoder_filter_window_ != c.encoder_filter_window_active_)
         {
             c.encoder_->requestFilterWindow(c.encoder_filter_window_);
             c.encoder_filter_window_active_ = c.encoder_filter_window_;

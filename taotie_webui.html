@@ -1031,15 +1031,6 @@
                                    value="4"/>
                         </div>
                         <div class="field">
-                            <label for="adaptiveFilterInput">自适应降噪（静止加大窗）</label>
-                            <input id="adaptiveFilterInput" type="checkbox"/>
-                        </div>
-                        <div class="field">
-                            <label for="adaptiveStationaryWindowInput">静止时窗口（样本）</label>
-                            <input id="adaptiveStationaryWindowInput" max="256" min="1" step="1" type="number"
-                                   value="32"/>
-                        </div>
-                        <div class="field">
                             <label for="lagAngleFfRatioInput">滞后角前馈信任度（%）</label>
                             <input id="lagAngleFfRatioInput" max="100" min="0" step="5" type="number"
                                    value="100"/>
@@ -1061,11 +1052,6 @@
                         填大于 4 就会开始跨控制周期（每超 1 多 2.05µs 历史），
                         跟随误差会随之变大，不建议。改完下发约 1 秒后才生效。
                         SPI 已实测上限：7.8MHz；再高到 15.6MHz 会因 MISO 建立时间不足而角度错乱。
-                    </div>
-                    <div class="tiny mt">自适应降噪：勾选后「滤波窗口」变成<b>运动</b>窗口；电机连续静止 200ms
-                        （|速度|&lt;5RPM、无规划运动/校准、跟随无积压）自动切到「静止时窗口」压噪声（∝√N），
-                        一有动作<b>当拍</b>切回运动窗口；群延迟由滤波器前馈补偿。取消勾选立即回到手动。
-                        台架建议：静止读 0x148 看生效窗，A/B 对比噪声底后再决定静止窗口大小。
                     </div>
                     <div class="tiny mt">STEP 输入脚固定用内部下拉（约 40k），悬空时不会乱跳，推挽驱动可直连。
                         若改接开漏 / 源极跟随这类弱驱动，需要在 pulse_capture.cpp 里把

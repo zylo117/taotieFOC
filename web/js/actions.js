@@ -635,9 +635,7 @@
                 CUSTOM_REGS.POSITION_LEAD_ALPHA,
                 CUSTOM_REGS.MOTION_SOURCE,
                 CUSTOM_REGS.RESONANCE_LO_RPM,
-                CUSTOM_REGS.RESONANCE_HI_RPM,
-                CUSTOM_REGS.ADAPTIVE_FILTER,
-                CUSTOM_REGS.ADAPTIVE_STATIONARY_WINDOW
+                CUSTOM_REGS.RESONANCE_HI_RPM
             ];
             // 【串行读，不要 26 个并发】forEach(async) 会把 26 个读请求一口气全压进
             // 写通道：固件单包响应，队列深了会触发丢帧（0x16B）和等待超时假象。

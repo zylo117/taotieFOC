@@ -245,10 +245,13 @@ public:
     //   INTERNAL(0)：网页可操作内部规划/角度模式，外部 PUL 输入被忽略。
     enum MotionSource { MOTION_SOURCE_INTERNAL = 0U, MOTION_SOURCE_EXTERNAL = 1U };
     // 切换运动源。切到外部：先停内部运动，再开跟随；切到内部：关跟随（脉冲通道交还规划器）。
-    // energize_on_switch=false：上电默认外部模式时用 —— 预备通道但**不给驱动器电流**
-    // （EN 由使能来源策略决定），电机不会一上电就抱死发热。
+    // energize_on_switch：切到外部时是否立即给驱动器电流（EXTERNAL_PIN 模式下永远由
+    // PC13 第一拍决定，不受此参数影响）。上电应用默认运动源时也用 true —— 跟随模式
+    // 的语义就是"上电即可跟随"，false 会让 host 使能模式开机后无法判断是否在跟随。
     void setMotionSource(uint32_t source, bool energize_on_switch = true);
     uint32_t getMotionSource() const { return motion_source_; }
+    // 校准/整定入口的公共前置：外部跟随时自动接管为内部源（原子切换 + [CALIB] 日志）。
+    void ensureInternalSourceForCalibration(const char* who);
     // 急停：立即断脉冲 + 失能驱动器（比 requestQuickStop 的减速停车更彻底）。
     void emergencyStop();
     float getEncoderZero() const;
@@ -299,8 +302,6 @@ private:
     void updateStallGuard(uint64_t now_ns);
     // 使能来源：外部 EN 引脚跟随 / 上位机请求（外部模式下"使能"被忽略）
     void updateEnableFromExternalPin();
-    // 自适应降噪（0x172）：静止加大窗 / 一动产当拍切回小窗。控制任务每拍调用。
-    void updateAdaptiveFilterWindow();
     void requestDriverEnable(bool want);
     // 实际生效的滞后角前馈量（毫度，已带方向，正=与跟随误差同号）
     int32_t effectiveLagAngleMilliDeg() const;
@@ -501,17 +502,6 @@ private:
     // （ramp_loop_idx % 20000 == 0，20kHz 下约 1s 一次）做，避免运动中途改滤波把跟随误差抖出台阶。
     volatile uint16_t encoder_filter_window_ = EncoderFilterConfig::kDefaultWindow;
     volatile uint16_t encoder_filter_window_active_ = EncoderFilterConfig::kDefaultWindow;
-
-    // 【自适应降噪 0x172/0x173】默认关闭；开启后「运动窗口」用 0x148、「静止窗口」用
-    // adaptive_stationary_window_（默认 32）。策略在控制任务每拍跑（见 rampUpdate 调用点），
-    // 只登记 requestFilterWindow，真正重配仍由采样中断做。静止判据：|速度|<kStillRpm 且
-    // 无规划运动/角度/校准、跟随积压为 0，连续满足 kStillBeats 拍。一有动作当拍切回小窗。
-    // 关掉时与现状逐拍等价（策略直通 0x148，不引入任何额外行为）。
-    volatile bool adaptive_filter_enabled_ = false;
-    volatile uint16_t adaptive_stationary_window_ = 32U;
-    static constexpr float kAdaptiveStillRpm = 5.0f;             // 低于此速度算静止（空载静止噪声 <1RPM）
-    static constexpr uint16_t kAdaptiveStillBeats = 4000U;       // 20kHz 下 200ms 静止才加大窗（防抖）
-    uint16_t adaptive_still_beats_ = 0U;                         // 连续静止计数（仅控制任务读写）
 
     // 上次「保存参数到 Flash」的结果（0x154 读回用）
     volatile bool param_save_ok_ = false;

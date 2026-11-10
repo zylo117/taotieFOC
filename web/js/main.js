@@ -114,8 +114,6 @@
             , [CUSTOM_REGS.EXT_FOLLOW_DROPPED, ['0x014E', 'EXT_FOLLOW_DROPPED', '累计丢步：超过限速而长期积压的部分']]
             , [CUSTOM_REGS.EXT_FOLLOW_RESET, ['0x014F', 'EXT_FOLLOW_RESET', '写 1 清零命令/已转发/积压/丢步计数']]
             , [CUSTOM_REGS.EXT_FOLLOW_WINDOW_REVERSALS, ['0x0150', 'EXT_FOLLOW_WINDOW_REVERSALS', '窗内发生过换向的窗口数：只统计不改输出，持续增长说明需要段队列']]
-            , [CUSTOM_REGS.ADAPTIVE_FILTER, ['0x0172', 'ADAPTIVE_FILTER', '自适应降噪：0 手动（默认）/ 1 静止自动加大窗，一动产当拍切回']]
-            , [CUSTOM_REGS.ADAPTIVE_STATIONARY_WINDOW, ['0x0173', 'ADAPTIVE_STATIONARY_WINDOW', '自适应模式下静止时的滤波窗口样本数（默认 32）']]
         ]);
 
 
@@ -662,38 +660,6 @@
                         log(`[INFO] ${label}=${value} RPM（固件回读一致）`);
                     } catch (error) {
                         log('[ERROR] ' + label + '写入失败：' + error.message);
-                    }
-                });
-            }
-
-            // ===== 自适应降噪（0x172/0x173，默认关，不存 Flash）=====
-            // 勾选=静止自动加大窗（0x173），运动窗口仍是 0x148；生效窗从 0x0148 读回。
-            const adaptiveFilterInput = document.getElementById('adaptiveFilterInput');
-            if (adaptiveFilterInput) {
-                adaptiveFilterInput.addEventListener('change', async function () {
-                    if (!state.connected) return;
-                    try {
-                        await writeRegisterAndWaitAck(CUSTOM_REGS.ADAPTIVE_FILTER, this.checked ? 1 : 0);
-                        log(this.checked
-                            ? '[INFO] 自适应降噪已开启：静止 200ms 自动切大窗，一动产当拍切回（写拒绝=固件未支持）'
-                            : '[INFO] 自适应降噪已关闭，恢复手动滤波窗口');
-                    } catch (error) {
-                        this.checked = !this.checked;
-                        log('[ERROR] 自适应降噪开关写入失败：' + error.message);
-                    }
-                });
-            }
-            const adaptiveStationaryWindowInput = document.getElementById('adaptiveStationaryWindowInput');
-            if (adaptiveStationaryWindowInput) {
-                adaptiveStationaryWindowInput.addEventListener('change', async function () {
-                    const value = clamp(Math.round(Number(this.value) || 1), 1, 256);
-                    this.value = String(value);
-                    if (!state.connected) return;
-                    try {
-                        await writeRegisterAndWaitAck(CUSTOM_REGS.ADAPTIVE_STATIONARY_WINDOW, value);
-                        log(`[INFO] 自适应静止窗口=${value} 样本`);
-                    } catch (error) {
-                        log('[ERROR] 静止窗口写入失败：' + error.message);
                     }
                 });
             }
