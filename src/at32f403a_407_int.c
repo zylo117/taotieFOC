@@ -93,6 +93,21 @@ __attribute__((noreturn, noinline, used)) static void fault_halt(void)
 
   /* 之后不能用任何库函数（栈和时钟都可能已不可信），只裸寄存器闪 PA8 */
   __asm volatile ("cpsid i");
+
+  /* 【崩溃失效保护：先断脉冲，再失能驱动】
+   * 电机高速运行中固件崩溃时：TMR2+DMA1_CH2 是独立硬件，最后一窗的 ARR 序列
+   * 会继续按周期吐完脉冲；PA3(EN) 保持低 = 驱动器继续满励磁，转子被最后一段
+   * 序列拖着失步堵转发热。所以第一件事不是闪灯，是把执行机构置于安全态：
+   *   ① 停 DMA 通道（bit0 CHEN）→ 不再重装载 ARR 序列
+   *   ② 停 TMR2 计数器（CTRL1 bit0 CEN）→ 脉冲源彻底停
+   *   ③ STEP(PB10) 拉低 → 序列停在半路也不会留高电平
+   *   ④ EN(PA3) 拉高（低有效）→ H 桥高阻，电机自由滑行
+   * 顺序 ①→② 防止 TMR2 先停在比较沿上、DMA 尾巴又补一个边沿。 */
+  DMA1_CHANNEL2->ctrl &= ~0x00000001UL; /* ① CHEN = 0 */
+  TMR2->ctrl1 &= (uint16_t)~0x0001U;    /* ② CEN = 0 */
+  GPIOB->clr = GPIO_PINS_10;            /* ③ STEP = 低 */
+  GPIOA->scr = GPIO_PINS_3;             /* ④ EN = 高（失能） */
+
   for (;;)
   {
     GPIOA->odt ^= GPIO_PINS_8;
