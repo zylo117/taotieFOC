@@ -369,6 +369,24 @@ private:
     };
     VLoopDbg vloop_;
 
+    // ===== 运动收尾报告（[SETTLE] / 行程对账），延迟到真静止后由 kSlow 档打印 =====
+    // updateSettleStage 在 20kHz 控制任务里，一行带 %f 的 printf ≈ 10ms 停摆；
+    // settled 路径此时轴确实停了没事，**timeout 路径轴可能还在大幅振荡**，
+    // 打印会把停摆算进沉降观察窗口、还把补偿拍饿掉。所以控制环里只存快照，
+    // 由 telemetry_reporter 在确认 motion_running_==false 的慢档打印。
+    struct SettleReport
+    {
+        volatile bool pending = false;          // 有待打印的收尾报告（存快照时置位）
+        volatile float elapsed_ms = 0.0f;
+        volatile bool settled = false;          // true=编码器静默判停；false=超时强制停
+        volatile float cmd_deg = 0.0f;
+        volatile float enc_deg = 0.0f;
+        volatile float follow_deg = 0.0f;
+        volatile uint32_t emitted = 0U;         // 行程对账：已发步数
+        volatile uint32_t pulse_count = 0U;     // 行程对账：计划步数
+    };
+    SettleReport settle_report_;
+
     // ===== 角度模式的梯形轮廓（速度前馈）=====
     // 为什么要有轮廓：纯 P 的角度模式里「速度 ∝ 误差」，越接近目标越慢（指数尾巴），
     // 而且无法“按指定转速转到目标角”。以前的 base_speed 自引用是在偷偷补这个洞，
@@ -550,6 +568,14 @@ private:
     volatile uint32_t enable_mode_ = ENABLE_MODE_HOST;
     volatile bool driver_enabled_ = false;
     volatile uint8_t external_en_level_ = 1U;   // 1=高(失能) 0=低(使能)
+    // 【消抖状态】PC13 来自 PLC/接触器，几百 ns~几 µs 的毛刺很常见。逐拍单样本
+    // 直接翻 EN，一次毛刺 = 一次几十 µs 失能 = 运动中断流丢步，而且不留记录。
+    // 要求连续 kEnDebounceSamples 拍同电平才承认翻转（4 拍 = 200µs）。
+    static constexpr uint8_t kEnDebounceSamples = 4U;
+    volatile uint8_t external_en_stable_ = 1U;      // 去抖后的稳定电平
+    volatile uint8_t external_en_candidate_ = 1U;   // 候选新电平
+    volatile uint8_t external_en_change_count_ = 0U;
+    volatile uint32_t en_glitch_count_ = 0U;        // 被消抖吸收的毛刺次数（只读寄存器）
 
     // ===== 快速停车（0x163）=====
     volatile bool quick_stop_requested_ = false;

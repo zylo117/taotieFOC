@@ -189,7 +189,15 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
         c.motion_speed_rpm_ = calibration_rps * 60.0f;
         if (calibration_rps != 0.0f)
         {
-            c.motion_direction_ = calibration_rps >= 0.0f ? 1 : -1;
+            const int8_t want_dir = (calibration_rps >= 0.0f) ? 1 : -1;
+            if (want_dir != c.motion_direction_)
+            {
+                // 【角度模式换向必须挂 DIR 翻转标志】emitSteps 的 emit(direction_changed)
+                // 靠它决定“先换 DIR 脚、等建立时间再发脉冲”。原来这里只改方向不发标志，
+                // 首窗脉冲会在 DIR 还指着旧方向时发出去 —— 反向第一步变正向。
+                c.motion_direction_ = want_dir;
+                c.motion_direction_change_pending_ = true;
+            }
         }
         // 【诊断快照 [VLOOP]】只存量、不打印（输出在 telemetry_reporter 的 kSlow 档）。
         // P/I/D 分开存，是为了看抖动到底由哪一项贡献（而不是先猜 kp）；
@@ -303,9 +311,9 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
             c.syncProtocolTelemetry();
             return true;
         }
-        printf("motion_steps_emitted_: %lu, motion_pulse_count_: %lu\n",
-               static_cast<unsigned long>(c.motion_steps_emitted_),
-               static_cast<unsigned long>(c.motion_pulse_count_));
+        // 【已删 printf】这里原来每段运动收尾都无条件打 "motion_steps_emitted_/pulse_count"
+        // （控制任务里约 8ms 停摆）。这两个数已经在 settle_report_ 的行程对账里，
+        // 由 kSlow 档在真静止后统一打印。
         // 关键：这里不能直接 stopMotion()。最后一个窗口的脉冲才刚进 TMR2/DMA 序列，
         // 立即关定时器会把尾巴上几十个脉冲连同对应角度一起砍掉（高速下约 0.36°），
         // 这就是上位机总是统计成“少了一点点角度”的原因。
@@ -522,10 +530,19 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
 
     const uint32_t micro_steps_per_round = c.getStepsPerRound();
     const auto compensated_step_speed = c.compensated_rps_ * static_cast<float>(micro_steps_per_round);
-    // 修正量是“沿运动方向的附加速度”，基础速度是大小（>=0）。相加后必须 >= 0：
-    // 允许为负会让下面的 |...| 变成“反向走”，而 DIR 脚已经固定，
+    // 修正量是“沿运动方向的附加速度”，基础速度是**脉冲频率大小**（>=0），相加后必须 >= 0：
+    // 允许为负会让脉冲倒着发，而 DIR 脚已经固定，
     // 结果是脉冲照发、方向不变、转速却比规划快 —— 一个很难查的隐性超速。
-    float total_step_speed = c.current_step_speed_ + compensated_step_speed;
+    //
+    // 【必须取绝对值：角度模式的基础速度是带符号的】
+    // 规划运动的 current_step_speed_ 是大小（方向走 DIR 脚），但角度模式写进去的是带符号
+    // 速度（见 updateAngleMode 末尾）。原来这里直接用带符号值：反向时 “基速(负)+补偿(0)”
+    // 被钳成 0，补偿累加器永远涨不到 1，下面的发脉冲门（compensated_accumulator >= 1）
+    // 永远不开 —— **反向的角度目标一个脉冲都不发**，只有 |速度| 超过约 750RPM 时才被
+    // kMaxStepsPerTick 钳位误抬成 8 步/拍爆发泄漏（那次钳位也是错的，见下面独立夹取）。
+    // 取绝对值后：方向只由 motion_direction_（DIR 脚）表达，脉冲频率恒为非负，
+    // 规划运动路径 fast_abs 是恒等变换，行为不变。
+    float total_step_speed = fast_abs(c.current_step_speed_) + compensated_step_speed;
     if (total_step_speed < 0.0f)
     {
         total_step_speed = 0.0f;
@@ -542,10 +559,20 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
     // 2×200ns=400ns → 一窗（50us）能装 125 步，MAX_PULSE_ARR_LEN=128 也没碰到。
     // 真正的限速回到它们该在的地方：0x12F（角度限速 RPM）与 0x130（加速度）。
     constexpr float kMaxStepsPerTick = 8.0f;
-    if (c.closed_loop_angle_mode_enabled_ && c.motion_step_accumulator_ > kMaxStepsPerTick)
+    if (c.closed_loop_angle_mode_enabled_)
     {
-        c.motion_step_accumulator_ = kMaxStepsPerTick;
-        c.compensated_motion_step_accumulator_ = kMaxStepsPerTick;
+        // 【钳位必须各自独立夹，不能直接赋成 8】原实现两个累加器都写成 = kMaxStepsPerTick：
+        // 补偿累加器本来不足 8 时，这一下等于“凭空抬到 8 步/拍”（160k 步/s）——
+        // 反向时它是 0（见上面 fast_abs 修复的说明），这一钳位反而成了反向唯一
+        // “泄漏脉冲”的通道，且一泄漏就是满速爆发。
+        if (c.motion_step_accumulator_ > kMaxStepsPerTick)
+        {
+            c.motion_step_accumulator_ = kMaxStepsPerTick;
+        }
+        if (c.compensated_motion_step_accumulator_ > kMaxStepsPerTick)
+        {
+            c.compensated_motion_step_accumulator_ = kMaxStepsPerTick;
+        }
         c.compensated_rps_ = 0.0;
     }
 

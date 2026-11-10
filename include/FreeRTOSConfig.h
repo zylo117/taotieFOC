@@ -162,6 +162,11 @@ function. */
 routine that makes calls to interrupt safe FreeRTOS API functions.  DO NOT CALL
 INTERRUPT SAFE FREERTOS API FUNCTIONS FROM ANY INTERRUPT THAT HAS A HIGHER
 PRIORITY THAN THIS! (higher priorities are lower numeric values. */
+/* 【工程不变量，勿破坏】USBFS_L 的 NVIC 抢占优先级被设为 0，**高于**这个上限，
+   因此 USB ISR 里永远不允许调用任何 FreeRTOS API（xTaskNotifyGive / *FromISR 等）——
+   调用了不会编译报错，而是随机堆损坏，极难定位。
+   反过来，控制环的 TMR4 必须保持恰好 =1：再高（数值更小）FromISR 就非法，
+   再低（数值更大）就会被 USB 流量延迟控制拍。见 main.cpp usb_task/USBFS handler。 */
 #define configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY  0x01
 
 /* Interrupt priorities used by the kernel port layer itself.  These are generic

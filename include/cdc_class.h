@@ -77,7 +77,8 @@ typedef struct
     uint8_t g_rx_buff[USBD_CDC_OUT_MAXPACKET_SIZE];
     uint8_t g_cmd[USBD_CDC_CMD_MAXPACKET_SIZE];
     uint8_t g_req;
-    uint16_t g_len, g_rxlen;
+    __IO uint16_t g_len, g_rxlen;   /* ISR 与 usb_task 共享：必须 volatile，
+                                      读取必须"一次读满快照"，见 cdc_class.c usb_vcp_get_rxdata 注释 */
     __IO uint8_t g_tx_completed, g_rx_completed;
     linecoding_type linecoding;
 } cdc_struct_type;

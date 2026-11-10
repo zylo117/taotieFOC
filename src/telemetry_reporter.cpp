@@ -77,6 +77,21 @@ void TelemetryReporter::report(TelemetryScheduler::Slot slot)
         // 已移到 kMedium（≈ 100Hz）档。
         c.protocol_->setCustomParameter(TMC2209_EXT_PARAM_STEP_PULSE_WIDTH_NS, c.step_pulse_width_ns_);
 
+        // 【SETTLE 收尾报告】控制环只存快照（见 updateSettleStage 注释），
+        // 这里确认真的停下来了才打：停摆不再影响任何被观测对象。
+        if (c.settle_report_.pending && !c.motion_running_ && !c.closed_loop_angle_mode_enabled_)
+        {
+            c.settle_report_.pending = false;
+            printf("[SETTLE] done in %.3f ms (%s), commanded=%.4f deg, encoder=%.4f deg, follow_error=%.4f deg | emitted=%lu/%lu\r\n",
+                   static_cast<double>(c.settle_report_.elapsed_ms),
+                   c.settle_report_.settled ? "encoder quiet" : "timeout",
+                   static_cast<double>(c.settle_report_.cmd_deg),
+                   static_cast<double>(c.settle_report_.enc_deg),
+                   static_cast<double>(c.settle_report_.follow_deg),
+                   static_cast<unsigned long>(c.settle_report_.emitted),
+                   static_cast<unsigned long>(c.settle_report_.pulse_count));
+        }
+
         // 【VLOOP 诊断】写 0x155=1 才打一次（打完自动清零）。默认不打。
         // 【绝对不能在运动/角度模式运行中打印】这三行浮点 ≈ 270 字节 @115200 ≈ 23ms，
         // 而 syncProtocolTelemetry() 是在 20kHz 控制任务里调用的 —— 打印一次就会

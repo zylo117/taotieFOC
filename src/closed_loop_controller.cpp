@@ -347,6 +347,10 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
     ext_en_gpio.gpio_pins = EXT_EN_PIN;
     gpio_init(EXT_EN_PORT, &ext_en_gpio);
     external_en_level_ = (gpio_input_data_bit_read(EXT_EN_PORT, EXT_EN_PIN) != RESET) ? 1U : 0U;
+    // 消抖状态以当前电平起步（stable/candidate 一致，change_count=0）。
+    external_en_stable_ = external_en_level_;
+    external_en_candidate_ = external_en_level_;
+    external_en_change_count_ = 0U;
 
     position_pid_.setGains(base_position_kp_, base_position_ki_, base_position_kd_);
     velocity_pid_.setGains(base_velocity_kp_, base_velocity_ki_, base_velocity_kd_);
@@ -610,6 +614,10 @@ void ClosedLoopController::setEnableMode(uint32_t mode)
     }
     driver_enabled_ = false;
     external_en_level_ = (gpio_input_data_bit_read(EXT_EN_PORT, EXT_EN_PIN) != RESET) ? 1U : 0U;
+    // 切换使能来源：去抖状态也按当前引脚电平重置，避免带着旧模式的候选电平进入新模式。
+    external_en_stable_ = external_en_level_;
+    external_en_candidate_ = external_en_level_;
+    external_en_change_count_ = 0U;
 }
 
 uint32_t ClosedLoopController::getEnableMode() const
@@ -644,16 +652,53 @@ void ClosedLoopController::requestDriverEnable(bool want)
     driver_enabled_ = want;
 }
 
-// 每拍调用（rampUpdate 开头）。只有外部模式才真正做事，而且只在电平变化时写 GPIO。
+// 每拍调用（rampUpdate 开头）。只有外部模式才真正做事，而且只在**去抖后**电平变化时写 GPIO。
 void ClosedLoopController::updateEnableFromExternalPin()
 {
     const uint8_t level = (gpio_input_data_bit_read(EXT_EN_PORT, EXT_EN_PIN) != RESET) ? 1U : 0U;
     external_en_level_ = level;
+
+    // 【消抖】连续 kEnDebounceSamples 拍读到同一个新电平才更新 stable_。
+    // external_en_level_（原始值）仍然每拍刷新，供 0x164 观察毛刺；stable_ 才是控制依据。
+    if (level != external_en_stable_)
+    {
+        if (level == external_en_candidate_)
+        {
+            if (++external_en_change_count_ >= kEnDebounceSamples)
+            {
+                external_en_stable_ = level;
+                external_en_change_count_ = 0U;
+            }
+            else
+            {
+                // 还没数够：毛刺可能马上就回去了，先不动 GPIO。
+                return;
+            }
+        }
+        else
+        {
+            external_en_candidate_ = level;
+            external_en_change_count_ = 1U;
+            return;
+        }
+    }
+    else
+    {
+        // 回到稳定电平：撤销未完成的候选。候选存在过又没数满就回去了 = 毛刺，
+        // 计数让上位机看得见（0x16C）：现场干扰排查全靠它判断 EN 线质量。
+        if (external_en_change_count_ > 0U)
+        {
+            en_glitch_count_++;
+        }
+        external_en_change_count_ = 0U;
+        external_en_candidate_ = external_en_stable_;
+    }
+
     if (driver_ == nullptr || enable_mode_ != ENABLE_MODE_EXTERNAL_PIN)
     {
         return;
     }
-    const bool want = (level == 0U) && !user_disabled_ &&
+    const bool want = (external_en_stable_ == 0U) && !user_disabled_ &&
                       !fault_monitor_.outputStopped() && !stall_detected_;
     if (want != driver_enabled_)
     {
@@ -665,6 +710,21 @@ void ClosedLoopController::updateEnableFromExternalPin()
 
 void ClosedLoopController::requestQuickStop()
 {
+    // 角度模式（位置伺服）没有"固定行程终点"可以慢慢减到 0，
+    // 对它而言"减速停止"就是立即停：直接走 stopMotion（脉冲断、状态清，EN 保持）。
+    if (closed_loop_angle_mode_enabled_)
+    {
+        stopMotion();
+        return;
+    }
+    // 规划运动：置标志，由 updateTrapezoid 在下个节拍边界原子消费（本拍是 USB 任务，
+    // 不能直接改梯形状态机）。非运动态的请求**直接拒绝**：锁存下来会让下一次
+    // startMotion 的第一拍就急停，表现成"启动后立刻抽搐一下就停"，极难排查。
+    if (!motion_running_)
+    {
+        printf("[QUICKSTOP] ignored: no motion is running\r\n");
+        return;
+    }
     quick_stop_requested_ = true;
 }
 
@@ -720,6 +780,15 @@ void ClosedLoopController::startMotion()
 #endif
 
     closed_loop_angle_mode_enabled_ = false;
+
+    // 【急停/换向残留必须在这里清】motion_quick_stop_ 被 stopMotion/故障打断时可能
+    // 停在 DECEL 段没走完：残留 true 会让下次运动的 DECEL 尾把 motion_pulse_count_
+    // 截成"已发步数"，表现为 25220/25600 那类欠步；残留的 steps_to_decel_=0xFFFFFFFF
+    // 会让 ACCEL 分支（没有哨兵检查）第一拍就转 DECEL；turnaround_skip 残留会让
+    // 下次运动前 100ms 的评分被莫名屏蔽。一次运动不该继承上一次的任何"意图"。
+    quick_stop_requested_ = false;
+    motion_quick_stop_ = false;
+    motion_turnaround_skip_ramps_ = 0U;
 
     // 【堵转锁存】判定堵转后必须显式清（0x15F=1）才能再启动，否则自动测试循环
     // 会无视故障继续发脉冲 —— 电机被按住时这就等于一直灌电流发热。
@@ -913,8 +982,12 @@ void ClosedLoopController::startMotion()
             if (decel_total_steps_ < 1U) decel_total_steps_ = 1U; // 至少1步减速
             motion_ramp_stage_ = RAMP_STAGE_ACCEL; // 开局加速
 
+            // 【默认关闭】校准每段短行程都走三角曲线分支，这两行在控制任务里
+            // 每段阻塞约 8ms（startMotion 由校准器在 rampUpdate 里调）。
+#ifdef DEBUG_MOTION_START_TRACE
             printf("v_peak_sq: %.6f\n", v_peak_sq);
             printf("v_peak: %.6f\n", v_peak);
+#endif
         }
 // [DEBUG-OFF] printf("total_req_steps: %lu\n", total_req_steps);
     // [DEBUG-OFF] printf("accel_total_steps_: %lu\n", accel_total_steps_);
@@ -1337,12 +1410,17 @@ void ClosedLoopController::updateSettleStage(uint64_t now_ns, float encoder_delt
     if (settled || timed_out)
     {
         // 已经等够了：脉冲发完了，轴也不再动了。现在才允许真停定时器、清零状态。
-        printf("[SETTLE] done in %.3f ms (%s), commanded=%.4f deg, encoder=%.4f deg, follow_error=%.4f deg\r\n",
-               static_cast<double>(settle_elapsed_ns) / 1.0e6,
-               settled ? "encoder quiet" : "timeout",
-               static_cast<double>(motion_commanded_travel_deg_),
-               static_cast<double>(motion_encoder_travel_raw_) * 360.0 / 65536.0,
-               static_cast<double>(motion_follow_error_deg_));
+        // 【只存快照，不 printf】这里是 20kHz 控制任务：settled 路径轴确实静止了，
+        // 但 **timeout 路径轴可能还在大幅回弹**，~10ms 的 printf 停摆会被计进沉降
+        // 观察窗、饿掉补偿拍。报告由 telemetry_reporter 的 kSlow 档在确认真停后打印。
+        settle_report_.elapsed_ms = static_cast<float>(settle_elapsed_ns) / 1.0e6f;
+        settle_report_.settled = settled;
+        settle_report_.cmd_deg = motion_commanded_travel_deg_;
+        settle_report_.enc_deg = static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F;
+        settle_report_.follow_deg = motion_follow_error_deg_;
+        settle_report_.emitted = motion_steps_emitted_;
+        settle_report_.pulse_count = motion_pulse_count_;
+        settle_report_.pending = true;
         motion_running_ = false;
         motion_ramp_stage_ = RAMP_STAGE_DONE;
         current_step_speed_ = 0.0f;
@@ -1682,6 +1760,10 @@ void ClosedLoopController::stopMotion()
     motion_running_ = false;
     motion_first_run_ = false;
     motion_paused_ = false;
+    // 急停意图同样不许穿越一次停止（残留会把下一次运动的 DECEL 尾截掉，
+    // 见 startMotion 里同样的清理）。
+    quick_stop_requested_ = false;
+    motion_quick_stop_ = false;
     motion_speed_rpm_ = 0.0f;
     encoder_speed_rpm_ = 0.0f;
     target_velocity_rps_ = 0.0f;

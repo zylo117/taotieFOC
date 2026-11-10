@@ -53,6 +53,19 @@ ParameterRouter::ParameterRouter(ClosedLoopController& owner) : owner_(owner)
 
 bool ParameterRouter::write(uint16_t reg, uint32_t value)
 {
+    // 【Flash 写入的拒绝条件】flash_write 走"读整扇区→擦→整扇区回写"，
+    // AT32F403A 单 bank：擦除+编程期间所有取指停摆 **几十毫秒**，
+    // 20kHz 控制环整段消失，而 TMR2 还在按最后一窗的周期发脉冲 —— 必丢步。
+    // 所以：只要有任何"电机在动/即将动"的形态存在，就不允许写 Flash。
+    // 外部跟随和校准以前漏在门外（只查了规划运动与角度模式）。
+    auto motion_danger = [&]() -> const char* {
+        if (owner_.motion_running_) return "planned motion";
+        if (owner_.closed_loop_angle_mode_enabled_) return "angle mode";
+        if (owner_.external_pulse_follower_.isEnabled()) return "external pulse follow";
+        if (owner_.calibration_stage_ != ClosedLoopController::CALIBRATION_IDLE) return "calibration";
+        return nullptr;
+    };
+
     if (reg == TMC2209_EXT_PARAM_VLOOP_DEBUG_PRINT)
     {
         // 一次性触发：由遥测慢档打印一条 [VLOOP] 快照后自动清零。

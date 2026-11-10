@@ -352,8 +352,18 @@ uint16_t usb_vcp_get_rxdata(void* udev, uint8_t* recv_data)
         return 0;
     }
     pcdc->g_rx_completed = 0;
+    /* 【TOCTOU 修复】原来循环边界用 pcdc->g_rxlen（第二次读），tmp_len 反而没用上。
+       当前实现里 OUT 端点是在这段拷贝「之后」才重新 arm（见下方 usbd_ept_recv），
+       所以拷贝期间 ISR 不会改 g_rxlen，暂时不会撕裂。但这是隐式契约：一旦将来
+       提前 arm、或开 double-buffer、或 maxpacket>64，循环就可能读到半新半旧的
+       长度，轻则丢字节、重则越界写调用方的 recv_buf（只有 64 字节）。
+       这里一次读满一个快照，之后只用 tmp_len，把契约固化下来。 */
     tmp_len = pcdc->g_rxlen;
-    for (i_index = 0; i_index < pcdc->g_rxlen; i_index++)
+    if (tmp_len > USBD_CDC_OUT_MAXPACKET_SIZE)
+    {
+        tmp_len = USBD_CDC_OUT_MAXPACKET_SIZE;
+    }
+    for (i_index = 0; i_index < tmp_len; i_index++)
     {
         recv_data[i_index] = pcdc->g_rx_buff[i_index];
     }
