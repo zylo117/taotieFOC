@@ -246,6 +246,14 @@ enum Tmc2209CustomExtensionRegister
     TMC2209_EXT_PARAM_RESONANCE_HI_RPM = 0x170U,
     // R/W（不存 Flash，上电=0）：1 = 共振自动测试/扫频模式，临时允许在带内巡航。
     TMC2209_EXT_PARAM_RESONANCE_BYPASS = 0x171U,
+    // R/W（不存 Flash，上电=0）：编码器自适应降噪总开关。
+    // 0 = 手动（现状不变：0x148 定窗，kSlow 应用）。
+    // 1 = 静止自动加大窗：连续 200ms |编码器速度| < 5RPM 且无规划运动/校准/跟随积压
+    //     → 切到 0x173 的大窗（噪声 √N 再降）；任何一动，当拍就切回 0x148 的小窗。
+    //     群延迟由滤波器自带的前馈补偿（kth7823_encoder.cpp:314），换窗不吃相位。
+    TMC2209_EXT_PARAM_ADAPTIVE_FILTER = 0x172U,
+    // R/W（不存 Flash，上电=32）：自适应模式下"静止"时用的窗口；0x148 仍是运动窗口。
+    TMC2209_EXT_PARAM_ADAPTIVE_STATIONARY_WINDOW = 0x173U,
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -310,7 +318,7 @@ private:
 
     ClosedLoopDriverProtocolConfig config_;
     // 扩展参数表长度：覆盖 0x100 ~ 0x167，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x171U - 0x100U + 1U;
+    static constexpr uint16_t kCustomParameterCount = 0x173U - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

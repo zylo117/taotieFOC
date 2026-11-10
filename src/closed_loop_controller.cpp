@@ -729,6 +729,69 @@ void ClosedLoopController::updateEnableFromExternalPin()
     }
 }
 
+// ===========================================================================
+// 自适应降噪（0x172）：静止时自动加大编码器滤波窗口，一有动作当拍切回。
+//
+// 背景：TMR5 高频多样本平均实测无效已停用（main.cpp），而滑动平均窗在 20kHz 下
+// 加大是真正能按 √N 压噪声的 —— 代价只有群延迟（滤波器自带前馈补偿）和"响应变慢"。
+// "响应慢"只在静止时是免费的，所以策略只在静止时加大窗：
+//   静止判据（全部满足，连续 200ms）：
+//     · |编码器速度| < 5 RPM（空载静止实测 <1 RPM，留 5 倍余量）
+//     · 无规划运动 / 无角度模式 / 无校准状态机在跑
+//     · 外部跟随开启时：命令==已发（backlog 0）—— 有积压 = 马上要出脉冲，不算静止
+//   退出：任一条件破 → **当拍**切回小窗（0x148 的用户值），不等计数。
+// 换窗路径与手动 0x148 完全相同（requestFilterWindow → 采样中断重配），
+// 本函数不 printf（跑在 20kHz 控制任务）。生效窗口从 0x148 读回（active_）。
+// ===========================================================================
+void ClosedLoopController::updateAdaptiveFilterWindow()
+{
+    if (!adaptive_filter_enabled_ || encoder_ == nullptr)
+    {
+        adaptive_still_beats_ = 0U;
+        return;
+    }
+
+    // 运动/校准中的判定宁严勿松：只要有任何"即将动"的形态就不许加大窗。
+    bool still;
+    if (external_pulse_follower_.isEnabled())
+    {
+        // 跟随模式下 motion_running_ 按设计恒为 true（见 enableExternalPulseFollow），
+        // 静止判据是"编码器不动 且 无待转发积压"——有积压 = 下一拍就要出脉冲。
+        still = (fabsf(encoder_speed_rpm_) < kAdaptiveStillRpm) &&
+                (external_pulse_follower_.backlogSteps() == 0U) &&
+                (calibration_stage_ == CALIBRATION_IDLE);
+    }
+    else
+    {
+        still = (fabsf(encoder_speed_rpm_) < kAdaptiveStillRpm) &&
+                !motion_running_ && !closed_loop_angle_mode_enabled_ &&
+                (calibration_stage_ == CALIBRATION_IDLE);
+    }
+
+    uint16_t wanted;
+    if (still)
+    {
+        // 加大窗要"连续 200ms 静止"，防止走走停停的工况在窗间来回抖
+        if (adaptive_still_beats_ < kAdaptiveStillBeats)
+        {
+            ++adaptive_still_beats_;
+        }
+        wanted = (adaptive_still_beats_ >= kAdaptiveStillBeats) ? adaptive_stationary_window_
+                                                                : encoder_filter_window_;
+    }
+    else
+    {
+        adaptive_still_beats_ = 0U;
+        wanted = encoder_filter_window_;  // 运动窗口 = 用户 0x148 的值
+    }
+
+    if (wanted != encoder_filter_window_active_)
+    {
+        encoder_->requestFilterWindow(wanted);
+        encoder_filter_window_active_ = wanted;
+    }
+}
+
 void ClosedLoopController::requestQuickStop()
 {
     // 角度模式（位置伺服）没有"固定行程终点"可以慢慢减到 0，
@@ -1567,6 +1630,10 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
     const float encoder_delta_deg = refreshEncoderFeedback(now_ns);
     // ②b 堵转/不转保护：有脉冲在发、编码器却不动 —— 先停机失能，别让驱动一直灌电流
     updateStallGuard(now_ns);
+
+    // ②c 自适应降噪（0x172，默认关）：放在模式分派之前 —— 跟随/规划/角度/空闲
+    //     所有路径都只有这一个公共上游，且 encoder_speed_rpm_ 刚刷完是新鲜的。
+    updateAdaptiveFilterWindow();
 
     // ③ 校准状态机（每拍驱动；HOMING/MOVING 阶段会反过来修饰速度规划）
     updateEncoderCalibration(encoder_filtered_raw_);

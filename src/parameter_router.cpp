@@ -575,6 +575,36 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
                                         : "band enforced for planned motion");
         return true;
     }
+    if (reg == TMC2209_EXT_PARAM_ADAPTIVE_FILTER)
+    {
+        owner_.adaptive_filter_enabled_ = value != 0U;
+        if (!owner_.adaptive_filter_enabled_)
+        {
+            // 退出自适应：立刻切回手动 0x148 窗口（不等 kSlow 的 1 秒），
+            // 让"关掉 = 回到现状"在毫秒内成立，现场好排查。
+            owner_.adaptive_still_beats_ = 0U;
+            if (owner_.encoder_ != nullptr &&
+                owner_.encoder_filter_window_active_ != owner_.encoder_filter_window_)
+            {
+                owner_.encoder_->requestFilterWindow(owner_.encoder_filter_window_);
+                owner_.encoder_filter_window_active_ = owner_.encoder_filter_window_;
+            }
+        }
+        printf("[ADAPT_FILTER] %s (stationary=%u / moving=%u window)\r\n",
+               owner_.adaptive_filter_enabled_ ? "enabled" : "disabled (manual 0x148)",
+               static_cast<unsigned>(owner_.adaptive_stationary_window_),
+               static_cast<unsigned>(owner_.encoder_filter_window_));
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ADAPTIVE_STATIONARY_WINDOW)
+    {
+        owner_.adaptive_stationary_window_ = static_cast<uint16_t>(
+            value > EncoderFilterConfig::kMaxWindow ? EncoderFilterConfig::kMaxWindow : value);
+        printf("[ADAPT_FILTER] stationary window = %u (moving = 0x148 = %u)\r\n",
+               static_cast<unsigned>(owner_.adaptive_stationary_window_),
+               static_cast<unsigned>(owner_.encoder_filter_window_));
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_STALL_CLEAR)
     {
         if (value != 0U)
@@ -904,6 +934,16 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_RESONANCE_BYPASS)
     {
         *value = owner_.resonance_bypass_ ? 1U : 0U;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ADAPTIVE_FILTER)
+    {
+        *value = owner_.adaptive_filter_enabled_ ? 1U : 0U;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ADAPTIVE_STATIONARY_WINDOW)
+    {
+        *value = owner_.adaptive_stationary_window_;
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_EN_GLITCH_COUNT)
