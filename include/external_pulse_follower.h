@@ -26,8 +26,11 @@ public:
     void setMaxStepRate(uint32_t steps_per_second) { max_step_s_ = steps_per_second; }
     uint32_t maxStepRate() const { return max_step_s_; }
 
-    int32_t cmdSteps() const { return cmd_steps_; }
-    int32_t emittedSteps() const { return emitted_steps_; }
+    // 遥测快照：低 32 位（寄存器本来就是 32 位口径，UI 按滚动计数显示）。
+    // 内部累计是 int64（见 cmd_steps_ 注释），但单字 32 位读在 ARM 上原子，
+    // USB 任务从这里取值不会撕裂。
+    int32_t cmdSteps() const { return static_cast<int32_t>(cmd_steps_); }
+    int32_t emittedSteps() const { return static_cast<int32_t>(emitted_steps_); }
     uint32_t backlogSteps() const { return backlog_steps_; }
     uint32_t peakBacklogSteps() const { return peak_backlog_steps_; }
     uint32_t droppedSteps() const { return dropped_steps_; }
@@ -56,11 +59,16 @@ private:
 
     volatile bool enabled_ = false;
     volatile bool prime_pending_ = false;
-    volatile int32_t cmd_steps_ = 0;
+    // 【为什么是 int64】这两个是"绝对命令/已发位置"，外部跟随是上电默认模式，
+    // PLC 场景连续跑几小时很正常：int32 在 2.5 Mstep/s 下 14 分钟就溢出，而
+    // `cmd_steps_ += net_steps` 的有符号溢出是未定义行为（backlog 的模运算差值
+    // 虽然仍然正确，但 UB 优化下不可依赖）。int64 = 272 年 @ 满速，且只在控制
+    // 任务里做 64 位运算（单任务，无原子性要求）；对外只暴露原子 int32 快照。
+    volatile int64_t cmd_steps_ = 0;
     // 已 1:1 转发出去（有符号，不含 PID 修正）。
     // PID 修正量不能算进来，否则位置环多发的步数会被积压逻辑当成「发多了」反向退回，
     // 位置环和积压环互相推着振荡。
-    volatile int32_t emitted_steps_ = 0;
+    volatile int64_t emitted_steps_ = 0;
     // 限速值不是整步/窗时（256k = 12.8 步/窗），截断会长期落后 6%，靠这个余量补
     volatile float base_residue_ = 0.0f;
     volatile uint32_t max_step_s_ = 0U;

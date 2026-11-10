@@ -73,8 +73,8 @@ void ExternalPulseFollower::update(uint64_t delta_ramp_ns)
                                      static_cast<float>(stepper_common::target_tick_time));
 
     // ---- 1. 本窗要 1:1 转发的步数：积压、限速、序列长度三者取小 ----
-    const int32_t backlog = cmd_steps_ - emitted_steps_;
-    const int32_t backlog_abs = backlog >= 0 ? backlog : -backlog;
+    const int64_t backlog = cmd_steps_ - emitted_steps_;
+    const int64_t backlog_abs = backlog >= 0 ? backlog : -backlog;
 
     // 限速：0 表示用 angle_max_rpm_ 换算出的驱动能力上限（默认 1200RPM x 12800 = 256k step/s）。
     // 宁可比外部慢一点，也不要一次性灌满让电机失步 —— 失步是真正找不回来的。
@@ -201,9 +201,12 @@ void ExternalPulseFollower::update(uint64_t delta_ramp_ns)
     c.motion_steps_emitted_signed += emitted;
     c.motion_dma_pending_signed += emitted;
 
-    const int32_t new_backlog = cmd_steps_ - emitted_steps_;
+    const int64_t new_backlog = cmd_steps_ - emitted_steps_;
+    const int64_t new_backlog_abs_64 = new_backlog >= 0 ? new_backlog : -new_backlog;
+    // 记账快照是有界量（backlog 追不上也就几千步），窄回 uint32 给遥测；
+    // 万一真溢出到 32 位以上就饱和，而不是翻转成小数字骗人。
     const uint32_t new_backlog_abs =
-        static_cast<uint32_t>(new_backlog >= 0 ? new_backlog : -new_backlog);
+        new_backlog_abs_64 > 0xFFFFFFFFLL ? 0xFFFFFFFFU : static_cast<uint32_t>(new_backlog_abs_64);
     backlog_steps_ = new_backlog_abs;
     if (new_backlog_abs > peak_backlog_steps_)
     {
