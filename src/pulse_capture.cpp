@@ -287,6 +287,16 @@ int32_t pulse_capture_read_delta_ex(int32_t* abs_sum)
     if (dma_bus_error)
     {
         dma_flag_clear(DMA1_DTERR4_FLAG);
+        // 【DTERR 必须重启通道，不能只清标志】传输错误后通道被硬件置停：
+        // 不重启 = DIR 采集永久静默，而且 rd/wr 从此不再变化 —— 上层看到的是
+        // “上位机发脉冲但电机不动、pending 恒为 0”的完美假象，比丢脉冲更糟。
+        // 循环模式 NDTR 保留现场，重开 CHEN 后从原地继续，
+        // 只丢“错误瞬间 → 本拍重启”之间的脉冲，且如实报 overflow 让上层可见。
+        dma_channel_enable(DMA1_CHANNEL4, FALSE);
+        dma_channel_enable(DMA1_CHANNEL4, TRUE);
+        pulse_buf_overflow_flag = true;
+        ++g_wrap_event_count;
+        g_wrap_last_cyc = DWT->CYCCNT;
     }
 
     const uint16_t wr_index = ringWriteIndex(DMA1_CHANNEL4);
