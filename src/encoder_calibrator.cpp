@@ -117,7 +117,7 @@ void EncoderCalibrator::start()
         printf("[CALIBRATION] external pulse follow disabled for calibration\r\n");
     }
 
-    c.step_pulse_width_ns_ = 200U;
+    c.step_pulse_width_ns_ = 1000U;  // TMC2209 STEP 输入规格 ≥1µs（原 200ns 规格外）
     c.k_step_pulse_ticks = std::ceil(static_cast<float>(c.step_pulse_width_ns_)
                                      / static_cast<float>(stepper_common::target_tick_time));
     // 【保证角度模式有限速可用】本函数最终靠 setTargetAngleDeg(0) 驱动电机回零，
@@ -518,7 +518,7 @@ bool EncoderCalibrator::startMove(uint16_t index)
     c.motion_mode_ = backward_pass_
         ? ClosedLoopController::MOTION_MODE_POSITION_REVERSE
         : ClosedLoopController::MOTION_MODE_POSITION_FORWARD;
-    c.step_pulse_width_ns_ = 200ULL;
+    c.step_pulse_width_ns_ = 1000ULL;  // TMC2209 STEP 输入规格 ≥1µs
     c.calibration_stage_ = ClosedLoopController::CALIBRATION_MOVING;
     c.motion_direction_ = backward_pass_ ? -1 : 1;
     c.startMotion();

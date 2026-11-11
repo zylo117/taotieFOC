@@ -577,7 +577,7 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
     // 注意：closed_loop_angle_mode_enabled_ / motion_running_ 是"发布写"，
     // 统一挪到函数末尾（见结尾【发布写】注释），中间态必须让控制任务看成 idle。
     // angle_position_tolerance_deg_ = 0.1f;
-    step_pulse_width_ns_ = 200U;
+    step_pulse_width_ns_ = 1000U;  // TMC2209 STEP 输入规格 ≥1µs（原 200ns 规格外）
     k_step_pulse_ticks = std::ceil(static_cast<float>(step_pulse_width_ns_) / static_cast<float>(stepper_common::target_tick_time));
     closed_loop_angle_error_deg_ = 0.0f;
     position_pid_.resetIntegral();

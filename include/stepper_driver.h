@@ -81,7 +81,10 @@ namespace stepper_common
     // 原始参数
     constexpr uint32_t F_APB = HEXT_VALUE * 10; // cpu主频的一半，125Mhz, 但是APB1预分频系数=1，所以实际频率为250Mhz
     constexpr uint32_t target_tick_time = 4; // ns
-    constexpr uint32_t target_pulse_width = 200; // ns, 需要保证足够宽的高电平，避免丢步
+    // 脉宽 200→1000ns（2026-11-12）：TMC2209 STEP 输入规格要求高/低电平各 ≥1µs，
+    // 200ns 属于规格外未定义区（输入级采样靠内部时钟相位碰运气，高速失步率上升
+    // 是最可疑的物理入口之一）。1µs 在 200ns 能跑的任何地方都只会更稳。
+    constexpr uint32_t target_pulse_width = 1000; // ns, 需要保证足够宽的高电平，避免丢步
     constexpr uint32_t dir_to_step_setup_time = 20; // ns, DIR to STEP 最小提前时间
     constexpr uint32_t dir_to_step_hold_time = 20; // ns, DIR to STEP 最小保持时间
 
