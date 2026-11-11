@@ -228,7 +228,8 @@
         state.resonanceScanActive = true;
         let stalls = 0;
         const results = [];
-        let bypassOn = false;
+        // 共振带自 2026-11-12 起为纯信息标记，固件不再钳位任何巡航，
+        // 扫描无需 0x171 旁路。
         $('resonanceScanAbortBtn').disabled = false;
         $('resonanceScanApplyBtn').disabled = true;
         $('resonanceScanStartBtn').disabled = true;
@@ -238,8 +239,6 @@
             if (cb) cb.checked = false;
             await writeRegister(REG.STALL_CLEAR, 1);
             await writeRegister(REG.ENABLE, 1);
-            await writeRegisterAndWaitAck(REG.BYPASS, 1);
-            bypassOn = true;
             rsLog(`扫描 ${cfg.lo}→${cfg.hi} RPM，步长 ${cfg.step}，每点 ${cfg.windowS}s，`
                 + `基线 ${BASE_RPM} RPM，加速度 ${cfg.accel} RPM/s（指标=跟随误差残差，v2）`);
 
@@ -314,14 +313,6 @@
             return null;
         } finally {
             try { await writeRegister(REG.MOTION, 0); } catch (e) { /* 尽力 */ }
-            if (bypassOn) {
-                try {
-                    await writeRegisterAndWaitAck(REG.BYPASS, 0);
-                    rsLog('0x171 钳位旁路已恢复');
-                } catch (e) {
-                    rsLog('!! 0x171 恢复失败 —— 请手动写 0x171=0，否则固件共振保护不生效！');
-                }
-            }
             try { await writeRegister(REG.DISABLE, 1); } catch (e) { /* 尽力 */ }
             RS.active = false;
             state.resonanceScanActive = false;
@@ -363,7 +354,7 @@
         };
         cfg.lo = Math.max(20, cfg.lo);
         cfg.hi = Math.min(6000, Math.max(cfg.lo + cfg.step, cfg.hi));
-        if (!window.confirm('共振检测会让电机在全速度域自行运转，带内会真实抖动（钳位临时旁路），'
+        if (!window.confirm('共振检测会让电机在全速度域自行运转，带内会真实抖动，'
             + '并可能触发堵转/失步（失步段会按热点处理）。\n\n请确认：电机空载、固定在位、周围无人无物。继续？')) {
             rsLog('用户取消，未启动');
             return;

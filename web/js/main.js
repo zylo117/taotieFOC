@@ -95,7 +95,7 @@
             , [CUSTOM_REGS.STALL_CLEAR, ['0x015F', 'STALL_CLEAR', '写 1 清除堵转锁存']]
             , [CUSTOM_REGS.RESONANCE_LO_RPM, ['0x016F', 'RESONANCE_LO_RPM', '共振带下限 RPM，存 Flash']]
             , [CUSTOM_REGS.RESONANCE_HI_RPM, ['0x0170', 'RESONANCE_HI_RPM', '共振带上限 RPM，存 Flash（0=关闭）']]
-            , [CUSTOM_REGS.RESONANCE_BYPASS, ['0x0171', 'RESONANCE_BYPASS', '1=临时旁路共振带钳位（自动扫频用，不存 Flash）']]
+            , [CUSTOM_REGS.RESONANCE_BYPASS, ['0x0171', 'RESONANCE_BYPASS', '历史遗留 no-op：共振带 2026-11-12 起不再钳位运动，写值只记录']]
             , [CUSTOM_REGS.STALL_QUIET_MS, ['0x0174', 'STALL_QUIET_MS', '堵转判定静止时长 ms，默认 200，存 Flash']]
             , [CUSTOM_REGS.STALL_MOVE_LSB, ['0x0175', 'STALL_MOVE_LSB', '堵转判定净位移阈值 LSB，默认 100，存 Flash']]
             , [CUSTOM_REGS.ENCODER_INVERT, ['0x0176', 'ENCODER_INVERT', '磁钢极性：1=校准鉴别出装反，原始角度已反转，存 Flash（改动后须重新校准）']]

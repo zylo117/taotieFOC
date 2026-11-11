@@ -575,10 +575,9 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
     if (reg == TMC2209_EXT_PARAM_RESONANCE_BYPASS)
     {
         owner_.resonance_bypass_ = value != 0U;
-        printf("[RESONANCE] bypass = %u (%s)\r\n",
-               owner_.resonance_bypass_ ? 1U : 0U,
-               owner_.resonance_bypass_ ? "in-band cruising allowed (auto-test)"
-                                        : "band enforced for planned motion");
+        printf("[RESONANCE] 0x171 = %u recorded (no-op: since 2026-11-12 the band no longer "
+               "clamps any motion, it is informational only)\r\n",
+               owner_.resonance_bypass_ ? 1U : 0U);
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_STALL_QUIET_MS)

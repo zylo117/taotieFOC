@@ -1007,34 +1007,21 @@ void ClosedLoopController::startMotion()
         motion_max_rpm_ = motion_start_rpm_;
     }
 
-    // 【共振带】巡航目标速度落进 [lo,hi] 就钳到 lo：带只能在加速/减速途中"快切"
-    // 穿过，不允许驻留共振。共振自动测试写 0x171=1 旁路；校准段间也静默钳位
-    // （校准的 startMotion 由控制任务调用，printf 会停摆 8ms —— 违反"转动时不打印"）。
-    if (!resonance_bypass_ && resonance_hi_rpm_ > resonance_lo_rpm_)
+    // 【共振带＝信息标记，不钳位】（2026-11-12 改版，用户设计裁定）
+    // 旧版把巡航目标落进带内悄悄钳到 lo——换了好电机后用户设 550 被钳 300，
+    // 看起来像转速 bug。带是"某些工况下检测到的热区记录"，不是运动否决权：
+    // 任何正常运动（内部规划/外部跟随/角度模式）一律照用户设定跑，进带只打印
+    // 警告（转动中不打印：这里在 startMotion 起点、脉冲未发，允许）。
+    // 0x16F/0x170 保留（扫描写入、UI 显示）；0x171 旁路位成为历史（无钳可旁）。
+    if (resonance_hi_rpm_ > resonance_lo_rpm_ &&
+        motion_max_rpm_ > static_cast<float>(resonance_lo_rpm_) &&
+        motion_max_rpm_ < static_cast<float>(resonance_hi_rpm_) &&
+        calibration_stage_ == CALIBRATION_IDLE)
     {
-        if (motion_max_rpm_ > static_cast<float>(resonance_lo_rpm_) &&
-            motion_max_rpm_ < static_cast<float>(resonance_hi_rpm_))
-        {
-            const uint16_t was_rpm = static_cast<uint16_t>(motion_max_rpm_);
-            motion_max_rpm_ = static_cast<float>(resonance_lo_rpm_);
-            if (calibration_stage_ == CALIBRATION_IDLE)
-            {
-                printf("[RESONANCE] cruise %u rpm inside band [%u,%u] -> clamped to %u "
-                       "(0x171=1 to bypass)\r\n",
-                       was_rpm, static_cast<unsigned>(resonance_lo_rpm_),
-                       static_cast<unsigned>(resonance_hi_rpm_),
-                       static_cast<unsigned>(resonance_lo_rpm_));
-            }
-        }
-        if (motion_start_rpm_ > static_cast<float>(resonance_lo_rpm_) &&
-            motion_start_rpm_ < static_cast<float>(resonance_hi_rpm_))
-        {
-            motion_start_rpm_ = static_cast<float>(resonance_lo_rpm_);
-        }
-        if (motion_max_rpm_ < motion_start_rpm_)
-        {
-            motion_max_rpm_ = motion_start_rpm_;
-        }
+        printf("[RESONANCE] cruise %u rpm inside marked band [%u,%u] - running anyway (band is informational)\r\n",
+               static_cast<unsigned>(motion_max_rpm_),
+               static_cast<unsigned>(resonance_lo_rpm_),
+               static_cast<unsigned>(resonance_hi_rpm_));
     }
 
     closed_loop_angle_mode_enabled_ = false;

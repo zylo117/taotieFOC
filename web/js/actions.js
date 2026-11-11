@@ -698,7 +698,7 @@
                 state.autoTuneCancelled = true;
                 appendTuneLog('收到停止命令，正在安全终止整定');
             }
-            // 共振扫描进行中：点缓停 = 请中止扫描（它会自己缓停收尾并恢复钳位），
+            // 共振扫描进行中：点缓停 = 请中止扫描（它会自己缓停收尾），
             // 不要越过扫描状态机裸写 0x163 把当前测点弄成半截数据。
             if (state.resonanceScanActive && window.rsAbortScan) {
                 window.rsAbortScan();
@@ -724,7 +724,7 @@
             }
             // 共振扫描同理要叫停：不清标志就写 0x16E，扫描循环还会往一个被
             // 强制失能的驱动器上继续发启动命令（失能锁住后全部 [SAFETY] 拒绝，
-            // 日志被刷爆且状态错乱）。中止走 finally：停运动 + 恢复 0x171 钳位。
+            // 日志被刷爆且状态错乱）。中止走 finally：停运动收尾。
             if (window.rsAbortScan) window.rsAbortScan();
             if (!state.connected) {
                 log('[WARN] 未连接串口，急停按钮无法下发（必要时直接断电）');

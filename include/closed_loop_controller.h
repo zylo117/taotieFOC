@@ -598,7 +598,7 @@ private:
     // 默认 300~600 RPM（用户实测的剧烈抖动区）。hi=0 或 lo>=hi 关闭该逻辑。
     volatile uint16_t resonance_lo_rpm_ = 300U;
     volatile uint16_t resonance_hi_rpm_ = 600U;
-    volatile bool resonance_bypass_ = false;   // 0x171：共振自动测试临时旁路
+    volatile bool resonance_bypass_ = false;   // 0x171：历史遗留 no-op（共振带 2026-11-12 起不再钳位任何运动）
     volatile bool driver_enabled_ = false;
     volatile uint8_t external_en_level_ = 1U;   // 1=高(失能) 0=低(使能)
     // 【消抖状态】PC13 来自 PLC/接触器，几百 ns~几 µs 的毛刺很常见。逐拍单样本
