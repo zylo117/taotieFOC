@@ -217,7 +217,9 @@
             maxSelect.innerHTML = maxUnique.map((v) => `<option value="${v}">${v}</option>`).join('');
             maxSelect.value = '1000';
 
-            const accelValues = [];
+            // 加速度档位：0~300 段加密（低速定位/大惯量/防失步常用低加速度，原来最低就
+            // 300 太粗），300 以上保留 300 步长到 2400。固件 0x11C 接受 1~12000。
+            const accelValues = [25, 50, 75, 100, 150, 200, 250];
             for (let v = 300; v <= 2400; v += 300) {
                 accelValues.push(v);
             }
