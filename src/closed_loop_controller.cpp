@@ -327,6 +327,13 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
             {
                 stall_move_lsb_ = params.stall_move_lsb;
             }
+            // 【v7 磁钢极性恢复】校准探针鉴别出反装后随校准表一起固化；
+            // 读数坐标系与非线性表必须同域，所以这里要在校准表生效前就位。
+            if (encoder_ != nullptr && params.encoder_invert != 0U)
+            {
+                encoder_->setInvertRaw(true);
+                printf("[ENCODER] magnet polarity INVERTED restored from flash\r\n");
+            }
             if (params.step_pulse_ns >= kMinStepPulseNs && params.step_pulse_ns <= kMaxStepPulseNs)
             {
                 step_pulse_width_ns_ = params.step_pulse_ns;

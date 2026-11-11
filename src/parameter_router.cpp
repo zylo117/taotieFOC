@@ -207,6 +207,9 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         // v6：堵转阈值。这台机器"多慢算堵转"是物理属性（惯量/负载/电流），该持久。
         params.stall_quiet_ms = static_cast<uint16_t>(owner_.stall_quiet_ms_);
         params.stall_move_lsb = static_cast<uint16_t>(owner_.stall_move_lsb_);
+        // v7：磁钢极性。校准探针自动管理并在校准完成时自动固化；「写入参数」时
+        // 也带上它，保证手动排障改过 0x176 后用户能显式固化。
+        params.encoder_invert = (owner_.encoder_ != nullptr && owner_.encoder_->isInvertRaw()) ? 1U : 0U;
         // 角度限速/加速度不存 Flash：它们属于“本次运行设定”，每次按现场需要在界面上调，
         // 存进 Flash 反而会让一个旧值在重启后静默生效。结构体字段保留（置 0）用于兼容。
         params.angle_max_rpm = 0U;
@@ -611,6 +614,24 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         printf("[STALL] move threshold = %lu LSB\r\n", static_cast<unsigned long>(v));
         return true;
     }
+    if (reg == TMC2209_EXT_PARAM_ENCODER_INVERT)
+    {
+        // 磁钢极性修正开关。正常由校准探针自动管理，这里允许手动改写做排障。
+        // 校准进行中禁止改：会把"探针正在测的坐标系"和"表正在学的坐标系"撕裂。
+        if (!owner_.calibrator_.isIdle())
+        {
+            printf("[ENCODER] invert write rejected: calibration active\r\n");
+            return true;
+        }
+        const bool invert = (value != 0U);
+        if (owner_.encoder_ != nullptr)
+        {
+            owner_.encoder_->setInvertRaw(invert);
+            printf("[ENCODER] raw angle invert = %u (recalibrate to keep table in sync)\r\n",
+                   invert ? 1U : 0U);
+        }
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_STALL_CLEAR)
     {
         if (value != 0U)
@@ -999,6 +1020,11 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_STALL_MOVE_LSB)
     {
         *value = owner_.stall_move_lsb_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ENCODER_INVERT)
+    {
+        *value = (owner_.encoder_ != nullptr && owner_.encoder_->isInvertRaw()) ? 1U : 0U;
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_MOTION_SCHEDULED_STEPS)

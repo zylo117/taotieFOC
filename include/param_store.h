@@ -80,6 +80,12 @@ struct PersistedMotorParams
     //       又必须明显小于最低速的真实位移（8RPM×200ms ≈ 1750LSB）。
     uint16_t stall_quiet_ms;
     uint16_t stall_move_lsb;
+
+    // 【v7】磁钢极性（0=正常，1=反装已反转读数）。
+    //   换电机/换磁铁时磁钢可能轴向翻转，读数方向镜像；校准入口的极性探针
+    //   自动鉴别并反转（见 encoder_calibrator.cpp updatePolarityProbe），
+    //   校准完成时随校准表一并固化 —— 标志必须和非线性表同域，丢了就全乱。
+    uint16_t encoder_invert;
 };
 
 // 从 Flash 读取参数到 out。返回 true 表示校验通过、内容有效。

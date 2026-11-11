@@ -118,6 +118,10 @@ const CUSTOM_REGS = {
     // 默认 100 —— 必须高于静止噪声 200ms 窗内净位移 ~100LSB，又远低于最低速位移 1750）。
     STALL_QUIET_MS: 0x174,
     STALL_MOVE_LSB: 0x175,
+    // 磁钢极性修正（存 Flash v7）：0=正常，1=校准时探针鉴别出磁钢轴向装反、
+    // 原始角度已整体反转。正常由校准自动管理（反装会自动改这里），手动写仅排障，
+    // 改完必须重新校准（校准表要和新坐标系同步）。
+    ENCODER_INVERT: 0x176,
     CPU_USAGE_CENTIPERCENT: 0x137,
     CONTROL_TASK_USAGE_CENTIPERCENT: 0x138,
     MAX_RPM: 0x11B,

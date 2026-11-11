@@ -98,6 +98,7 @@
             , [CUSTOM_REGS.RESONANCE_BYPASS, ['0x0171', 'RESONANCE_BYPASS', '1=临时旁路共振带钳位（自动扫频用，不存 Flash）']]
             , [CUSTOM_REGS.STALL_QUIET_MS, ['0x0174', 'STALL_QUIET_MS', '堵转判定静止时长 ms，默认 200，存 Flash']]
             , [CUSTOM_REGS.STALL_MOVE_LSB, ['0x0175', 'STALL_MOVE_LSB', '堵转判定净位移阈值 LSB，默认 100，存 Flash']]
+            , [CUSTOM_REGS.ENCODER_INVERT, ['0x0176', 'ENCODER_INVERT', '磁钢极性：1=校准鉴别出装反，原始角度已反转，存 Flash（改动后须重新校准）']]
             , [0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
             , [0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
             , [0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
@@ -545,7 +546,8 @@
                 // 否则就是实机反馈的"校准只能归零无法运动"（固件侧 0x136 也有同款兜底）。
                 if (!(await ensureInternalMotionSource('磁编码器校准'))) return;
                 await writeRegister(CUSTOM_REGS.CALIBRATE_ENCODER, 1);
-                log('[INFO] 已发送磁编码器校准触发命令');
+                log('[INFO] 已发送磁编码器校准触发命令（先自动鉴别磁钢极性：开环向前 1/4 圈，'
+                    + '装反会反转读数再归零；看串口 [CALIBRATION] polarity 行）');
             });
             document.getElementById('tuneBtn').addEventListener('click', startAutoTune);
             document.getElementById('startTuneBtn').addEventListener('click', startAutoTune);

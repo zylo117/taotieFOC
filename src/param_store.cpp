@@ -14,7 +14,43 @@ static const uint16_t kParamVersionV2 = 2U;
 static const uint16_t kParamVersionV3 = 3U;
 static const uint16_t kParamVersionV4 = 4U;
 static const uint16_t kParamVersionV5 = 5U;
-static const uint16_t kParamVersion = 6U;
+static const uint16_t kParamVersionV6 = 6U;
+static const uint16_t kParamVersion = 7U;
+
+// v6 布局（v7 追加 encoder_invert 之前的最后形态）。**只为迁移读旧记录用**，
+// 校验和必须按该版本自己的结构大小算（原因同 V5/V4）。
+struct PersistedMotorParamsV6
+{
+    uint32_t magic;
+    uint16_t version;
+    uint16_t checksum;
+    uint16_t microsteps;
+    uint16_t run_current_ma;
+    uint16_t hold_current_ma;
+    uint16_t step_pulse_ns;
+    uint16_t angle_max_rpm;
+    uint16_t angle_accel_rpm_s;
+    uint32_t position_kp;
+    uint32_t position_ki;
+    uint32_t position_kd;
+    uint32_t velocity_kp;
+    uint32_t velocity_ki;
+    uint32_t velocity_kd;
+    uint32_t angle_position_kp;
+    uint32_t angle_position_ki;
+    uint32_t angle_position_kd;
+    uint32_t angle_velocity_kp;
+    uint32_t angle_velocity_ki;
+    uint32_t angle_velocity_kd;
+    uint16_t en_mode;
+    uint16_t lag_accel_coef_mdeg_per_rpm_s;
+    uint16_t lag_deadband_mdeg;
+    uint16_t motion_source;
+    uint16_t resonance_lo_rpm;
+    uint16_t resonance_hi_rpm;
+    uint16_t stall_quiet_ms;
+    uint16_t stall_move_lsb;
+};
 
 // v5 布局（v6 追加字段之前的最后形态）。**只为迁移读旧记录用**，
 // 原因同 V4：校验和必须按该版本自己的结构大小算。
@@ -242,6 +278,11 @@ bool param_store_load(PersistedMotorParams* out)
         return false;
     }
 
+    // v7 新增字段先给默认值：所有比 v7 老的迁移分支 memcpy 的都是更短的结构，
+    // 不显式清零就会把调用方的残留字节当成极性。0=正装是安全默认
+    // （校准一跑，探针会自动改判）。
+    out->encoder_invert = 0U;
+
     if (flash_params->version == kParamVersion)
     {
         if (flash_params->checksum != computeChecksum(*flash_params))
@@ -270,7 +311,7 @@ bool param_store_load(PersistedMotorParams* out)
         fillLagModelDefaults(out);
         fillMotionDefaults(out);
         fillStallDefaults(out);
-        printf("[PARAM] migrated v%u -> v6: kept PID/en_mode, lag-model + motion + stall defaults\r\n",
+        printf("[PARAM] migrated v%u -> v7: kept PID/en_mode, lag-model + motion + stall defaults\r\n",
                static_cast<unsigned>(flash_params->version));
         return true;
     }
@@ -292,7 +333,7 @@ bool param_store_load(PersistedMotorParams* out)
         out->version = kParamVersion;
         fillMotionDefaults(out);
         fillStallDefaults(out);
-        printf("[PARAM] migrated v4 -> v6: kept all, motion_source=%u resonance=[%u,%u]\r\n",
+        printf("[PARAM] migrated v4 -> v7: kept all, motion_source=%u resonance=[%u,%u]\r\n",
                static_cast<unsigned>(out->motion_source),
                static_cast<unsigned>(out->resonance_lo_rpm),
                static_cast<unsigned>(out->resonance_hi_rpm));
@@ -315,9 +356,29 @@ bool param_store_load(PersistedMotorParams* out)
         std::memcpy(out, v5, sizeof(PersistedMotorParamsV5));
         out->version = kParamVersion;
         fillStallDefaults(out);
-        printf("[PARAM] migrated v5 -> v6: kept all, stall defaults %u ms / %u LSB\r\n",
+        printf("[PARAM] migrated v5 -> v7: kept all, stall defaults %u ms / %u LSB\r\n",
                static_cast<unsigned>(out->stall_quiet_ms),
                static_cast<unsigned>(out->stall_move_lsb));
+        return true;
+    }
+
+    // v6 -> v7：偏移完全一致（v7 只在末尾追加 1 个 uint16 极性标志），
+    // 按 V6 长度校验后整段搬；encoder_invert 保持 0（magic 检查后统一预置），
+    // 下次校准的极性探针会重新鉴别并把它写成实际值。
+    if (flash_params->version == kParamVersionV6)
+    {
+        const PersistedMotorParamsV6* v6 =
+            reinterpret_cast<const PersistedMotorParamsV6*>(kParamFlashBase);
+        const uint16_t v6_checksum = checksumOf(
+            reinterpret_cast<const uint8_t*>(v6), sizeof(PersistedMotorParamsV6),
+            offsetof(PersistedMotorParamsV6, checksum) + sizeof(v6->checksum));
+        if (flash_params->checksum != v6_checksum)
+        {
+            return false;
+        }
+        std::memcpy(out, v6, sizeof(PersistedMotorParamsV6));
+        out->version = kParamVersion;
+        printf("[PARAM] migrated v6 -> v7: kept all, encoder_invert=0 (recalibrate to re-detect)\r\n");
         return true;
     }
 
@@ -342,7 +403,7 @@ bool param_store_load(PersistedMotorParams* out)
         fillLagModelDefaults(out);
         fillMotionDefaults(out);
         fillStallDefaults(out);
-        printf("[PARAM] migrated v1 -> v6: PID reset to new scale, defaults for lag/motion/stall\r\n");
+        printf("[PARAM] migrated v1 -> v7: PID reset to new scale, defaults for lag/motion/stall\r\n");
         return true;
     }
 

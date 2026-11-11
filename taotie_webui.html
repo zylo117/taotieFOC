@@ -846,7 +846,7 @@
                  reader/writer 锁，重连会在旧 port 上叠第二个 reader。 -->
             <button id="disconnectBtn">断开</button>
             <button id="readAllBtn">读取全部</button>
-            <button id="calibrateEncoderBtn">磁编码器校准</button>
+            <button id="calibrateEncoderBtn" title="校准前会先自动鉴别磁钢极性：开环向前 1/4 圈看编码器方向，装反则整体反转读数再归零。电机需空载、固定在位。">磁编码器校准</button>
             <button id="lagAngleCalibrationBtn">滞后角校准</button>
             <button id="shockCalibrationBtn">急刹冲击标定</button>
             <button id="viewCalibrationTableBtn">查看校准表</button>
@@ -1634,20 +1634,20 @@
         </div>
     </dialog>
 
-    <script src="web/js/constants.js?v=20261111c"></script>
-    <script src="web/js/utils.js?v=20261111c"></script>
-    <script src="web/js/state.js?v=20261111c"></script>
-    <script src="web/js/protocol.js?v=20261111c"></script>
-    <script src="web/js/rx.js?v=20261111c"></script>
-    <script src="web/js/ui.js?v=20261111c"></script>
-    <script src="web/js/waveform.js?v=20261111c"></script>
-    <script src="web/js/lagangle.js?v=20261111c"></script>
-    <script src="web/js/pidtune.js?v=20261111c"></script>
-    <script src="web/js/enccal.js?v=20261111c"></script>
-    <script src="web/js/shock.js?v=20261111c"></script>
-    <script src="web/js/actions.js?v=20261111c"></script>
-    <script src="web/js/resonance_scan.js?v=20261111c"></script>
-    <script src="web/js/main.js?v=20261111c"></script>
+    <script src="web/js/constants.js?v=20261111d"></script>
+    <script src="web/js/utils.js?v=20261111d"></script>
+    <script src="web/js/state.js?v=20261111d"></script>
+    <script src="web/js/protocol.js?v=20261111d"></script>
+    <script src="web/js/rx.js?v=20261111d"></script>
+    <script src="web/js/ui.js?v=20261111d"></script>
+    <script src="web/js/waveform.js?v=20261111d"></script>
+    <script src="web/js/lagangle.js?v=20261111d"></script>
+    <script src="web/js/pidtune.js?v=20261111d"></script>
+    <script src="web/js/enccal.js?v=20261111d"></script>
+    <script src="web/js/shock.js?v=20261111d"></script>
+    <script src="web/js/actions.js?v=20261111d"></script>
+    <script src="web/js/resonance_scan.js?v=20261111d"></script>
+    <script src="web/js/main.js?v=20261111d"></script>
 
 </body>
 </html>

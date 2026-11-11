@@ -252,6 +252,10 @@ enum Tmc2209CustomExtensionRegister
     // 又远低于最低速真实位移 1750/200ms）。超限写会被钳位。
     TMC2209_EXT_PARAM_STALL_QUIET_MS = 0x174U,
     TMC2209_EXT_PARAM_STALL_MOVE_LSB = 0x175U,
+    // 磁钢极性修正：0=正常，1=校准探针鉴别出磁钢反装、原始角度已整体反转。
+    // 正常由校准自动管理；手动写它等于改读数坐标系（校准表域可能不匹配，
+    // 写完必须重新校准），保留给排障用。
+    TMC2209_EXT_PARAM_ENCODER_INVERT = 0x176U,
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -316,7 +320,7 @@ private:
 
     ClosedLoopDriverProtocolConfig config_;
     // 扩展参数表长度：覆盖 0x100 ~ 0x167，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x175U - 0x100U + 1U;
+    static constexpr uint16_t kCustomParameterCount = 0x176U - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

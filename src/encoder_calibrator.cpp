@@ -1,6 +1,7 @@
 #include "encoder_calibrator.h"
 
 #include "closed_loop_controller.h"
+#include "param_store.h"   // 极性标志 load-modify-save（persistPolarityFlag）
 
 // ===========================================================================
 // 磁编码器双程校准（从 ClosedLoopController 逐步拆出）
@@ -206,11 +207,166 @@ void EncoderCalibrator::start()
     }
     index_ = 0U;
     backward_pass_ = false;   // 从正向趟开始
+    // 【不再直接归零】磁钢轴向装反时角度模式闭环是正反馈，setTargetAngleDeg(0)
+    // 只会在 180° 对面来回震荡（用户实机现象）。先跑极性探针，确认方向后才归零。
+    // 探针前提是纯开环 + 静止 + 未反转坐标系：
+    //   stopMotion 杀掉一切残留运动（含旧角度模式目标），
+    //   setInvertRaw(false) 从"未反转"基准出发测原始符号 —— 这是判向的幂等基点，
+    //   否则上次存的反转标志会把这次的读数再翻一次，装回来反而判错。
+    c.stopMotion();
+    c.encoder_->setInvertRaw(false);
+    probe_phase_ = 0U;
+    probe_ticks_ = 0U;
+    probe_travel_deg_ = 0.0f;
+    probe_prev_angle_ = c.encoder_->readFilteredAngle();
+    c.calibration_stage_ = ClosedLoopController::CALIBRATION_POLARITY;
+    printf("[CALIBRATION] polarity probe: 1/4 turn forward, watching encoder direction\r\n");
+}
+
+// ===========================================================================
+// 磁钢极性鉴别（2026-11-11，换电机/换磁铁场景）。
+//
+// 问题：磁钢轴向翻转（正面↔反面）会让 KTH7823 的读数方向镜像
+//   reading = C - true_angle
+// 角度模式闭环归零立刻变成正反馈：转子被驱离零点，在 ±180° 处来回震荡，
+// HOMING 永远等不到稳定 —— 校准整体卡死。用户换装时无法预知极性。
+//
+// 判据（不依赖任何先验，编码器不参与闭环）：
+//   开环向前发 1/4 圈脉冲（PULSE_COUNT 位置模式，和校准分段同款直驱），
+//   累计解卷绕的编码器行程：
+//     ≥ +45° → 极性正常（顺便清掉历史反转标志：可能上次装反这次装正）
+//     ≤ -45° → 反装：setInvertRaw(true)，此后所有读数在同一反转坐标系
+//     |Δ| < 45° → 转子根本没跟上（未使能/卡死/接线断）→ 校准失败退出，
+//                 绝不带着未知方向进闭环归零。
+//   N/S 对调但方向没反（绕轴转半圈安装）读到 +90° 判正常，180° 常数由归零吸收。
+//
+// 探针成功后把标志 load-modify-save 进 param store —— 它和校准表必须同域，
+// 表是自动存 Flash 的，标志若丢，下次重启表按反域学而读数按正域走，全乱。
+// ===========================================================================
+void EncoderCalibrator::updatePolarityProbe()
+{
+    ClosedLoopController& c = owner_;
+
+    const float position = c.encoder_->readFilteredAngle();
+    const float delta = wrap_deg_180(position - probe_prev_angle_);
+    probe_prev_angle_ = position;
+
+    if (probe_phase_ == 0U)
+    {
+        // 静止确认用峰峰值，不用累计和：静止噪声零均值但随机游走，累计 400 拍
+        // 能漂出 ±2° 误报"在动"；峰峰只反映真实摆动幅度（静止 ≈0.25°）。
+        if (probe_ticks_ == 0U)
+        {
+            probe_quiet_min_ = position;
+            probe_quiet_max_ = position;
+        }
+        if (position < probe_quiet_min_) probe_quiet_min_ = position;
+        if (position > probe_quiet_max_) probe_quiet_max_ = position;
+        probe_ticks_++;
+        if (probe_ticks_ < kProbeQuietTicks)
+        {
+            return;
+        }
+        const float pp = probe_quiet_max_ - probe_quiet_min_;
+        if (pp > kProbeQuietDeg)
+        {
+            printf("[CALIBRATION] polarity probe aborted: rotor not still (pp=%.2f deg in 20ms)\r\n",
+                   static_cast<double>(pp));
+            finish(false);
+            return;
+        }
+        const uint32_t steps_per_round = c.getStepsPerRound();
+        const uint32_t probe_steps = steps_per_round / 4U;
+        if (probe_steps == 0U)
+        {
+            printf("[CALIBRATION] polarity probe aborted: unsupported microstep resolution\r\n");
+            finish(false);
+            return;
+        }
+        c.motion_start_rpm_ = 60.0f;
+        c.motion_max_rpm_ = 60.0f;
+        c.motion_accel_rpm_s_ = 600000.0f;
+        c.motion_pulse_count_ = probe_steps;
+        c.motion_mode_ = ClosedLoopController::MOTION_MODE_POSITION_FORWARD;
+        c.motion_direction_ = 1;
+        probe_travel_deg_ = 0.0f;
+        probe_prev_angle_ = position;
+        probe_ticks_ = 0U;
+        probe_phase_ = 1U;
+        c.startMotion();
+        if (!c.motion_running_)
+        {
+            printf("[CALIBRATION] polarity probe aborted: startMotion refused\r\n");
+            finish(false);
+        }
+        return;
+    }
+
+    // phase 1：等开环行程走完（planner 在 SETTLING 收尾后把 motion_running_ 置 false）。
+    // 阶段不是 CALIBRATION_MOVING，updateTrapezoid 的校准分支不会来抢 beginSampling。
+    probe_travel_deg_ += delta;
+    probe_ticks_++;
+    if (c.motion_running_ && probe_ticks_ < kProbeTimeoutTicks)
+    {
+        return;
+    }
+    c.stopMotion();
+    const float travel = probe_travel_deg_;
+    if (travel >= kProbeMinValidDeg)
+    {
+        c.encoder_->setInvertRaw(false);
+        printf("[CALIBRATION] polarity OK (probe travel %+.1f deg)\r\n", static_cast<double>(travel));
+    }
+    else if (travel <= -kProbeMinValidDeg)
+    {
+        c.encoder_->setInvertRaw(true);
+        printf("[CALIBRATION] magnet REVERSED (probe travel %+.1f deg) - raw angle inverted, homing continues\r\n",
+               static_cast<double>(travel));
+    }
+    else
+    {
+        printf("[CALIBRATION] polarity probe FAILED (travel %+.1f deg, expect +/-90) - "
+               "check motor enable / wiring / mechanical jam, calibration aborted\r\n",
+               static_cast<double>(travel));
+        finish(false);
+        return;
+    }
+    // 【不在此处持久化】标志必须与校准表同域共存：表要等整个校准成功后才写
+    // Flash（finish），半途而废的校准若把标志存了盘，重启后就是"标志反转、
+    // 表已清空"的乱域。持久化挂在 finish() 表保存成功的分支里。
+    beginHoming();
+}
+
+// 校准归零起点（原 start() 的尾巴；极性探针通过后才走到这里）。
+void EncoderCalibrator::beginHoming()
+{
+    ClosedLoopController& c = owner_;
     home_stable_count_ = 0U;
+    home_wait_ticks_ = 0U;
     home_previous_angle_ = c.encoder_->readFilteredAngle();
     c.calibration_stage_ = ClosedLoopController::CALIBRATION_HOMING;
     c.setTargetAngleDeg(0.0f);
     printf("[CALIBRATION] homing to zero\r\n");
+}
+
+// 极性标志 load-modify-save：只动 encoder_invert 一个字段（值相同不写，省擦写）。
+void EncoderCalibrator::persistPolarityFlag()
+{
+    ClosedLoopController& c = owner_;
+    PersistedMotorParams p = {};
+    if (!param_store_load(&p))
+    {
+        printf("[CALIBRATION] polarity persist skipped: param store invalid\r\n");
+        return;
+    }
+    const uint16_t want = c.encoder_->isInvertRaw() ? 1U : 0U;
+    if (p.encoder_invert == want)
+    {
+        return;
+    }
+    p.encoder_invert = want;
+    printf("[CALIBRATION] polarity flag %s: invert=%u\r\n",
+           param_store_save(&p) ? "saved" : "SAVE FAILED", want);
 }
 
 // 结束校准并恢复运动参数（对应原 finishEncoderCalibration）。
@@ -266,6 +422,12 @@ void EncoderCalibrator::finish(bool save_table)
     if (save_table)
     {
         saved = c.encoder_ != nullptr && c.encoder_->saveCalibration();
+        // 【极性标志与表同生共死】表是自动存 Flash 的，标志若不同步固化，
+        // 重启后读数坐标系就和表错位（表按反域学、读数按正域走）。
+        if (saved)
+        {
+            persistPolarityFlag();
+        }
     }
 
     // 恢复校准前备份的运动参数
@@ -404,6 +566,14 @@ void EncoderCalibrator::update(uint16_t raw)
     if (c.calibration_stage_ == ClosedLoopController::CALIBRATION_MOVING && seg_active_)
     {
         seg_ticks_++;
+    }
+
+    // 【极性探针最先】它决定后面整套读数活在哪个坐标系，必须抢在任何闭环
+    // 动作（HOMING）之前跑完；raw 参数它不用（自己读 readFilteredAngle）。
+    if (c.calibration_stage_ == ClosedLoopController::CALIBRATION_POLARITY)
+    {
+        updatePolarityProbe();
+        return;
     }
 
     if (c.calibration_stage_ == ClosedLoopController::CALIBRATION_HOMING)

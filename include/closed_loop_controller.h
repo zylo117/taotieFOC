@@ -693,7 +693,12 @@ private:
         CALIBRATION_HOMING,
         CALIBRATION_SAMPLING,
         CALIBRATION_MOVING,
-        CALIBRATION_SAVING
+        CALIBRATION_SAVING,
+        // 【极性鉴别探针】排在 HOMING 之前执行：反装磁钢让角度模式变正反馈，
+        // 直接归零会在 180° 对面永远震荡。探针用开环脉冲走 1/4 圈看编码器
+        // 行程的符号，反装则整体反转读数，然后才进 HOMING。
+        // 编号追加在末尾：遥测里已有的 0~4 阶段含义不变。
+        CALIBRATION_POLARITY
     };
     // 【校准状态只剩两类】其余 calibration_* 成员（index_ / forward_raw_[1024] /
     // backward_pass_ / sample_* / home_*）已全部搬进 EncoderCalibrator：

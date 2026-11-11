@@ -13,6 +13,8 @@ class ClosedLoopController;
 // 和 MotionPlanner 一样用 owner 引用访问控制器状态，不复制任何共享数据。
 //
 // 流程：
+//   POLARITY 极性鉴别探针：开环向前 1/4 圈，看编码器行程符号判断磁钢装反没有；
+//            反装则反转所有原始读数（详见 updatePolarityProbe 实现注释）
 //   HOMING   角度模式把转子拉到 0 度，等编码器读数稳定 100 拍
 //   MOVING   每段走 steps_per_round/CALIBRATION_TABLE_SIZE 步（256 点、12800 细分下整 50 微步）
 //   SAMPLING 停 50ms 等滞后角稳定，再采 202 个样本去极值平均
@@ -50,6 +52,23 @@ public:
 private:
     void finish(bool save_table);
     bool startMove(uint16_t index);
+    void beginHoming();
+    void updatePolarityProbe();
+    void persistPolarityFlag();
+
+    // ===== 磁钢极性鉴别探针（HOMING 之前，见 updatePolarityProbe 实现注释）=====
+    static constexpr uint32_t kProbeQuietTicks = 400U;     // 20ms：起测前转子必须已静止
+    static constexpr float kProbeQuietDeg = 1.5f;          // 静止判据=窗口峰峰（静止噪声 pp≈0.25°；
+                                                           // 不能累计带符号 Δ —— 随机游走 400 拍能漂 ±2° 误报）
+    static constexpr uint32_t kProbeTimeoutTicks = 40000U; // 2s：1/4 圈@60RPM 只要 0.25s
+    static constexpr float kProbeExpectDeg = 90.0f;        // 探针命令行程（1/4 圈）
+    static constexpr float kProbeMinValidDeg = 45.0f;      // 判向阈值 = 期望的一半
+    uint8_t probe_phase_ = 0U;            // 0=静止确认 1=开环行程中
+    volatile uint32_t probe_ticks_ = 0U;
+    volatile float probe_prev_angle_ = 0.0f;
+    volatile float probe_travel_deg_ = 0.0f;
+    volatile float probe_quiet_min_ = 0.0f;
+    volatile float probe_quiet_max_ = 0.0f;
 
     // ===== 采样节拍（集中在这里，避免“样本数”与“除数”两处不一致）=====
     // 一个点要连采 kSamplesNeeded 个才取平均（去最大最小后除 kForMean），

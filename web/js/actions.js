@@ -202,6 +202,13 @@
                         } catch (e) {
                             log('[INFO] 堵转阈值读不到（旧固件没有 0x174/0x175，按默认 200ms/100LSB 显示）');
                         }
+                        // 磁钢极性（0x176，Flash v7）：换电机/换磁铁装反时校准会自动置 1
+                        try {
+                            const inv = await readRegisterValue(CUSTOM_REGS.ENCODER_INVERT, 750, 0);
+                            if ((inv | 0) !== 0) {
+                                log('[INFO] 磁钢极性：反装（校准已自动反转原始角度读数，工作正常）');
+                            }
+                        } catch (e) { /* 旧固件没有 0x176，忽略 */ }
                     } catch (e) {
                         log('[INFO] 运动源/共振带回读失败（旧固件没有 0x16D~0x170 就是这个）：' + e.message);
                     }

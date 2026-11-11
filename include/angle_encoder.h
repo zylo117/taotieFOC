@@ -184,6 +184,16 @@ public:
     virtual bool magneticFieldLow() const { return false; }
     virtual void setZero(float zero_angle) = 0;
 
+    // ===== 磁钢极性（方向）修正 =====
+    // 换电机/换磁铁时磁钢可能被轴向翻转，KTH7823 读数变成镜像（reading = C - true），
+    // 闭环归零会从负反馈变正反馈 —— 转子在 180° 对面来回震荡永远归不了零（实机现象）。
+    // 校准入口的极性探针鉴别出反装后置位本标志：readRaw() 在查表之前整体取负，
+    // 滤波/校准表/行程累计/角度输出一律工作在同一个"反转坐标系"里；
+    // 常数 C（180° 或轴向相关的偏置）由校准归零吸收，无需知道。
+    // 标志与校准表同域：校准完成保存表时一并持久化（param_store v7 encoder_invert）。
+    void setInvertRaw(bool on) { invert_raw_ = on; }
+    bool isInvertRaw() const { return invert_raw_; }
+
     // 请求切换滤波窗口。只登记请求，真正的重配由实现方在采样中断里做，
     // 否则会和正在跑的滤波状态（环形缓冲/累加和）抢数据。
     virtual void requestFilterWindow(uint16_t window_size) { (void)window_size; }
@@ -205,6 +215,9 @@ protected:
     //==== RAM运行时校准存储 ====
     volatile CalData_t m_calData[CALIBRATION_TABLE_SIZE];
     volatile bool m_fastCalValid = false;
+    // 磁钢反装标志（见 public setInvertRaw 注释）。只在转子静止时改（校准探针），
+    // 采样中断读它，volatile 足够。
+    volatile bool invert_raw_ = false;
 	uint16_t calibration_checksum_ = 0U;
 
     //==== Flash常量指针，直接映射物理地址 ====

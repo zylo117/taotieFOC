@@ -171,6 +171,15 @@ def main():
     step_deg = 360.0 / (200 * usteps)
     print(f"微步 {usteps} → 1 步 = {step_deg:.5f}°")
     host.write(R_CLOSED_LOOP, 0)
+    # 【必须先接管运动通道】上电默认运动源=EXTERNAL（0x16D=1），内部运动命令全被
+    # 互斥拒绝 —— 首轮对照实测就是这么全员"失步"的（电机根本没动）。
+    src_saved = host.read(0x16D)
+    host.write(0x16D, 0)
+    time.sleep(0.15)
+    if (host.read(0x16D) or 1) != 0:
+        print("!! 0x16D 写不进（运动源接管失败），中止")
+        host.close()
+        return
     host.write(R_STALL_CLEAR, 1)
     host.write(R_ENABLE, 1)
     host.write(R_RESONANCE_BYPASS, 1)
@@ -210,6 +219,8 @@ def main():
             host.write(R_MOTION, 0)
             host.write(R_RESONANCE_BYPASS, 0)
             host.write(R_DISABLE, 1)
+            if src_saved is not None:
+                host.write(0x16D, src_saved)   # 归还运动源
         except Exception:
             pass
         host.close()
