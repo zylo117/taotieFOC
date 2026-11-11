@@ -17,6 +17,11 @@
 //
 // 这一层只负责“把 N 步铺进窗口并启动定时器”，不关心方向从哪来、发多少步是谁算的；
 // 步数记账（emitted / delivered / pending）仍然留在使用方，因为两边的记账语义不同。
+// TMC2209 STEP 输入合法最小周期 2µs（高/低各 ≥1µs）。4ns/tick → 500 tick。
+// 这是"窗口在合法节拍下最多能塞几步"的依据，也是 emit 内步距的下限：
+// 债务窗（控制任务被抢之后的补账窗）宁可欠发留到下窗，也绝不 351ns/2.8Mpps 爆发。
+constexpr uint32_t kMinDriverStepPeriodTicks = 500U;
+
 class StepOutputChannel
 {
 public:
@@ -27,6 +32,11 @@ public:
     // 或窗口预算连头尾 guard 都放不下。
     bool emit(uint32_t num_steps, bool direction, bool direction_changed,
               uint64_t window_ns, uint32_t step_pulse_ticks);
+
+    // 窗口在驱动合法节拍（≥2µs/步）下的最大可发步数。调用方用它先夹实发步数，
+    // 余下的债务留在累加器逐窗偿还——比"超合法速率爆发 + 下窗 halt 截断静默丢步"
+    // 体面得多（450RPM 失步风暴的根源就在这两个环节的叠加）。
+    static uint32_t windowCapacity(uint64_t window_ns);
 
     // 立刻停 TMR2 + DMA 并把计数器清零（stopMotion 用）。
     void stop();

@@ -125,6 +125,11 @@ const CUSTOM_REGS = {
     // 原始角度已整体反转。正常由校准自动管理（反装会自动改这里），手动写仅排障，
     // 改完必须重新校准（校准表要和新坐标系同步）。
     ENCODER_INVERT: 0x176,
+    // 脉冲质量观测（只读）：0x177 上次运动启动以来单窗索要的最大步数
+    // （450RPM/64细分正常≈5~6，几十=控制任务停过，固件已自动截断防爆发）
+    STEP_MAX_WINDOW_STEPS: 0x177,
+    // 0x178 控制任务停顿事件累计（窗间隔>150µs 次数，持续增长=有CPU抢占源）
+    STEP_TASK_STALL_EVENTS: 0x178,
     CPU_USAGE_CENTIPERCENT: 0x137,
     CONTROL_TASK_USAGE_CENTIPERCENT: 0x138,
     MAX_RPM: 0x11B,

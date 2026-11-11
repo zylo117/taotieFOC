@@ -53,6 +53,22 @@ void StepOutputChannel::startSequence(uint32_t* seq, uint32_t seq_count, bool di
                                              direction);
 }
 
+uint32_t StepOutputChannel::windowCapacity(uint64_t window_ns)
+{
+    // 与 emit 的 guard 预算公式保持一致（少算安全，多算会超窗被下窗截断）。
+    const uint64_t guard_ns =
+        2ULL * stepper_common::guard_tick * stepper_common::target_tick_time + 5ULL;
+    if (window_ns <= guard_ns)
+    {
+        return 0U;
+    }
+    const uint64_t budget_ticks =
+        ((window_ns - guard_ns) / stepper_common::target_tick_time) *
+        static_cast<uint64_t>(STEP_SEQ_SPREAD_PERMILLE) / 1000ULL;
+    const uint64_t cap = budget_ticks / kMinDriverStepPeriodTicks;
+    return (cap > MAX_PULSE_ARR_LEN) ? MAX_PULSE_ARR_LEN : static_cast<uint32_t>(cap);
+}
+
 bool StepOutputChannel::emit(uint32_t num_steps, bool direction, bool direction_changed,
                              uint64_t window_ns, uint32_t step_pulse_ticks)
 {
@@ -74,7 +90,14 @@ bool StepOutputChannel::emit(uint32_t num_steps, bool direction, bool direction_
     }
 
     const uint64_t remaining_ticks = (window_ns - guard_ns) / stepper_common::target_tick_time;
-    const uint32_t min_step_ticks = step_pulse_ticks * 2U;  // 高电平 + 低电平各一个脉宽
+    // 步距下限抬到驱动器合法最小周期（2µs）：min_step_ticks 同时是"平滑失败时
+    // 恒速突发的周期"，原来的 2x脉宽=400ns 只保证硬件不吞高电平，却远超 TMC2209
+    // 输入级能力（≥1µs 高/低）——债务窗一旦走到突发分支就是驱动器根本没吃进的
+    // 废脉冲。调用方已按 windowCapacity 夹过步数，这里再保底一次。
+    const uint32_t min_step_ticks =
+        (step_pulse_ticks * 2U > kMinDriverStepPeriodTicks)
+            ? (step_pulse_ticks * 2U)
+            : kMinDriverStepPeriodTicks;
 
     uint32_t step_ticks = min_step_ticks;
     bool spread_enabled = false;

@@ -819,6 +819,19 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
         *value = owner_.step_pulse_width_ns_;
         return true;
     }
+    // 脉冲质量观测（只读）。0x177：上次 startMotion 以来单窗"索要"的最大步数
+    // （450RPM/64细分 正常 ≈5~6；几十 = 控制任务停过，DDA 截断已挡住爆发）。
+    // 0x178：任务停顿事件累计（窗口间隔 >150µs），持续增长说明有 CPU 抢占源。
+    if (reg == TMC2209_EXT_PARAM_STEP_MAX_WINDOW_STEPS)
+    {
+        *value = owner_.max_step_per_ramp;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_STEP_TASK_STALL_EVENTS)
+    {
+        *value = owner_.step_catchup_events_;
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_RAW_TO_CORRECTED)
     {
         *value = owner_.calibration_lookup_corrected_value_;

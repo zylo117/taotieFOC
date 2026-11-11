@@ -660,6 +660,9 @@ private:
     ParameterRouter parameter_router_{*this};
 
     uint32_t max_step_per_ramp = 0;
+    // 控制任务停顿事件：emitSteps 观察到真实窗口间隔 >150µs 的次数（DDA 已截断
+    // 补账防止爆发）。0x178 只读遥测；正常运动应几乎不涨，持续涨 → 有 CPU 抢占源。
+    volatile uint32_t step_catchup_events_ = 0U;
 
     // ====================== 【补充梯形加减速预计算】======================
     // 梯形加减速预计算参数（startMotion里一次性算出）

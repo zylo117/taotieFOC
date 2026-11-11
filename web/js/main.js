@@ -99,6 +99,8 @@
             , [CUSTOM_REGS.STALL_QUIET_MS, ['0x0174', 'STALL_QUIET_MS', '堵转判定静止时长 ms，默认 200，存 Flash']]
             , [CUSTOM_REGS.STALL_MOVE_LSB, ['0x0175', 'STALL_MOVE_LSB', '堵转判定净位移阈值 LSB，默认 100，存 Flash']]
             , [CUSTOM_REGS.ENCODER_INVERT, ['0x0176', 'ENCODER_INVERT', '磁钢极性：1=校准鉴别出装反，原始角度已反转，存 Flash（改动后须重新校准）']]
+             , [CUSTOM_REGS.STEP_MAX_WINDOW_STEPS, ['0x0177', 'STEP_MAX_WINDOW_STEPS', '脉冲质量：上次运动起单窗索要最大步数（450RPM/64细分正常≈5~6，几十=任务停顿过，固件已截断防爆发）']]
+             , [CUSTOM_REGS.STEP_TASK_STALL_EVENTS, ['0x0178', 'STEP_TASK_STALL_EVENTS', '脉冲质量：控制任务停顿(窗间隔>150µs)事件累计，持续增长=有CPU抢占源']]
             , [0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
             , [0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
             , [0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]

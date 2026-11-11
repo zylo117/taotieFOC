@@ -525,7 +525,22 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
     // 【用 float 不用 double】两个累加器已改成 float（见 header 注释）。
     // dt 也必须用 float，否则 float += double * double 会把整个表达式提升成 FP64 运算，
     // 白白回到软件模拟。
-    const float dt_step_s = static_cast<float>(delta_ramp_ns) * 1.0e-9f;
+    // 【控制任务停顿保护：DDA 时间截断】
+    // 正常窗口 dt≈50µs。当控制任务被慢档遥测/USB/SPI/Flash 抢走 CPU 时，dt 会
+    // 突然变成几百µs 甚至 ms 级。DDA 若按真实 dt 全额补账，一窗要挤进的步数远超
+    // 窗口能合法装下的量（如 96kpps 下 2ms 债务=192 步），输出退化为亚 µs 间隔
+    // 爆发——TMC2209 输入级（最小周期 2µs）根本吃不进，转子丢同步后原地反抽，
+    // 宏观就是"速度越高抖得越狠、450RPM 起必失步"（2026-11-12 实机定位）。
+    // 截断到 150µs（3 窗）：转子此刻已注定掉步，让输出保持合法节拍、两个累加器
+    // 用同一个截断后的 dt（记账与实际一致），闭环从真实位置继续，
+    // 绝不再"卡一下猛地抽一下"。事件计数见 0x178。
+    constexpr float kDtCapS = 150.0e-6f;
+    float dt_step_s = static_cast<float>(delta_ramp_ns) * 1.0e-9f;
+    if (dt_step_s > kDtCapS)
+    {
+        dt_step_s = kDtCapS;
+        c.step_catchup_events_++;
+    }
     c.motion_step_accumulator_ += fast_abs(c.current_step_speed_) * dt_step_s;
 
     const uint32_t micro_steps_per_round = c.getStepsPerRound();
@@ -627,6 +642,17 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
     if (num_steps > MAX_PULSE_ARR_LEN)
     {
         num_steps = MAX_PULSE_ARR_LEN;
+    }
+    // 【合法速率夹取】本窗最多发 windowCapacity 步（2µs/步下限，TMC2209 输入级
+    // 规格）。超出部分留在补偿累加器里逐窗偿还——旧行为是把债务挤进一窗爆发，
+    // 驱动器吃不进的高频脉冲 = 转子丢同步 + 反抽（"450RPM 必失步"的机制）。
+    // max_step_per_ramp 记的是"索要"步数（上面先记后夹），所以它仍然能看见债务。
+    {
+        const uint32_t cap = StepOutputChannel::windowCapacity(delta_ramp_ns);
+        if (num_steps > cap)
+        {
+            num_steps = cap;
+        }
     }
 
     // 规划（记账）步数：只受剩余行程限制，不受本窗实发限制。
