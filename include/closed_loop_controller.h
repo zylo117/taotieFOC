@@ -573,6 +573,14 @@ private:
     static constexpr uint32_t kStallQuietMs = 200U;
     static constexpr int32_t kStallMoveLsb = 100;
     static constexpr float kStallMinCommandRpm = 8.0f;
+    // 【运行时可调阈值（0x174/0x175，Flash v6 持久化）】默认 = 上面的编译期口径。
+    // 现场常有"低速大惯量、慢响应就被误判堵转"或"要更灵敏保护"的需求，故可调：
+    //   stall_quiet_ms_  加大=更宽容（慢系统防误报），减小=更灵敏。合理域 50~3000。
+    //   stall_move_lsb_  净位移阈值。必须 > 静止噪声窗口净位移（~100LSB），
+    //                    又 < 最低速真实位移（8RPM×窗 ≈1750LSB）。合理域 40~1500。
+    // 控制任务每拍只读一次这两 volatile 单字，M4 上原子；写走 USB 任务，无锁安全。
+    volatile uint32_t stall_quiet_ms_ = kStallQuietMs;
+    volatile uint32_t stall_move_lsb_ = static_cast<uint32_t>(kStallMoveLsb);
     volatile bool stall_detected_ = false;
     volatile uint32_t stall_events_ = 0U;
     volatile bool stall_auto_disable_ = true;

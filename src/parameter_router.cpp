@@ -204,6 +204,9 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         params.motion_source = static_cast<uint16_t>(owner_.getMotionSource());
         params.resonance_lo_rpm = owner_.resonance_lo_rpm_;
         params.resonance_hi_rpm = owner_.resonance_hi_rpm_;
+        // v6：堵转阈值。这台机器"多慢算堵转"是物理属性（惯量/负载/电流），该持久。
+        params.stall_quiet_ms = static_cast<uint16_t>(owner_.stall_quiet_ms_);
+        params.stall_move_lsb = static_cast<uint16_t>(owner_.stall_move_lsb_);
         // 角度限速/加速度不存 Flash：它们属于“本次运行设定”，每次按现场需要在界面上调，
         // 存进 Flash 反而会让一个旧值在重启后静默生效。结构体字段保留（置 0）用于兼容。
         params.angle_max_rpm = 0U;
@@ -573,6 +576,39 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
                owner_.resonance_bypass_ ? 1U : 0U,
                owner_.resonance_bypass_ ? "in-band cruising allowed (auto-test)"
                                         : "band enforced for planned motion");
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_STALL_QUIET_MS)
+    {
+        // 堵转判定的"静止时长"阈值。钳位 50~3000ms。USB 任务里跑，printf 安全。
+        uint32_t v = value;
+        if (v < 50U)
+        {
+            v = 50U;
+        }
+        else if (v > 3000U)
+        {
+            v = 3000U;
+        }
+        owner_.stall_quiet_ms_ = v;
+        printf("[STALL] quiet time = %lu ms\r\n", static_cast<unsigned long>(v));
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_STALL_MOVE_LSB)
+    {
+        // 堵转判定的"净位移"阈值，单位 LSB。钳位 40~1500（须高于静止噪声 ~100LSB
+        // 窗内净位移，又远低于最低速真实位移 1750/200ms）。
+        uint32_t v = value;
+        if (v < 40U)
+        {
+            v = 40U;
+        }
+        else if (v > 1500U)
+        {
+            v = 1500U;
+        }
+        owner_.stall_move_lsb_ = v;
+        printf("[STALL] move threshold = %lu LSB\r\n", static_cast<unsigned long>(v));
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_STALL_CLEAR)
@@ -953,6 +989,16 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_STALL_EVENTS)
     {
         *value = owner_.getStallEvents();
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_STALL_QUIET_MS)
+    {
+        *value = owner_.stall_quiet_ms_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_STALL_MOVE_LSB)
+    {
+        *value = owner_.stall_move_lsb_;
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_MOTION_SCHEDULED_STEPS)

@@ -13,7 +13,41 @@ static const uint16_t kParamVersionV1 = 1U;
 static const uint16_t kParamVersionV2 = 2U;
 static const uint16_t kParamVersionV3 = 3U;
 static const uint16_t kParamVersionV4 = 4U;
-static const uint16_t kParamVersion = 5U;
+static const uint16_t kParamVersionV5 = 5U;
+static const uint16_t kParamVersion = 6U;
+
+// v5 布局（v6 追加字段之前的最后形态）。**只为迁移读旧记录用**，
+// 原因同 V4：校验和必须按该版本自己的结构大小算。
+struct PersistedMotorParamsV5
+{
+    uint32_t magic;
+    uint16_t version;
+    uint16_t checksum;
+    uint16_t microsteps;
+    uint16_t run_current_ma;
+    uint16_t hold_current_ma;
+    uint16_t step_pulse_ns;
+    uint16_t angle_max_rpm;
+    uint16_t angle_accel_rpm_s;
+    uint32_t position_kp;
+    uint32_t position_ki;
+    uint32_t position_kd;
+    uint32_t velocity_kp;
+    uint32_t velocity_ki;
+    uint32_t velocity_kd;
+    uint32_t angle_position_kp;
+    uint32_t angle_position_ki;
+    uint32_t angle_position_kd;
+    uint32_t angle_velocity_kp;
+    uint32_t angle_velocity_ki;
+    uint32_t angle_velocity_kd;
+    uint16_t en_mode;
+    uint16_t lag_accel_coef_mdeg_per_rpm_s;
+    uint16_t lag_deadband_mdeg;
+    uint16_t motion_source;
+    uint16_t resonance_lo_rpm;
+    uint16_t resonance_hi_rpm;
+};
 
 // v4 布局（v5 追加字段之前的最后形态）。**只为迁移读旧记录用**。
 // 【为什么必须单独定义】校验和按“该版本自己的结构大小”算：v5 在末尾追加了 6 字节，
@@ -180,6 +214,13 @@ namespace
         out->resonance_lo_rpm = 300U;
         out->resonance_hi_rpm = 600U;
     }
+
+    // v6 默认：堵转阈值 = 编译期口径（200ms / 100LSB），与引入可调之前的行为一致。
+    void fillStallDefaults(PersistedMotorParams* out)
+    {
+        out->stall_quiet_ms = 200U;
+        out->stall_move_lsb = 100U;
+    }
 }
 
 bool param_store_load(PersistedMotorParams* out)
@@ -228,7 +269,8 @@ bool param_store_load(PersistedMotorParams* out)
         out->version = kParamVersion;
         fillLagModelDefaults(out);
         fillMotionDefaults(out);
-        printf("[PARAM] migrated v%u -> v5: kept PID/en_mode, lag-model + motion defaults\r\n",
+        fillStallDefaults(out);
+        printf("[PARAM] migrated v%u -> v6: kept PID/en_mode, lag-model + motion + stall defaults\r\n",
                static_cast<unsigned>(flash_params->version));
         return true;
     }
@@ -249,10 +291,33 @@ bool param_store_load(PersistedMotorParams* out)
         std::memcpy(out, v4, sizeof(PersistedMotorParamsV4));
         out->version = kParamVersion;
         fillMotionDefaults(out);
-        printf("[PARAM] migrated v4 -> v5: kept all, motion_source=%u resonance=[%u,%u]\r\n",
+        fillStallDefaults(out);
+        printf("[PARAM] migrated v4 -> v6: kept all, motion_source=%u resonance=[%u,%u]\r\n",
                static_cast<unsigned>(out->motion_source),
                static_cast<unsigned>(out->resonance_lo_rpm),
                static_cast<unsigned>(out->resonance_hi_rpm));
+        return true;
+    }
+
+    // v5 -> v6：偏移完全一致（v6 只在末尾追加 2 个 uint16 堵转阈值），
+    // 按 V5 长度校验后整段搬，只补堵转阈值默认值。
+    if (flash_params->version == kParamVersionV5)
+    {
+        const PersistedMotorParamsV5* v5 =
+            reinterpret_cast<const PersistedMotorParamsV5*>(kParamFlashBase);
+        const uint16_t v5_checksum = checksumOf(
+            reinterpret_cast<const uint8_t*>(v5), sizeof(PersistedMotorParamsV5),
+            offsetof(PersistedMotorParamsV5, checksum) + sizeof(v5->checksum));
+        if (flash_params->checksum != v5_checksum)
+        {
+            return false;
+        }
+        std::memcpy(out, v5, sizeof(PersistedMotorParamsV5));
+        out->version = kParamVersion;
+        fillStallDefaults(out);
+        printf("[PARAM] migrated v5 -> v6: kept all, stall defaults %u ms / %u LSB\r\n",
+               static_cast<unsigned>(out->stall_quiet_ms),
+               static_cast<unsigned>(out->stall_move_lsb));
         return true;
     }
 
@@ -276,7 +341,8 @@ bool param_store_load(PersistedMotorParams* out)
         fillAngleDefaults(out);
         fillLagModelDefaults(out);
         fillMotionDefaults(out);
-        printf("[PARAM] migrated v1 -> v5: PID reset to new scale, defaults for lag/motion\r\n");
+        fillStallDefaults(out);
+        printf("[PARAM] migrated v1 -> v6: PID reset to new scale, defaults for lag/motion/stall\r\n");
         return true;
     }
 

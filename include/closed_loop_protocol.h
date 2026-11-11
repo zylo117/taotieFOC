@@ -246,6 +246,12 @@ enum Tmc2209CustomExtensionRegister
     TMC2209_EXT_PARAM_RESONANCE_HI_RPM = 0x170U,
     // R/W（不存 Flash，上电=0）：1 = 共振自动测试/扫频模式，临时允许在带内巡航。
     TMC2209_EXT_PARAM_RESONANCE_BYPASS = 0x171U,
+    // R/W（存 Flash v6）：堵转判据的两个可调阈值。默认 200ms / 100LSB（编译期口径）。
+    // 判据 = "命令转动（≥8RPM）时，连续 stall_quiet_ms 内编码器净位移 < stall_move_lsb"。
+    // 合理域：quiet 50~3000ms；move_lsb 40~1500（须高于静止噪声窗内净位移 ~100，
+    // 又远低于最低速真实位移 1750/200ms）。超限写会被钳位。
+    TMC2209_EXT_PARAM_STALL_QUIET_MS = 0x174U,
+    TMC2209_EXT_PARAM_STALL_MOVE_LSB = 0x175U,
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -310,7 +316,7 @@ private:
 
     ClosedLoopDriverProtocolConfig config_;
     // 扩展参数表长度：覆盖 0x100 ~ 0x167，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x171U - 0x100U + 1U;
+    static constexpr uint16_t kCustomParameterCount = 0x175U - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

@@ -317,6 +317,16 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
             // 滞后角模型参数：旧记录（v1/v2/v3）在迁移时已经填了默认值
             lag_accel_coef_mdeg_per_rpm_s_ = params.lag_accel_coef_mdeg_per_rpm_s;
             lag_deadband_mdeg_ = (params.lag_deadband_mdeg >= 10U) ? params.lag_deadband_mdeg : 150U;
+            // 【v6 堵转阈值恢复】迁移已填默认值 200/100，但仍校验域，坏值退回默认，
+            // 绝不让一个 0 或超界值让堵转保护失效或疯狂误报。
+            if (params.stall_quiet_ms >= 50U && params.stall_quiet_ms <= 3000U)
+            {
+                stall_quiet_ms_ = params.stall_quiet_ms;
+            }
+            if (params.stall_move_lsb >= 40U && params.stall_move_lsb <= 1500U)
+            {
+                stall_move_lsb_ = params.stall_move_lsb;
+            }
             if (params.step_pulse_ns >= kMinStepPulseNs && params.step_pulse_ns <= kMaxStepPulseNs)
             {
                 step_pulse_width_ns_ = params.step_pulse_ns;
@@ -1441,23 +1451,24 @@ void ClosedLoopController::updateStallGuard(uint64_t now_ns)
     // 这台编码器静止时的读数峰峰值约 26~31 LSB（传感器/EMI 噪声），逐拍增量
     // 经常超过 2 LSB —— 用"每拍变化 < 2LSB"判静止，噪声会不停把计时器清零，
     // 堵转永远触发不了（实测把电流置 0 让电机完全不动，守卫依然不动作）。
-    // 现在看 200ms 窗口内的**净位移**：
-    //   静止：噪声只在 ±15 LSB 内，净位移不会超过 100 LSB；
+    // 现在看窗口内的**净位移**（窗口=stall_quiet_ms_，默认 200ms）：
+    //   静止：噪声只在 ±15 LSB 内，净位移不会超过 ~100 LSB（阈值 stall_move_lsb_）；
     //   最低速 8RPM：200ms 也走 8/60*65536*0.2 = 1750 LSB。
-    // 两者差 17 倍，阈值 100 LSB 非常安全。
-    constexpr int32_t kStallMoveLsb = ClosedLoopController::kStallMoveLsb;
+    // 两者差 17 倍，阈值 100 LSB 非常安全。阈值可经 0x174/0x175 调（见成员注释）。
+    const int32_t move_lsb = static_cast<int32_t>(stall_move_lsb_);
     const int32_t span = static_cast<int32_t>(encoder_filtered_raw_) -
                          static_cast<int32_t>(stall_last_raw_);
     const int32_t wrapped_span = (span > 32767) ? (span - 65536)
                                : (span < -32768) ? (span + 65536) : span;
-    if (wrapped_span > kStallMoveLsb || wrapped_span < -kStallMoveLsb)
+    if (wrapped_span > move_lsb || wrapped_span < -move_lsb)
     {
         stall_last_raw_ = encoder_filtered_raw_;
         stall_quiet_since_ns_ = now32;
         return;
     }
 
-    if ((now32 - stall_quiet_since_ns_) < (kStallQuietMs * 1000000U))
+    const uint32_t quiet_ns = stall_quiet_ms_ * 1000000U;
+    if ((now32 - stall_quiet_since_ns_) < quiet_ns)
     {
         return;
     }
@@ -1465,7 +1476,7 @@ void ClosedLoopController::updateStallGuard(uint64_t now_ns)
     stall_detected_ = true;
     stall_events_++;
     printf("[STALL] no encoder motion for %lums while commanding %.1fRPM (raw=%u) -> stop + disable\r\n",
-           static_cast<unsigned long>(kStallQuietMs),
+           static_cast<unsigned long>(stall_quiet_ms_),
            static_cast<double>(command_rps * 60.0f),
            static_cast<unsigned>(encoder_filtered_raw_));
     closed_loop_angle_mode_enabled_ = false;

@@ -71,6 +71,15 @@ struct PersistedMotorParams
     uint16_t motion_source;
     uint16_t resonance_lo_rpm;
     uint16_t resonance_hi_rpm;
+
+    // 【v6】堵转保护阈值（网页可调；默认 = 编译期口径 200ms / 100LSB）。
+    //   stall_quiet_ms：命令转动时，编码器"净位移不足"持续这么久才判堵转。
+    //       加大 = 更宽容（低速大惯量/慢响应系统防误报），减小 = 更灵敏。
+    //   stall_move_lsb：窗口内净位移小于它算"没动"。必须明显大于静止噪声的
+    //       窗口净位移（实测噪声 pp~31LSB、200ms 窗内净位移 ≤100LSB），
+    //       又必须明显小于最低速的真实位移（8RPM×200ms ≈ 1750LSB）。
+    uint16_t stall_quiet_ms;
+    uint16_t stall_move_lsb;
 };
 
 // 从 Flash 读取参数到 out。返回 true 表示校验通过、内容有效。
