@@ -1618,8 +1618,10 @@
             <label>加速度 (RPM/s)<input id="resonanceScanAccelRpmS" type="number" min="100" max="12000" step="100" value="1500"></label>
         </div>
         <div class="lag-angle-legend">
-            <span><strong>原理：</strong>60RPM 采一段“纹波基线”（角度去趋势后的 σ/峰峰），再从起点逐点升速到终点，
-            每点等稳态采同样窗口。纹波 ≥3× 基线连续 2 点 = 带起点，回落 ≤1.6× 连续 2 点 = 带终点。
+            <span><strong>原理（v2 指标）：</strong>纹波量的是<strong>跟随误差(0x121)的去趋势残差</strong>——匀速跟随时它是常数滞后，
+            对采样时间抖动免疫；共振摆动原样出现在残差上（σ/峰峰就是你肉眼看到的抖幅）。基线 60RPM，逐点升速，
+            残差 ≥3× 基线连续 2 点 = 带起点，回落 ≤1.6× = 带终点。
+            <strong>转不动/打滑不再算平静</strong>：跟随误差斜率 + 角度估速 + 实测转速三重校验，任一露馅即按热点计入禁区。
             <strong>要求：电机空载、周围无人有物</strong> —— 带内会真实地剧烈抖动（钳位被临时旁路），
             剧烈共振可能触发堵转：每次自动清锁存继续测，连炸 3 次中止。结束自动恢复钳位并留在内部规划模式。</span>
         </div>
@@ -1632,20 +1634,20 @@
         </div>
     </dialog>
 
-    <script src="web/js/constants.js?v=20261111b"></script>
-    <script src="web/js/utils.js?v=20261111b"></script>
-    <script src="web/js/state.js?v=20261111b"></script>
-    <script src="web/js/protocol.js?v=20261111b"></script>
-    <script src="web/js/rx.js?v=20261111b"></script>
-    <script src="web/js/ui.js?v=20261111b"></script>
-    <script src="web/js/waveform.js?v=20261111b"></script>
-    <script src="web/js/lagangle.js?v=20261111b"></script>
-    <script src="web/js/pidtune.js?v=20261111b"></script>
-    <script src="web/js/enccal.js?v=20261111b"></script>
-    <script src="web/js/shock.js?v=20261111b"></script>
-    <script src="web/js/actions.js?v=20261111b"></script>
-    <script src="web/js/resonance_scan.js?v=20261111b"></script>
-    <script src="web/js/main.js?v=20261111b"></script>
+    <script src="web/js/constants.js?v=20261111c"></script>
+    <script src="web/js/utils.js?v=20261111c"></script>
+    <script src="web/js/state.js?v=20261111c"></script>
+    <script src="web/js/protocol.js?v=20261111c"></script>
+    <script src="web/js/rx.js?v=20261111c"></script>
+    <script src="web/js/ui.js?v=20261111c"></script>
+    <script src="web/js/waveform.js?v=20261111c"></script>
+    <script src="web/js/lagangle.js?v=20261111c"></script>
+    <script src="web/js/pidtune.js?v=20261111c"></script>
+    <script src="web/js/enccal.js?v=20261111c"></script>
+    <script src="web/js/shock.js?v=20261111c"></script>
+    <script src="web/js/actions.js?v=20261111c"></script>
+    <script src="web/js/resonance_scan.js?v=20261111c"></script>
+    <script src="web/js/main.js?v=20261111c"></script>
 
 </body>
 </html>

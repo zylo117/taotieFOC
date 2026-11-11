@@ -1,30 +1,39 @@
 // ===========================================================================
-// 共振区间自动检测（网页版，移植自 scripts/tt_resonance.py，2026-11-11）
+// 共振区间自动检测（网页版 v2，2026-11-11 指标重做）
 //
-// 判据与脚本完全一致 —— 两处实测标定的经验常数不要随手改：
-//   1) 60 RPM 超低速采一段编码器角度，去线性趋势后算"纹波"（σ 与峰峰值）。
-//      匀速段角度≈直线，共振让直线变成毛刷，去趋势就是把这些毛毛量出来。
-//   2) 从 [带下沿-边距] 到 [带上沿+边距] 逐点升速，每点等稳态采同样窗口。
-//   3) 共振的特征是**突然开始剧烈抖动、突然结束**：比例阈值找跳变 ——
-//      连续 2 点 ratio ≥ 3×基线 = 带起点；之后回落 ≤ 1.6× 连续 2 点 = 带终点。
-//   4) 剧烈共振大概率触发堵转：每点盯 0x15D/0x108(bit3)，堵转即停车、清锁存、
-//      把该速 ±步长 邻域标记为禁区跳过；整轮连炸 3 次带结论中止。
-// 安全措施（同脚本，一条不能少）：
-//   * 开扫前显式确认（现场必须空载）；自动接管运动通道（ensureInternalMotionSource）。
-//   * 扫描期间 0x171=1 旁路固件共振钳位（否则带内目标被钳到下限，测不到共振本身），
-//     **无论正常结束/中止/异常都恢复 0x171=0**，失败要红字提醒手动恢复。
-//   * 每点测完先缓停（0x163）再升速，不来回猛冲。
-//   * 检测出的区间不自动生效：用户点「应用为共振带」才写 0x16F/0x170。
-//   * 结束留在内部规划模式并失能驱动器（同 tt_autotune 约定）。
-// 与脚本的差异只在数据通路：脚本经 tty 读 0x116 的最新遥测值；网页直接读
-// state.encoderAngleDeg —— 它由 rx.js 从 ~100Hz 遥测帧持续刷新（见 rx.js 的
-// ENCODER_ANGLE_MDEG 分支），10ms 轮询能拿到和脚本同量级的样本密度。
+// 【v1 为什么错（用户实机反馈 + 数据复核）】
+//  v1 用「编码器角度的去趋势残差 σ」当纹波指标，两个系统性错误：
+//   A. 假阳性：角度的时间戳来自 JS 轮询（~100Hz 遥测 × 轮询相位抖动 ±1.3ms）。
+//      匀速段角度速率 2160°/s(60RPM) ~ 23400°/s(650RPM)，纯抖动就能造出
+//      σ=2.8°/11.5° —— 与首轮实测（基线 2.76°、250RPM 11.48°）吻合：
+//      量到的主要是采样抖动，σ 随速度线性膨胀，250RPM 平滑也被判 4.16x。
+//   B. 假阴性：转子打滑/转不动时角度近似静止，去趋势把斜坡当速度减掉，
+//      残差反而极小 → 被判「平静」。**斜率才是失步证据，v1 把它扔了。**
+//
+// 【v2 指标：跟随误差 FE(0x121) = 编码器行程 - 命令行程（±180° 回绕，已解卷绕）】
+//   * 匀速跟随：FE ≈ 常数滞后。值对时间的一阶导≈0 ⇒ 同样的时间戳抖动
+//     **不再产生残差**（误差 = 斜率×δt，斜率≈0 则残差≈0）。
+//   * 共振：转子绕命令位置大幅摆动，FE 如实放大 —— σ/pp 就是用户肉眼看到的抖幅。
+//   * 失步/打滑：编码器行程跟不上命令行程，FE 以 (实际-命令)速率持续爬升，
+//     |斜率| > 25% 命令速率 = 失步证据（即使没触发堵转锁存也逃不掉）；
+//     失步点在分带里按「热」证据处理（同堵转），绝不再算平静。
+//   * 双保险：角度斜率估计转速 <70% 命令、或 0x120 实测中位 <60% 命令，
+//     同样判失步（三个独立观测量，任何一个露馅都算）。
+//
+// 【分带常数沿用脚本标定值】ratio=FEσ/基线FEσ：连续 2 点 ≥3× = 带起（回看一点），
+//  之后 ≤1.6× 且离起点>1 步 = 带止（该点前一步）；堵转/失步点直接算 2 个热计数。
+// 【安全】开扫显式确认、自动接管内部模式、0x171 旁路 finally 必恢复、堵转清锁存
+//  跳邻域连炸 3 次中止、非模态 dialog 保急停可点、急停/缓停联动中止、
+//  结果两段式（点「应用」才写 0x16F/0x170）。
 // ===========================================================================
 (function () {
-    const START_RATIO = 3.0;   // 连续 2 点纹波 ≥ 3× 基线 => 共振开始
-    const END_RATIO = 1.6;     // 之后连续 2 点回落到 ≤ 1.6× => 共振结束
-    const MAX_STALLS = 3;      // 整轮堵转超过 3 次：带结论中止
-    const BASE_RPM = 60;       // 基线转速（超低速，稳、离共振远）
+    const START_RATIO = 3.0;   // 连续 2 点 FEσ ≥ 3× 基线 => 共振开始
+    const END_RATIO = 1.6;     // 之后连续回落到 ≤ 1.6× => 共振结束
+    const MAX_STALLS = 3;      // 堵转次数上限（失步不算堵转，只有真堵转锁存算）
+    const BASE_RPM = 60;       // 基线转速
+    const SLIP_SLOPE_FRAC = 0.25;   // |FE斜率| > 25% 命令速率 = 失步
+    const SLIP_EST_FRAC = 0.70;     // 角度估速 < 70% 命令 = 失步
+    const SLIP_MED_FRAC = 0.60;     // 0x120 中位 < 60% 命令 = 失步
 
     const REG = {
         START_RPM: 0x11A, MAX_RPM: 0x11B, ACCEL: 0x11C, PULSE_COUNT: 0x11D,
@@ -34,59 +43,70 @@
     };
     const MODE_VELOCITY_FORWARD = 2;
 
-    const RS = { active: false, cancel: false };
+    const RS = { active: false, cancel: false, lastBand: null };
 
     function $(id) { return document.getElementById(id); }
     function delay(ms) { return new Promise((r) => setTimeout(r, Math.max(0, ms))); }
 
-    function setStatus(text) {
-        const el = $('resonanceScanStatus');
-        if (el) el.textContent = text;
-    }
-    function setProgress(text) {
-        const el = $('resonanceScanProgress');
-        if (el) el.textContent = text;
-    }
-    // 扫描日志：对话框内一份（带时间戳），主日志一份（进用户存档）
+    function setStatus(text) { const el = $('resonanceScanStatus'); if (el) el.textContent = text; }
+    function setProgress(text) { const el = $('resonanceScanProgress'); if (el) el.textContent = text; }
     function rsLog(msg) {
         const el = $('resonanceScanLog');
         if (el) {
-            const t = (performance.now() / 1000).toFixed(1);
-            el.textContent += `[${t}s] ${msg}\n`;
+            el.textContent += `[${(performance.now() / 1000).toFixed(1)}s] ${msg}\n`;
             el.parentElement.scrollTop = el.parentElement.scrollHeight;
         }
         try { log('[共振扫描] ' + msg); } catch (e) { /* 主日志不可用时忽略 */ }
     }
 
-    // ---- 采样：10ms 轮询 state.encoderAngleDeg，环绕解卷绕（±180° 回折） ----
-    async function captureUnwrapped(seconds) {
-        const rows = [];
+    // ---- 采样：角度(算估计转速) 与 FE(算纹波) 同步采，±180° 解卷绕 ----
+    // 时间戳仍来自轮询 —— 但 FE 指标对时间抖动免疫（匀速段 FE 斜率≈0），
+    // 这正是 v2 换指标的全部意义，不要再改回角度残差。
+    async function captureWindow(seconds) {
+        const ang = [];
+        const fe = [];
+        const speeds = [];
         const t0 = performance.now();
-        let unwrapped = null;
-        let prev = null;
+        let prevA = null;
+        let unwA = null;
+        let prevF = null;
+        let unwF = null;
         while (performance.now() - t0 < seconds * 1000) {
             if (RS.cancel) break;
-            const deg = state.encoderAngleDeg;
-            if (typeof deg === 'number' && Number.isFinite(deg)) {
-                if (prev === null) {
-                    unwrapped = deg;
-                } else {
-                    let d = deg - prev;
+            const t = (performance.now() - t0) / 1000;
+            const a = state.encoderAngleDeg;
+            if (typeof a === 'number' && Number.isFinite(a)) {
+                if (prevA === null) { unwA = a; }
+                else {
+                    let d = a - prevA;
                     while (d > 180) d -= 360;
                     while (d < -180) d += 360;
-                    unwrapped += d;
+                    unwA += d;
                 }
-                prev = deg;
-                rows.push([(performance.now() - t0) / 1000, unwrapped]);
+                prevA = a;
+                ang.push([t, unwA]);
             }
+            const f = state.motionFollowErrorDeg;
+            if (typeof f === 'number' && Number.isFinite(f)) {
+                if (prevF === null) { unwF = f; }
+                else {
+                    let d = f - prevF;
+                    while (d > 180) d -= 360;
+                    while (d < -180) d += 360;
+                    unwF += d;
+                }
+                prevF = f;
+                fe.push([t, unwF]);
+            }
+            speeds.push(Math.abs(Number(state.motionSpeedRpm || 0)));
             await delay(10);
         }
-        return rows;
+        return { ang, fe, speeds };
     }
 
-    // 去线性趋势后的 (σ, 峰峰值)：匀速段角度≈直线，残差就是抖动
-    function detrendRipple(rows) {
-        if (rows.length < 10) return { std: NaN, pp: NaN };
+    // 去线性趋势：返回 {σ, pp, slope}。slope 是关键信息，绝不许再扔。
+    function detrend(rows) {
+        if (rows.length < 10) return { std: NaN, pp: NaN, slope: NaN };
         const trim = Math.max(1, Math.floor(rows.length / 10));
         const core = rows.slice(trim, rows.length - trim);
         const pts = core.length >= 8 ? core : rows;
@@ -106,7 +126,7 @@
             if (e < min) min = e;
             if (e > max) max = e;
         }
-        return { std: Math.sqrt(sum2 / n), pp: max - min };
+        return { std: Math.sqrt(sum2 / n), pp: max - min, slope };
     }
 
     async function stallActive() {
@@ -117,7 +137,7 @@
         } catch (e) { return false; }
     }
 
-    // 单点：速度模式无限跑 rpm → 等稳态 → 采窗口 → 缓停。返回 {std, pp, stalled}
+    // 单点：速度模式巡航 → 等稳态 → 采样 → 缓停/堵转处理。
     async function runPoint(rpm, accel, windowS) {
         await writeRegisterAndWaitAck(REG.START_RPM, Math.max(10, Math.min(rpm, 120)));
         await writeRegisterAndWaitAck(REG.MAX_RPM, rpm);
@@ -126,8 +146,6 @@
         await writeRegisterAndWaitAck(REG.MODE, MODE_VELOCITY_FORWARD);
         await writeRegisterAndWaitAck(REG.MOTION, 1);
 
-        // 等稳态：|实测-目标| ≤ max(15, 15%)；超时不判失败（同脚本：按时间放行，
-        // 真要没到速，纹波比会异常，日志里看得见）。堵转提前终止等待。
         const tolerance = Math.max(15, rpm * 0.15);
         const settleDeadline = performance.now() + Math.min(10000, 2000 + (rpm / accel) * 2000);
         while (performance.now() < settleDeadline) {
@@ -138,40 +156,54 @@
             await delay(100);
         }
 
-        const rows = await captureUnwrapped(windowS);
+        const win = await captureWindow(windowS);
         const stalled = await stallActive();
         if (stalled) {
-            await writeRegister(REG.MOTION, 0);          // 硬停：堵转态别再做斜坡
+            await writeRegister(REG.MOTION, 0);
             await writeRegister(REG.STALL_CLEAR, 1);
             await delay(200);
         } else {
-            await writeRegister(REG.QUICK_STOP, 1);      // 缓停：斜坡收尾
+            await writeRegister(REG.QUICK_STOP, 1);
             await delay(300 + Math.round((rpm / accel) * 1000));
         }
-        const r = detrendRipple(rows);
-        return { std: r.std, pp: r.pp, stalled, samples: rows.length };
+        const fe = detrend(win.fe);
+        const ang = detrend(win.ang);
+        const estRpm = ang.slope / 6.0;                 // °/s → RPM
+        const sorted = win.speeds.slice().sort((x, y) => x - y);
+        const medSpeed = sorted.length ? sorted[Math.floor(sorted.length / 2)] : NaN;
+        // 失步判定（三个独立观测量，任一露馅即失步）：
+        //   FE 斜率：编码器行程没跟上命令行程（转不动/打滑的最直接信号）
+        //   角度估速：直接从解卷绕角度算实测转速
+        //   0x120 中位：固件 20ms 平滑的编码器实测转速
+        const cmdDegPerS = rpm * 6.0;
+        const slip = !stalled && (
+            (Number.isFinite(fe.slope) && Math.abs(fe.slope) > cmdDegPerS * SLIP_SLOPE_FRAC) ||
+            (Number.isFinite(estRpm) && estRpm < rpm * SLIP_EST_FRAC) ||
+            (Number.isFinite(medSpeed) && medSpeed < rpm * SLIP_MED_FRAC));
+        return { fe, estRpm, medSpeed, stalled, slip, samples: win.fe.length };
     }
 
-    // ---- 分带：逐行移植脚本 239~268 行，语义不许改 ----
-    // 骤起：连续 2 点 ratio ≥3x（堵转点直接算满 2 个热计数，比测出来的数更有说服力）；
-    //       起点 = 连续两点中的第一个（回看上一条）。
-    // 骤落：起点之后，ratio ≤1.6x 且 rpm > lo+step 的第一个点，终点 = 该点前一步；
-    //       若扫到尽头仍热/堵，终点 = 最后一点。兜底 hi = lo+step。
+    // ---- 分带（v2）：堵转/失步点直接算 2 个热计数且不被 ratio NaN 清零；
+    //      平稳热态：连续 2 点 ratio ≥3×，起点回看一点；终点：ratio ≤1.6× 且距起点>1步。
     function extractBand(points, step) {
         let bandLo = null;
         let bandHi = null;
         let hot = 0;
         for (let i = 0; i < points.length; i++) {
             const p = points[i];
-            if (p.stalled) hot = Math.max(hot, 2);
-            if (Number.isFinite(p.ratio) && p.ratio >= START_RATIO) hot += 1;
-            else hot = 0;
+            if (p.hotEvidence) {
+                hot = Math.max(hot, 2);
+            } else if (Number.isFinite(p.ratio) && p.ratio >= START_RATIO) {
+                hot += 1;
+            } else {
+                hot = 0;
+            }
             if (hot >= 2 && bandLo === null) bandLo = i > 0 ? points[i - 1].rpm : p.rpm;
         }
         if (bandLo !== null) {
             for (const p of points) {
                 if (p.rpm < bandLo) continue;
-                if (p.stalled) { bandHi = p.rpm; continue; }
+                if (p.hotEvidence) { bandHi = p.rpm; continue; }
                 if (Number.isFinite(p.ratio) && p.ratio <= END_RATIO && p.rpm > bandLo + step) {
                     bandHi = p.rpm - step;
                     break;
@@ -179,7 +211,7 @@
             }
             if (bandHi === null && points.length) {
                 const last = points[points.length - 1];
-                if (last.stalled || (Number.isFinite(last.ratio) && last.ratio > END_RATIO)) {
+                if (last.hotEvidence || (Number.isFinite(last.ratio) && last.ratio > END_RATIO)) {
                     bandHi = last.rpm;
                 }
             }
@@ -192,6 +224,7 @@
     async function runScan(cfg) {
         RS.active = true;
         RS.cancel = false;
+        RS.lastBand = null;
         state.resonanceScanActive = true;
         let stalls = 0;
         const results = [];
@@ -200,8 +233,6 @@
         $('resonanceScanApplyBtn').disabled = true;
         $('resonanceScanStartBtn').disabled = true;
         try {
-            // 基线口径：开环 + 清堵转 + 使能（外部 EN 模式下 0x124 只是撤销失能锁，
-            // 真使能还得引脚低 —— 不使能电机根本不动，扫描会在第一点就报无法稳速）
             await writeRegisterAndWaitAck(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0);
             const cb = $('closedLoopEnableInput');
             if (cb) cb.checked = false;
@@ -209,16 +240,19 @@
             await writeRegister(REG.ENABLE, 1);
             await writeRegisterAndWaitAck(REG.BYPASS, 1);
             bypassOn = true;
-            rsLog(`扫描 ${cfg.lo}→${cfg.hi} RPM，步长 ${cfg.step}，每点 ${cfg.windowS}s，基线 ${BASE_RPM} RPM，加速度 ${cfg.accel} RPM/s`);
+            rsLog(`扫描 ${cfg.lo}→${cfg.hi} RPM，步长 ${cfg.step}，每点 ${cfg.windowS}s，`
+                + `基线 ${BASE_RPM} RPM，加速度 ${cfg.accel} RPM/s（指标=跟随误差残差，v2）`);
 
             setStatus('采基线…');
             const base = await runPoint(BASE_RPM, cfg.accel, cfg.windowS);
-            if (base.stalled || !Number.isFinite(base.std) || base.std <= 0) {
-                rsLog('!! 超低速基准都堵转/采不到有效纹波（σ=' + base.std + '）——先解决基础问题（卡滞？电流？）再测共振');
+            if (base.stalled || base.slip || !Number.isFinite(base.fe.std) || base.fe.std <= 0) {
+                rsLog(`!! 基线无效（堵转=${base.stalled} 失步=${base.slip} σ=${base.fe.std}）`
+                    + ' —— 低速都跑不稳/跟不上，先解决基础问题再测共振');
                 setStatus('基线无效，已中止');
                 return null;
             }
-            rsLog(`基线 ${BASE_RPM} RPM：σ=${base.std.toFixed(4)}° 峰峰=${base.pp.toFixed(4)}°（${base.samples} 样本）`);
+            rsLog(`基线 ${BASE_RPM}RPM：FEσ=${base.fe.std.toFixed(4)}° pp=${base.fe.pp.toFixed(3)}° `
+                + `估速=${base.estRpm.toFixed(0)} 实测中位=${base.medSpeed.toFixed(0)}（${base.samples} 样本）`);
 
             const sweep = [];
             for (let rpm = cfg.lo; rpm <= cfg.hi; rpm += cfg.step) sweep.push(rpm);
@@ -235,22 +269,25 @@
                 setStatus(`测 ${rpm} RPM…`);
                 setProgress(`${done} / ${sweep.length}`);
                 const p = await runPoint(rpm, cfg.accel, cfg.windowS);
-                const ratio = (Number.isFinite(p.std) && p.std >= 0) ? p.std / base.std : NaN;
-                results.push({ rpm, ratio, std: p.std, pp: p.pp, stalled: p.stalled });
+                const ratio = (Number.isFinite(p.fe.std) && p.fe.std >= 0) ? p.fe.std / base.fe.std : NaN;
+                results.push({ rpm, ratio, fe: p.fe, estRpm: p.estRpm, hotEvidence: p.stalled || p.slip });
                 if (p.stalled) {
                     stalls += 1;
-                    rsLog(`${rpm} RPM 堵转 #${stalls} —— 已清锁存，跳过 ≤${rpm + Math.max(2 * cfg.step, 50)} RPM 的邻近点继续`);
                     skipUntil = rpm + Math.max(2 * cfg.step, 50);
+                    rsLog(`${rpm} RPM 堵转 #${stalls} —— 已清锁存，跳过 ≤${skipUntil} RPM 邻近点`);
                     if (stalls >= MAX_STALLS) {
                         rsLog(`堵转次数达到 ${MAX_STALLS}，中止扫描，用已有数据出结论`);
                         done += 1;
                         break;
                     }
                 } else {
-                    const verdict = ratio >= START_RATIO ? '剧烈' : (ratio > END_RATIO ? '偏高' : '平静');
-                    rsLog(`${rpm} RPM：σ=${Number.isFinite(p.std) ? p.std.toFixed(4) : 'nan'}° `
-                        + `峰峰=${Number.isFinite(p.pp) ? p.pp.toFixed(4) : 'nan'}° `
-                        + `(${Number.isFinite(ratio) ? ratio.toFixed(2) : 'nan'}x) ${verdict}`);
+                    const verdict = p.slip ? '失步/打滑(热证据)'
+                        : (ratio >= START_RATIO ? '剧烈' : (ratio > END_RATIO ? '偏高' : '平静'));
+                    rsLog(`${rpm} RPM：FEσ=${Number.isFinite(p.fe.std) ? p.fe.std.toFixed(4) : 'nan'}° `
+                        + `pp=${Number.isFinite(p.fe.pp) ? p.fe.pp.toFixed(3) : 'nan'}° `
+                        + `(${Number.isFinite(ratio) ? ratio.toFixed(2) : 'nan'}x) `
+                        + `估速=${Number.isFinite(p.estRpm) ? p.estRpm.toFixed(0) : 'nan'} `
+                        + `FE斜率=${Number.isFinite(p.fe.slope) ? p.fe.slope.toFixed(0) : 'nan'}°/s ${verdict}`);
                 }
                 done += 1;
                 setProgress(`${done} / ${sweep.length}`);
@@ -267,8 +304,8 @@
                 return band;
             }
             const ratios = results.filter((r) => Number.isFinite(r.ratio)).map((r) => r.ratio);
-            rsLog(`本次未发现 ≥${START_RATIO}x 基准的骤发剧烈区间（最大 ${ratios.length ? Math.max(...ratios).toFixed(2) : 'nan'}x）；`
-                + `保持现设置，或加严阈值/加密步长再扫`);
+            rsLog(`本次未发现 ≥${START_RATIO}x 热点或失步段（最大 ${ratios.length ? Math.max(...ratios).toFixed(2) : 'nan'}x）；`
+                + '保持现设置，或加严阈值/加密步长再扫');
             setStatus('未检出共振');
             return null;
         } catch (e) {
@@ -294,11 +331,10 @@
         }
     }
 
-    // ---- UI 绑定 ----
+    // ---- UI ----
     function openDialog() {
         if (!state.connected) { log('[WARN] 未连接串口，无法共振自动检测'); return; }
         if (RS.active) { $('resonanceScanDialog').show(); return; }
-        // 默认扫描窗 = 当前共振带 ±50（同脚本 edge 默认）
         const lo = Math.round(Number($('resonanceLoRpmInput').value) || 300);
         const hi = Math.round(Number($('resonanceHiRpmInput').value) || 600);
         $('resonanceScanLoRpm').value = String(Math.max(20, lo - 50));
@@ -327,8 +363,8 @@
         };
         cfg.lo = Math.max(20, cfg.lo);
         cfg.hi = Math.min(6000, Math.max(cfg.lo + cfg.step, cfg.hi));
-        if (!window.confirm('共振检测会让电机在全速度域自行运转，带内会剧烈抖动（钳位临时旁路），并可能触发堵转。\n\n'
-            + '请确认：电机空载、固定在位、周围无人无物。继续？')) {
+        if (!window.confirm('共振检测会让电机在全速度域自行运转，带内会真实抖动（钳位临时旁路），'
+            + '并可能触发堵转/失步（失步段会按热点处理）。\n\n请确认：电机空载、固定在位、周围无人无物。继续？')) {
             rsLog('用户取消，未启动');
             return;
         }
@@ -344,7 +380,8 @@
                 await writeRegisterAndWaitAck(REG.BAND_HI, band.hi);
                 $('resonanceLoRpmInput').value = String(band.lo);
                 $('resonanceHiRpmInput').value = String(band.hi);
-                rsLog(`已应用共振带 [${band.lo}, ${band.hi}] RPM（0x16F/0x170 回读一致）—— 记得「写入参数到 Flash」才掉电保持`);
+                rsLog(`已应用共振带 [${band.lo}, ${band.hi}] RPM（0x16F/0x170 回读一致）`
+                    + ' —— 记得「写入参数到 Flash」才掉电保持');
                 $('resonanceScanApplyBtn').disabled = true;
             } catch (e) {
                 rsLog(`应用失败：${e.message}`);
@@ -352,17 +389,14 @@
         })();
     }
 
-    // 急停联动：emergencyStop() 会调这个把扫描叫停（清理走 finally）
+    // 急停/缓停联动（actions.js 调）：置 cancel，扫描循环在测点边界收尾，清理走 finally
     window.rsAbortScan = function () {
         if (RS.active) {
             RS.cancel = true;
-            rsLog('急停触发，扫描中止');
+            rsLog('急停/停止触发，扫描中止');
         }
     };
 
-    // ---- 绑定 ----
-    // 本脚本在 </body> 前执行（此时所有控件已在 DOM，readyState 为 interactive），
-    // 立即绑定即可；DOMContentLoaded 只是保险（若将来被挪进 <head>）。
     function initBindings() {
         if (window.__rsBound) return;
         window.__rsBound = true;
