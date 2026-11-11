@@ -1454,7 +1454,17 @@ void ClosedLoopController::updateStallGuard(uint64_t now_ns)
                          static_cast<int32_t>(stall_last_raw_);
     const int32_t wrapped_span = (span > 32767) ? (span - 65536)
                                : (span < -32768) ? (span + 65536) : span;
-    if (wrapped_span > move_lsb || wrapped_span < -move_lsb)
+    // 【只认命令方向上的净前进，回摆不算】—— 这是修复"原地震不报堵转"的关键。
+    // 失步/共振时转子在原地来回振荡，编码器读数在 ±数百 LSB 间大幅摆动。旧判据
+    // `span > +move || span < -move` 双向都重置静止计时：回摆(反号)把计时清零，
+    // 前进(正号)虽也重置但把基线推到振荡上包络——基线卡在上沿后再难被更大的同向
+    // 位移重置，可一旦振荡相位先走到回摆侧，计时又归零，于是静止时长永远攒不满
+    // 200ms，堵转永远不锁（实测正反馈振荡的电机"该报不报"）。
+    // 改成只统计命令方向投影 progress = span * dir：回摆时 progress 为负，绝不重置，
+    // 计时单调累加 → 原地震必然锁存。真运动时 progress 每窗远超 move_lsb，不误报。
+    const int32_t dir = (current_step_speed_ >= 0.0f) ? 1 : -1;
+    const int32_t progress = wrapped_span * dir;
+    if (progress > move_lsb)
     {
         stall_last_raw_ = encoder_filtered_raw_;
         stall_quiet_since_ns_ = now32;
