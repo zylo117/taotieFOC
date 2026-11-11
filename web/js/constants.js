@@ -113,6 +113,11 @@ const CUSTOM_REGS = {
     RESONANCE_LO_RPM: 0x16F,      // R/W（存 Flash）：共振带下限，默认 300
     RESONANCE_HI_RPM: 0x170,      // R/W（存 Flash）：共振带上限，默认 600（hi=0 关闭）
     RESONANCE_BYPASS: 0x171,      // R/W（不存 Flash）：1=自动测试临时允许带内巡航
+    // R/W（存 Flash v6）：堵转判据 = "命令转动(≥8RPM)时，编码器净位移持续不足"。
+    // 0x174 静止时长 ms（钳位 50~3000，默认 200）；0x175 位移阈值 LSB（钳位 40~1500，
+    // 默认 100 —— 必须高于静止噪声 200ms 窗内净位移 ~100LSB，又远低于最低速位移 1750）。
+    STALL_QUIET_MS: 0x174,
+    STALL_MOVE_LSB: 0x175,
     CPU_USAGE_CENTIPERCENT: 0x137,
     CONTROL_TASK_USAGE_CENTIPERCENT: 0x138,
     MAX_RPM: 0x11B,

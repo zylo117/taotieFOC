@@ -103,6 +103,9 @@
             // 连上新固件后由 0x16D 回读纠正为外部；老固件没有 0x16D 时不会被误锁。
             // 真正的互斥权威在固件（它会拒绝并打印 [SOURCE]），UI 禁用只是防呆。
             , motionSource: 0
+            // 共振自动检测进行中：手动运动入口（启动/使能/急刹等）在此期间一律拒绝，
+            // 防止用户在扫描中途点别的按钮把速度指令搅乱。由 resonance_scan.js 维护。
+            , resonanceScanActive: false
             , encoderJitterSamples: []
             , encoderJitterRangeDeg: 0
             , encoderJitterSampleCount: 0

@@ -79,6 +79,10 @@
                     ? '已触发：固件已停机并失能，需点“清除堵转锁存”'
                     : '未触发';
             }
+            // 全局「解除堵转」按钮（右下角急停上方）：堵转锁存期间常驻显示。
+            // 遥测 bit3 一清就自动消失，不需要用户去整定页找那个小按钮。
+            const unlockBtn = document.getElementById('unlockStallBtn');
+            if (unlockBtn) unlockBtn.hidden = !state.stallDetected;
 
             faultBadge.innerHTML = `<span class="led ${hasFault ? (state.encoderFault || state.magneticFault ? 'warn' : 'danger') : ''}"></span> ${summary}`;
             faultBadge.className = 'badge ' + (hasFault ? (state.encoderFault || state.magneticFault ? 'warn' : 'danger') : 'ok');

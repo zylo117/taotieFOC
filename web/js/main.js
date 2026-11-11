@@ -91,6 +91,13 @@
             , [CUSTOM_REGS.LAG_ANGLE_FIT_SLOPE, ['0x0145', 'LAG_ANGLE_POWER_COEFFICIENT', '幂律系数 c，单位 °/RPM^a × 1000000']]
             , [CUSTOM_REGS.LAG_ANGLE_FIT_INTERCEPT, ['0x0146', 'LAG_ANGLE_FIT_INTERCEPT', '固件拟合截距，单位 0.001°']]
             , [CUSTOM_REGS.LAG_ANGLE_FIT_EXPONENT, ['0x0147', 'LAG_ANGLE_FIT_EXPONENT', '幂律指数 a，单位 0.000001']]
+            , [CUSTOM_REGS.STALL_DETECTED, ['0x015D', 'STALL_DETECTED', '堵转锁存：1=已触发（停机+失能），写 0x15F 清除']]
+            , [CUSTOM_REGS.STALL_CLEAR, ['0x015F', 'STALL_CLEAR', '写 1 清除堵转锁存']]
+            , [CUSTOM_REGS.RESONANCE_LO_RPM, ['0x016F', 'RESONANCE_LO_RPM', '共振带下限 RPM，存 Flash']]
+            , [CUSTOM_REGS.RESONANCE_HI_RPM, ['0x0170', 'RESONANCE_HI_RPM', '共振带上限 RPM，存 Flash（0=关闭）']]
+            , [CUSTOM_REGS.RESONANCE_BYPASS, ['0x0171', 'RESONANCE_BYPASS', '1=临时旁路共振带钳位（自动扫频用，不存 Flash）']]
+            , [CUSTOM_REGS.STALL_QUIET_MS, ['0x0174', 'STALL_QUIET_MS', '堵转判定静止时长 ms，默认 200，存 Flash']]
+            , [CUSTOM_REGS.STALL_MOVE_LSB, ['0x0175', 'STALL_MOVE_LSB', '堵转判定净位移阈值 LSB，默认 100，存 Flash']]
             , [0x11A, ['0x011A', 'START_RPM', '测速启动转速，单位 RPM']]
             , [0x11B, ['0x011B', 'MAX_RPM', '测速最高转速，单位 RPM']]
             , [0x11C, ['0x011C', 'ACCEL_RPM_S', '测速加速度，单位 RPM/s']]
@@ -250,6 +257,10 @@
                 appendTuneLog('整定期间不能启动开环运动');
                 return;
             }
+            if (state.resonanceScanActive) {
+                log('[WARN] 共振自动检测进行中，已屏蔽启动运动（先中止扫描）');
+                return;
+            }
             if (!state.connected) {
                 log('[WARN] 尚未连接串口，无法启动测速运动');
                 return;
@@ -306,6 +317,11 @@
                     appendTuneLog('整定期间已屏蔽其他手动运动命令');
                     return;
                 }
+            }
+            // 共振扫描进行中：除"失能/急停"外的手动运动会搅乱测点，屏蔽掉。
+            if (state.resonanceScanActive && reg !== 0x125 && reg !== 0x16E) {
+                log('[WARN] 共振自动检测进行中，已屏蔽该手动运动（如需干预请先中止扫描）');
+                return;
             }
             if (!state.connected) {
                 log('[WARN] 尚未连接串口，无法发送电机测试命令');
@@ -659,6 +675,41 @@
                     }
                 });
             }
+
+            // ===== 堵转阈值（0x174/0x175，存 Flash v6）=====
+            // 钳位口径与固件路由一致：写超界值固件会钳位，这里先钳一遍再写，
+            // 输入框留下的就是固件真实生效的值（写完不重读，回读一致靠钳位对齐）。
+            for (const [inputId, register, label, lo, hi] of [
+                ['stallQuietMsInput', CUSTOM_REGS.STALL_QUIET_MS, '堵转时长', 50, 3000],
+                ['stallMoveLsbInput', CUSTOM_REGS.STALL_MOVE_LSB, '堵转位移', 40, 1500]]) {
+                const el = document.getElementById(inputId);
+                if (!el) continue;
+                el.addEventListener('change', async function () {
+                    const value = clamp(Math.round(Number(this.value) || 0), lo, hi);
+                    this.value = String(value);
+                    if (!state.connected) return;
+                    try {
+                        await writeRegisterAndWaitAck(register, value);
+                        log(`[INFO] ${label}=${value}${register === CUSTOM_REGS.STALL_QUIET_MS ? 'ms' : 'LSB'}（固件回读一致）`
+                            + '；「写入参数到 Flash」后掉电保持');
+                    } catch (error) {
+                        log('[ERROR] ' + label + '写入失败：' + error.message);
+                    }
+                });
+            }
+
+            // 解除堵转（右下角全局按钮，堵转锁存时由 ui.js updateFaultStatus 显示）
+            const unlockStallBtn = document.getElementById('unlockStallBtn');
+            if (unlockStallBtn) unlockStallBtn.addEventListener('click', async () => {
+                if (!state.connected) return;
+                try {
+                    await writeRegisterAndWaitAck(CUSTOM_REGS.STALL_CLEAR, 1);
+                    log('[INFO] 已清除堵转锁存（0x15F=1）。建议先确认卡滞原因再启动。');
+                    await refreshStallStatus();
+                } catch (error) {
+                    log('[ERROR] 清除堵转失败：' + error.message);
+                }
+            });
 
             document.getElementById('extFollowMaxStepSInput').addEventListener('change', async function () {
                 const value = clamp(Math.round(Number(this.value) || 0), 0, 2560000);

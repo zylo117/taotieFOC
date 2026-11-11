@@ -190,6 +190,18 @@
                             log('[INFO] 运动源 = ' + ((src | 0) !== 0 ? '外部脉冲跟随（内部运动已互斥禁用）' : '内部规划')
                                 + `，共振带 [${(lo | 0)}, ${(hi | 0)}] RPM`);
                         }
+                        // 堵转阈值（0x174/0x175，Flash v6）：连接时同步一次，之后输入框归用户
+                        try {
+                            const quietMs = await readRegisterValue(CUSTOM_REGS.STALL_QUIET_MS, 750, 200);
+                            const moveLsb = await readRegisterValue(CUSTOM_REGS.STALL_MOVE_LSB, 750, 100);
+                            const qEl = document.getElementById('stallQuietMsInput');
+                            const mEl = document.getElementById('stallMoveLsbInput');
+                            if (qEl) qEl.value = String(quietMs | 0);
+                            if (mEl) mEl.value = String(moveLsb | 0);
+                            log(`[INFO] 堵转阈值：${(quietMs | 0)}ms / ${(moveLsb | 0)} LSB`);
+                        } catch (e) {
+                            log('[INFO] 堵转阈值读不到（旧固件没有 0x174/0x175，按默认 200ms/100LSB 显示）');
+                        }
                     } catch (e) {
                         log('[INFO] 运动源/共振带回读失败（旧固件没有 0x16D~0x170 就是这个）：' + e.message);
                     }
@@ -679,6 +691,13 @@
                 state.autoTuneCancelled = true;
                 appendTuneLog('收到停止命令，正在安全终止整定');
             }
+            // 共振扫描进行中：点缓停 = 请中止扫描（它会自己缓停收尾并恢复钳位），
+            // 不要越过扫描状态机裸写 0x163 把当前测点弄成半截数据。
+            if (state.resonanceScanActive && window.rsAbortScan) {
+                window.rsAbortScan();
+                log('[WARN] 共振扫描进行中：已请求中止（当前测点收尾后停）');
+                return;
+            }
             // 【缓停】写 0x163 而不是 0x11F=0：按 0x11C 的加速度减速到 0 就地收尾。
             // 高速运行中直接断脉冲（原行为），绕组反电动势会经 H 桥泵电流冲击驱动器；
             // 斜坡减速把这股能量摊到减速全程。立即断+失能是右下角红色「急停」(0x16E) 的事。
@@ -696,6 +715,10 @@
                 state.autoTuneCancelled = true;
                 appendTuneLog('急停：整定中止');
             }
+            // 共振扫描同理要叫停：不清标志就写 0x16E，扫描循环还会往一个被
+            // 强制失能的驱动器上继续发启动命令（失能锁住后全部 [SAFETY] 拒绝，
+            // 日志被刷爆且状态错乱）。中止走 finally：停运动 + 恢复 0x171 钳位。
+            if (window.rsAbortScan) window.rsAbortScan();
             if (!state.connected) {
                 log('[WARN] 未连接串口，急停按钮无法下发（必要时直接断电）');
                 return;

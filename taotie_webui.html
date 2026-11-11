@@ -823,6 +823,17 @@
                color:#fff;font-size:22px;font-weight:800;letter-spacing:2px;cursor:pointer;
                box-shadow:0 6px 18px rgba(185,28,28,0.55), inset 0 -6px 12px rgba(0,0,0,0.35);"
         title="急停（0x16E）：立即断脉冲 + 失能驱动器。恢复需点「使能」。">急停</button>
+<!-- ===== 解除堵转（仅在堵转锁存时出现，紧贴急停上方）=====
+     堵转触发后固件停机+失能+锁存（0x15D=1），不解除则一切运动命令都被 [SAFETY] 拒绝。
+     以前只能去「PID 整定」页里找那个不起眼的清除按钮 —— 异常发生在眼前却找不到开关，
+     所以把它做成全局按钮：出现即是在提示"你现在必须做这一步"。写 0x15F=1 解锁。
+     同急停一样必须放在脚本之前（bindControls 于加载时执行）。 -->
+<button id="unlockStallBtn" type="button" hidden
+        style="position:fixed;right:22px;bottom:130px;z-index:9999;height:44px;padding:0 18px;border-radius:10px;
+               border:3px solid #92400e;background:linear-gradient(180deg,#f59e0b,#d97706);
+               color:#fff;font-size:15px;font-weight:800;letter-spacing:1px;cursor:pointer;
+               box-shadow:0 4px 14px rgba(217,119,6,0.55);"
+        title="电机堵转锁存中（0x15D=1）：写 0x15F=1 解除。请先确认转子/负载已脱离卡滞。">⚠ 解除堵转</button>
 <div class="app">
     <header class="topbar">
         <div>
@@ -933,6 +944,27 @@
                         共振速度区间存 Flash，重启保持。巡航目标落进 [下限,上限] 会被固件钳到下限
                         （只在加减速途中“快切”穿过，不带内驻留共振）；上限填 0 或下限≥上限 = 关闭。
                         自动扫频/整定用 0x171 临时旁路，无需改这里。
+                    </p>
+                    <div class="inline" style="grid-column:1/-1;margin-top:2px;">
+                        <button id="resonanceScanBtn" type="button">自动检测共振区间</button>
+                        <span class="tiny">逐速巡检纹波骤增段 → 给出建议区间（会临时旁路钳位并让电机全速域自走，需空载）</span>
+                    </div>
+                </div>
+
+                <div class="grid-2">
+                    <div class="field">
+                        <label for="stallQuietMsInput">堵转时长（ms，0x174）</label>
+                        <input id="stallQuietMsInput" min="50" max="3000" step="10" type="number" value="200"/>
+                    </div>
+                    <div class="field">
+                        <label for="stallMoveLsbInput">堵转位移（LSB，0x175）</label>
+                        <input id="stallMoveLsbInput" min="40" max="1500" step="5" type="number" value="100"/>
+                    </div>
+                    <p class="tiny" style="grid-column:1/-1;margin:2px 0 0;">
+                        堵转判据：命令转动（≥8RPM）时，编码器<b>净位移</b>连续「堵转时长」都小于「堵转位移」→ 停机+失能+锁存，
+                        右下角出现「解除堵转」。时长加大 = 更宽容（低速大惯量防误报），减小 = 更灵敏；
+                        位移阈值必须高于静止噪声窗内净位移（实测约 100LSB），否则永不触发。
+                        默认 200ms / 100LSB。改动立即生效，「写入参数到 Flash」后掉电保持。
                     </p>
                 </div>
 
@@ -1565,19 +1597,55 @@
         </table>
     </dialog>
 
-    <script src="web/js/constants.js?v=20261110c"></script>
-    <script src="web/js/utils.js?v=20261110c"></script>
-    <script src="web/js/state.js?v=20261110c"></script>
-    <script src="web/js/protocol.js?v=20261110c"></script>
-    <script src="web/js/rx.js?v=20261110c"></script>
-    <script src="web/js/ui.js?v=20261110c"></script>
-    <script src="web/js/waveform.js?v=20261110c"></script>
-    <script src="web/js/lagangle.js?v=20261110c"></script>
-    <script src="web/js/pidtune.js?v=20261110c"></script>
-    <script src="web/js/enccal.js?v=20261110c"></script>
-    <script src="web/js/shock.js?v=20261110c"></script>
-    <script src="web/js/actions.js?v=20261110c"></script>
-    <script src="web/js/main.js?v=20261110c"></script>
+    <!-- ===== 共振区间自动检测（移植自 scripts/tt_resonance.py，逻辑说明见 web/js/resonance_scan.js）=====
+         用非模态 show()（不是 showModal）：急停钮必须始终可点；扫描期间手动运动由
+         state.resonanceScanActive 在运动入口处拒绝。 -->
+    <dialog class="lag-angle-dialog" id="resonanceScanDialog">
+        <div class="lag-angle-head">
+            <h2>共振区间自动检测</h2>
+            <button id="resonanceScanCloseBtn" type="button">关闭</button>
+        </div>
+        <div class="lag-angle-actions">
+            <button class="primary" id="resonanceScanStartBtn" type="button">开始扫描</button>
+            <button class="danger" id="resonanceScanAbortBtn" type="button" disabled>中止</button>
+            <button id="resonanceScanApplyBtn" type="button" disabled>应用为共振带</button>
+        </div>
+        <div class="lag-angle-settings">
+            <label>扫描起点 (RPM)<input id="resonanceScanLoRpm" type="number" min="20" max="6000" step="10" value="250"></label>
+            <label>扫描终点 (RPM)<input id="resonanceScanHiRpm" type="number" min="40" max="6000" step="10" value="650"></label>
+            <label>步长 (RPM)<input id="resonanceScanStepRpm" type="number" min="5" max="200" step="5" value="25"></label>
+            <label>每点窗口 (s)<input id="resonanceScanWindowS" type="number" min="0.5" max="5" step="0.1" value="1.2"></label>
+            <label>加速度 (RPM/s)<input id="resonanceScanAccelRpmS" type="number" min="100" max="12000" step="100" value="1500"></label>
+        </div>
+        <div class="lag-angle-legend">
+            <span><strong>原理：</strong>60RPM 采一段“纹波基线”（角度去趋势后的 σ/峰峰），再从起点逐点升速到终点，
+            每点等稳态采同样窗口。纹波 ≥3× 基线连续 2 点 = 带起点，回落 ≤1.6× 连续 2 点 = 带终点。
+            <strong>要求：电机空载、周围无人有物</strong> —— 带内会真实地剧烈抖动（钳位被临时旁路），
+            剧烈共振可能触发堵转：每次自动清锁存继续测，连炸 3 次中止。结束自动恢复钳位并留在内部规划模式。</span>
+        </div>
+        <div class="lag-angle-status">
+            <span aria-live="polite" id="resonanceScanStatus">等待开始</span>
+            <span id="resonanceScanProgress">0 / 0</span>
+        </div>
+        <div class="lag-angle-legend" style="max-height:220px;overflow:auto;">
+            <span id="resonanceScanLog" style="white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;"></span>
+        </div>
+    </dialog>
+
+    <script src="web/js/constants.js?v=20261111a"></script>
+    <script src="web/js/utils.js?v=20261111a"></script>
+    <script src="web/js/state.js?v=20261111a"></script>
+    <script src="web/js/protocol.js?v=20261111a"></script>
+    <script src="web/js/rx.js?v=20261111a"></script>
+    <script src="web/js/ui.js?v=20261111a"></script>
+    <script src="web/js/waveform.js?v=20261111a"></script>
+    <script src="web/js/lagangle.js?v=20261111a"></script>
+    <script src="web/js/pidtune.js?v=20261111a"></script>
+    <script src="web/js/enccal.js?v=20261111a"></script>
+    <script src="web/js/shock.js?v=20261111a"></script>
+    <script src="web/js/actions.js?v=20261111a"></script>
+    <script src="web/js/resonance_scan.js?v=20261111a"></script>
+    <script src="web/js/main.js?v=20261111a"></script>
 
 </body>
 </html>
