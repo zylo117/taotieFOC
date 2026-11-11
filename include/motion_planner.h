@@ -37,6 +37,23 @@ public:
     // 累加器里的步数留到下一拍慢慢补。
     bool emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns);
 
+    // ---------- 速度模式连续硬件 PWM（2026-11-12，450RPM 失步根因修复） ----------
+    // 连续速度模式（0x11E=2/3 + 0x11D=0）不走"每 50µs 重启 ARR 序列"的窗口出口，
+    // 而是让 TMR2 自由连续输出恒定周期 PWM（每拍只更新一次带预装载的 PR）：
+    // 脉冲间隔全局均匀，没有窗口边界死区、没有每窗重初始化 —— 与原版开环固件
+    // 同一拓扑。窗口重启的边界波纹在中高速吃掉了转矩裕量（实测 400RPM 持续丢
+    // 4% 步、430+ 崩溃，两台电机同速死）。位置/角度/校准/带计数速度段仍走窗口。
+    // startMotion 置位，stopMotion 经 velocityPwmHalt 清零。
+    bool velocity_pwm_active_ = false;
+    bool velocity_pwm_running_ = false;
+
+    // 每拍调用（rampUpdate，updateTrapezoid 与补偿之后）。返回 true = 本拍脉冲
+    // 已由连续 PWM 处理并完成记账，不要再走 emitSteps。
+    bool velocityPwmTick(uint64_t delta_ramp_ns);
+
+    // 停止连续输出并清 active（stopMotion 调用；重复调用安全）。
+    void velocityPwmHalt();
+
 private:
     ClosedLoopController& owner_;
 };

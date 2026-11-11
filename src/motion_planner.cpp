@@ -731,3 +731,99 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
 
     return false;
 }
+
+// ===========================================================================
+// 速度模式连续硬件 PWM —— 设计动机见 motion_planner.h。
+// TMR2 CH3 的 PWM 拓扑与窗口路径完全相同（PWM 模式 A + 低有效 + CCR=脉宽），
+// 唯一区别：ARR 不再是 DMA 逐窗喂的序列，而是每拍更新一次的恒定周期
+//（stepper_init_motion_timer 已开 PR 预装载，写入缓存到下个溢出才生效，不撕裂）。
+// 脉冲间隔全局均匀：没有窗口边界死区，没有每窗 halt/重装的时序抖动。
+// ===========================================================================
+bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
+{
+    ClosedLoopController& c = owner_;
+    if (!velocity_pwm_active_)
+    {
+        return false;
+    }
+
+    const uint32_t spr = c.getStepsPerRound();
+    // 目标脉冲率 = 规划速度 + 闭环速度补偿（与 emitSteps 同语义，脉冲频率非负，
+    // 方向只由 DIR/CH4 表达）。
+    float pps = c.current_step_speed_ + c.compensated_rps_ * static_cast<float>(spr);
+    if (pps < 0.0f)
+    {
+        pps = 0.0f;
+    }
+
+    // 16 位 PR @4ns tick：可表示上限 250k pps、下限 3815 pps（64 细分 ≈17.9 RPM）。
+    // 掉到下限以下（只发生在运行时换向的过零瞬间）就干脆不发，等斜坡升上来。
+    uint32_t pr_ticks = 0U;
+    if (pps >= 1.0f)
+    {
+        const float want = 1.0e9f / (static_cast<float>(stepper_common::target_tick_time) * pps);
+        if (want <= 65535.0f)
+        {
+            pr_ticks = static_cast<uint32_t>(want + 0.5f);
+            if (pr_ticks < kMinDriverStepPeriodTicks)
+            {
+                pr_ticks = kMinDriverStepPeriodTicks;
+            }
+        }
+    }
+
+    if (pr_ticks == 0U)
+    {
+        if (velocity_pwm_running_)
+        {
+            stepper_common::stepper_stop_motion_timer();
+            velocity_pwm_running_ = false;
+        }
+    }
+    else
+    {
+        if (!velocity_pwm_running_)
+        {
+            stepper_common::stepper_init_motion_timer(stepper_common::k_psc,
+                                                      stepper_common::k_step_pulse_ticks,
+                                                      c.motion_direction_ > 0);
+            velocity_pwm_running_ = true;
+        }
+        tmr_period_value_set(TMR2, pr_ticks);
+        c.step_period_us_ =
+            static_cast<uint16_t>((pr_ticks * stepper_common::target_tick_time + 500U) / 1000U);
+    }
+
+    // ---------- 记账（与窗口路径同一套账本，FollowError/对账/0x11F 语义不变） ----------
+    constexpr float kDtCapS = 150.0e-6f;  // 任务停顿保护，与 emitSteps 同值同理由
+    float dt = static_cast<float>(delta_ramp_ns) * 1.0e-9f;
+    if (dt > kDtCapS)
+    {
+        dt = kDtCapS;
+        c.step_catchup_events_++;
+    }
+    c.motion_speed_rpm_ = c.current_step_speed_ * 60.0f / static_cast<float>(spr);
+    c.motion_step_accumulator_ += pps * dt;
+    uint32_t n = 0U;
+    if (c.motion_step_accumulator_ >= 1.0f)
+    {
+        n = static_cast<uint32_t>(c.motion_step_accumulator_);
+        c.motion_step_accumulator_ -= static_cast<float>(n);
+    }
+    c.step_pulses_emitted_ += n;
+    c.motion_steps_emitted_ += n;
+    c.motion_steps_emitted_signed +=
+        static_cast<int32_t>(c.motion_direction_) * static_cast<int32_t>(n);
+    c.motion_dma_pending_signed = c.motion_direction_ * static_cast<int32_t>(n);
+    return true;
+}
+
+void MotionPlanner::velocityPwmHalt()
+{
+    if (velocity_pwm_running_)
+    {
+        stepper_common::stepper_stop_motion_timer();
+        velocity_pwm_running_ = false;
+    }
+    velocity_pwm_active_ = false;
+}

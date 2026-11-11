@@ -1150,6 +1150,14 @@ void ClosedLoopController::startMotion()
 
         max_step_per_ramp = 0;
 
+        // 连续速度模式（0x11D=0 → 0xFFFFFFFF）走"恒定周期 PWM"出口（见
+        // motion_planner.h velocityPwmTick 注释）；带计数/位置/角度/校准仍走窗口路径。
+        motion_planner_.velocity_pwm_active_ =
+            ((motion_mode_ == MOTION_MODE_VELOCITY_FORWARD ||
+              motion_mode_ == MOTION_MODE_VELOCITY_REVERSE) &&
+             motion_pulse_count_ == 0xFFFFFFFFU);
+        motion_planner_.velocity_pwm_running_ = false;
+
         // 全部参数准备好再开始
         motion_first_run_ = true;
         motion_running_ = true;
@@ -1866,6 +1874,14 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         }
     }
 
+    // 连续速度模式：TMR2 恒定周期 PWM 直出（绕过窗口出口），返回 true = 本拍已处理。
+    if (motion_planner_.velocityPwmTick(delta_ramp_ns))
+    {
+        motion_last_ramp_time_ns_ = now_ns;
+        syncProtocolTelemetry();
+        return;
+    }
+
     // 剩余部分（转速反算 + DDA 累加器 + 脉冲出口）已整体搬到 MotionPlanner（阶段 C）。
     // 返回 true = 出口拒绍（窗口连头尾 guard 都放不下）：本窗不发，时间戳已由内部前移，
     // 累加器里的步数留到下一拍慢慢补。
@@ -1935,6 +1951,8 @@ void ClosedLoopController::stopMotion()
     motion_direction_change_pending_ = false;
     motion_step_accumulator_ = 0.0f;
     compensated_motion_step_accumulator_ = 0.0f;
+    // 连续速度模式的恒定 PWM 输出（若在跑）一并停掉并解除接管。
+    motion_planner_.velocityPwmHalt();
     // 【必须清零】这三个都是有“记忆”的状态，不清理会让下一次启动从错误速度起跑：
     //
     // compensated_rps_（补偿速度 rps）：自从加了加速度限制后，它每拍的值是
