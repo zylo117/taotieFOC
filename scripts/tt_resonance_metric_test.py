@@ -176,8 +176,16 @@ def main():
     src_saved = host.read(0x16D)
     host.write(0x16D, 0)
     time.sleep(0.15)
-    if (host.read(0x16D) or 1) != 0:
-        print("!! 0x16D 写不进（运动源接管失败），中止")
+    # 回读重试：setMotionSource 的 [SOURCE] printf 文本会瞬时被 CDC 二进制帧流
+    # 夹带，单次 read 偶发 None（实机复现：写实际成功，回读超时）。
+    src_now = None
+    for _ in range(4):
+        src_now = host.read(0x16D)
+        if src_now is not None:
+            break
+        time.sleep(0.25)
+    if src_now != 0:
+        print(f"!! 0x16D 接管失败（回读 {src_now}），中止")
         host.close()
         return
     host.write(R_STALL_CLEAR, 1)
