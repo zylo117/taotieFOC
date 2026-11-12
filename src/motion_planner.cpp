@@ -771,8 +771,15 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
         tier = 1U;
     }
 
+    // 窄脉冲判档（仅 tier0）：>450k pps 进窄脉冲（300ns 高、周期下限 1µs，
+    // 顶到 1M pps≈4687RPM@64细分），<420k 回宽脉冲（迟滞防抖）。
+    const bool narrow = (tier == 0U) &&
+                        (velocity_pwm_narrow_ ? (pps > 420000.0f) : (pps >= 450000.0f));
+
     const uint32_t clock_hz = (tier == 0U) ? 250000000U : 31250000U;
-    const uint32_t pr_min = (tier == 0U) ? kMinDriverStepPeriodTicks : 63U;  // 两档都 ≈2µs
+    const uint32_t pr_min = (tier != 0U) ? 63U
+                                         : (narrow ? 250U : kMinDriverStepPeriodTicks);
+    const uint32_t ccr_ticks = narrow ? 75U : stepper_common::k_step_pulse_ticks;
     uint32_t pr_ticks = 0U;
     if (pps >= 1.0f)
     {
@@ -794,13 +801,14 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
     }
     else
     {
-        if (!velocity_pwm_running_ || tier != velocity_pwm_tier_)
+        if (!velocity_pwm_running_ || tier != velocity_pwm_tier_ || narrow != velocity_pwm_narrow_)
         {
             stepper_common::stepper_init_motion_timer((tier == 0U) ? 0U : 7U,
-                                                      stepper_common::k_step_pulse_ticks,
+                                                      ccr_ticks,
                                                       c.motion_direction_ > 0);
             velocity_pwm_running_ = true;
             velocity_pwm_tier_ = tier;
+            velocity_pwm_narrow_ = narrow;
         }
         tmr_period_value_set(TMR2, pr_ticks);
         c.step_period_us_ = static_cast<uint16_t>(
