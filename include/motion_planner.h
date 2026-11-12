@@ -57,6 +57,7 @@ public:
     // 下限对这块硬件不是墙，把它当墙是我的错误（低速段仍用 1µs 宽脉冲抗振铃，
     // 那是 24V 窄脉冲丢步修复保留的部分）。迟滞 450k 进 / 420k 出。
     bool velocity_pwm_narrow_ = false;
+    uint32_t velocity_pwm_ccr_ = 0U;   // 当前 CCR 装载值；0x172 改脉宽后触发重装
 
     // 每拍调用（rampUpdate，updateTrapezoid 与补偿之后）。返回 true = 本拍脉冲
     // 已由连续 PWM 处理并完成记账，不要再走 emitSteps。

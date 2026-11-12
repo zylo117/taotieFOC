@@ -777,9 +777,26 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
                         (velocity_pwm_narrow_ ? (pps > 420000.0f) : (pps >= 450000.0f));
 
     const uint32_t clock_hz = (tier == 0U) ? 250000000U : 31250000U;
-    const uint32_t pr_min = (tier != 0U) ? 63U
-                                         : (narrow ? 250U : kMinDriverStepPeriodTicks);
-    const uint32_t ccr_ticks = narrow ? 75U : stepper_common::k_step_pulse_ticks;
+    // 运行可调脉宽（0x172，诊断"驱动输入吃边沿"vs"转子微观滑步"）：
+    // 1µs 高电平在 213k pps 下是 TMC 规格下限，若丢步源于边沿漏检，加宽应缓解；
+    // 微观滑步则加宽无效。下限周期保证低电平 ≥1µs。tier1（<14RPM 蠕行）维持原宽。
+    uint32_t width_ns = c.step_pulse_width_ns_;
+    if (width_ns < 1000U)
+    {
+        width_ns = 1000U;
+    }
+    else if (width_ns > 5000U)
+    {
+        width_ns = 5000U;
+    }
+    const uint32_t wide_ccr = (tier == 0U) ? (width_ns / 4U) : stepper_common::k_step_pulse_ticks;
+    const uint32_t ccr_ticks = narrow ? 75U : wide_ccr;
+    const uint32_t wide_min_with_margin = (width_ns / 4U) + 250U;  // 低电平≥1µs
+    const uint32_t pr_min = (tier != 0U)
+        ? 63U
+        : (narrow ? 250U
+                  : (kMinDriverStepPeriodTicks > wide_min_with_margin ? kMinDriverStepPeriodTicks
+                                                                      : wide_min_with_margin));
     uint32_t pr_ticks = 0U;
     if (pps >= 1.0f)
     {
@@ -801,7 +818,8 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
     }
     else
     {
-        if (!velocity_pwm_running_ || tier != velocity_pwm_tier_ || narrow != velocity_pwm_narrow_)
+        if (!velocity_pwm_running_ || tier != velocity_pwm_tier_ || narrow != velocity_pwm_narrow_ ||
+            ccr_ticks != velocity_pwm_ccr_)
         {
             stepper_common::stepper_init_motion_timer((tier == 0U) ? 0U : 7U,
                                                       ccr_ticks,
@@ -809,6 +827,7 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
             velocity_pwm_running_ = true;
             velocity_pwm_tier_ = tier;
             velocity_pwm_narrow_ = narrow;
+            velocity_pwm_ccr_ = ccr_ticks;
         }
         tmr_period_value_set(TMR2, pr_ticks);
         c.step_period_us_ = static_cast<uint16_t>(
