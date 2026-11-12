@@ -1451,6 +1451,16 @@ void ClosedLoopController::updateStallGuard(uint64_t now_ns)
         return;
     }
 
+    // 【角度模式豁免】闭环角度模式天然存在"指令在推、轴不许动"的合法窗口
+    // （过冲收回/到位保持都要顶着单向输出地板倒车），这正是本守卫的误伤面
+    // ——实测 5° 小步过冲 1~2° 全部被锁成堵转+自动失能。守卫的本职是抓
+    // 开环"发脉冲轴不动"；真卡死时 UI 大误差常明，不靠这里兜。
+    if (closed_loop_angle_mode_enabled_)
+    {
+        stall_armed_ = false;
+        return;
+    }
+
     const uint32_t now32 = static_cast<uint32_t>(now_ns);
     const float command_rps = fast_abs(current_step_speed_) / static_cast<float>(getStepsPerRound());
     const bool commanding = motion_running_ && (command_rps * 60.0f) >= kStallMinCommandRpm;
