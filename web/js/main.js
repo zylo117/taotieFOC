@@ -276,7 +276,7 @@
             const motionMode = Number(document.getElementById('motionModeSelect').value || 0);
             const pulseCount = Math.max(2, Math.round(getEffectivePulseCount()));
             const windowMs = clamp(Number(document.getElementById('waveWindowMsInput').value || 10000), 10000, 10000);
-            const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 200), 200, 20000);
+            const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 1000), 1000, 20000);
             const encoderFilterWindow = readEncoderFilterWindowInput();
             document.getElementById('waveWindowMsInput').value = String(windowMs);
             document.getElementById('stepPulseWidthNsInput').value = String(stepPulseWidthNs);

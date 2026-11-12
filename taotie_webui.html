@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-    <title>闭环驱动参数配置�?/title>
+    <title>闭环驱动参数配置器</title>
     <style>
         :root {
             --bg: #0f172a;
@@ -810,44 +810,51 @@
 </head>
 <body>
 <!-- ===== 急停（固定右下角，任何页面状态下都可见可点）=====
-     0x16E：立即断脉冲 + 失能驱动器（EN 拉低�?H 桥高阻，转子自由滑行 —�?     电气上比"断脉冲但保持励磁"温和）。注意机械上失去保持矩：垂直轴会掉�?     与规划卡里的「缓停」不同级：这是异常情况下拍的按钮，所以又大又红又固定�?     【位置是修出来的，别挪回脚本之后】main.js 在加载时就执�?bindControls()�?     元素必须在脚本运行前存在�?DOM ——原来放�?<script> 之后导致
-     getElementById 拿到 null，急停按钮从未绑上监听�?026-11-10 实机反馈）�?     position:fixed �?DOM 位置无关，放这里视觉完全一样�?-->
+     0x16E：立即断脉冲 + 失能驱动器（EN 拉低后 H 桥高阻，转子自由滑行 ——
+     电气上比"断脉冲但保持励磁"温和）。注意机械上失去保持矩：垂直轴会掉。
+     与规划卡里的「缓停」不同级：这是异常情况下拍的按钮，所以又大又红又固定。
+     【位置是修出来的，别挪回脚本之后】main.js 在加载时就执行 bindControls()，
+     元素必须在脚本运行前存在于 DOM ——原来放在 <script> 之后导致
+     getElementById 拿到 null，急停按钮从未绑上监听（2026-11-10 实机反馈）。
+     position:fixed 与 DOM 位置无关，放这里视觉完全一样。 -->
 <button id="emergencyStopBtn" type="button"
         style="position:fixed;right:22px;bottom:22px;z-index:9999;width:96px;height:96px;border-radius:50%;
                border:4px solid #7f1d1d;background:radial-gradient(circle at 35% 30%, #ef4444, #b91c1c 70%);
                color:#fff;font-size:22px;font-weight:800;letter-spacing:2px;cursor:pointer;
                box-shadow:0 6px 18px rgba(185,28,28,0.55), inset 0 -6px 12px rgba(0,0,0,0.35);"
-        title="急停�?x16E）：立即断脉�?+ 失能驱动器。恢复需点「使能」�?>急停</button>
-<!-- ===== 解除堵转（仅在堵转锁存时出现，紧贴急停上方�?====
-     堵转触发后固件停�?失能+锁存�?x15D=1），不解除则一切运动命令都�?[SAFETY] 拒绝�?     以前只能去「PID 整定」页里找那个不起眼的清除按钮 —�?异常发生在眼前却找不到开关，
-     所以把它做成全局按钮：出现即是在提示"你现在必须做这一�?。写 0x15F=1 解锁�?     同急停一样必须放在脚本之前（bindControls 于加载时执行）�?-->
+        title="急停（0x16E）：立即断脉冲 + 失能驱动器。恢复需点「使能」。">急停</button>
+<!-- ===== 解除堵转（仅在堵转锁存时出现，紧贴急停上方）=====
+     堵转触发后固件停机+失能+锁存（0x15D=1），不解除则一切运动命令都被 [SAFETY] 拒绝。
+     以前只能去「PID 整定」页里找那个不起眼的清除按钮 —— 异常发生在眼前却找不到开关，
+     所以把它做成全局按钮：出现即是在提示"你现在必须做这一步"。写 0x15F=1 解锁。
+     同急停一样必须放在脚本之前（bindControls 于加载时执行）。 -->
 <button id="unlockStallBtn" type="button" hidden
         style="position:fixed;right:22px;bottom:130px;z-index:9999;height:44px;padding:0 18px;border-radius:10px;
                border:3px solid #92400e;background:linear-gradient(180deg,#f59e0b,#d97706);
                color:#fff;font-size:15px;font-weight:800;letter-spacing:1px;cursor:pointer;
                box-shadow:0 4px 14px rgba(217,119,6,0.55);"
-        title="电机堵转锁存中（0x15D=1）：�?0x15F=1 解除。请先确认转�?负载已脱离卡滞�?>�?解除堵转</button>
+        title="电机堵转锁存中（0x15D=1）：写 0x15F=1 解除。请先确认转子/负载已脱离卡滞。">⚠ 解除堵转</button>
 <div class="app">
     <header class="topbar">
         <div>
-            <div class="title">闭环驱动参数配置�?/div>
+            <div class="title">闭环驱动参数配置器</div>
             <div class="subtitle">TMC 兼容协议 + 闭环扩展参数 + 实时位置控制</div>
         </div>
         <div class="actions">
             <button class="primary" id="connectBtn">连接串口</button>
-            <!-- 没有断开按钮�?Web Serial 页面是半成品：拔�?切设备前无法释放
-                 reader/writer 锁，重连会在�?port 上叠第二�?reader�?-->
+            <!-- 没有断开按钮的 Web Serial 页面是半成品：拔线/切设备前无法释放
+                 reader/writer 锁，重连会在旧 port 上叠第二个 reader。 -->
             <button id="disconnectBtn">断开</button>
             <button id="readAllBtn">读取全部</button>
-            <button id="calibrateEncoderBtn" title="校准第一步自动鉴别磁钢极性：开环向�?1/4 圈，反装自动反转读数再归零，之后「俯视顺时针=正」恒成立（磁钢任意装法）。方向不变式的前提是接线：正转命�?俯视顺时针；换电机后先低速正转肉眼确认转向再校准。换向请对调同一相绕组的两根线（跨相各拿一根会破坏相序，电机不转）�?>磁编码器校准</button>
-            <button id="lagAngleCalibrationBtn">滞后角校�?/button>
+            <button id="calibrateEncoderBtn" title="校准第一步自动鉴别磁钢极性：开环向前 1/4 圈，反装自动反转读数再归零，之后「俯视顺时针=正」恒成立（磁钢任意装法）。方向不变式的前提是接线：正转命令=俯视顺时针；换电机后先低速正转肉眼确认转向再校准。换向请对调同一相绕组的两根线（跨相各拿一根会破坏相序，电机不转）。">磁编码器校准</button>
+            <button id="lagAngleCalibrationBtn">滞后角校准</button>
             <button id="shockCalibrationBtn">急刹冲击标定</button>
-            <button id="viewCalibrationTableBtn">查看校准�?/button>
+            <button id="viewCalibrationTableBtn">查看校准表</button>
             <button class="warn" id="tuneBtn">自动整定</button>
             <span class="badge" id="cpuUsageBadge">CPU --%</span>
             <span class="badge" id="controlUsageBadge">控制 --%</span>
-            <span class="badge ok" id="faultBadge"><span class="led"></span> 无故�?/span>
-            <span class="badge" id="connBadge">未连�?/span>
+            <span class="badge ok" id="faultBadge"><span class="led"></span> 无故障</span>
+            <span class="badge" id="connBadge">未连接</span>
         </div>
     </header>
 
@@ -879,8 +886,10 @@
                         </div>
                     </div>
                     <p class="tiny" style="margin-top:8px;line-height:1.6;">
-                        <strong>PID 参数�?/strong>网页与固件用<strong>同一套�?/strong>（这里填 9.0 固件就是 9.0），角度模式不做任何缩放�?                        角度模式内部把上一拍输出当作基础速度（相当于给位置环一个积分器），所以小 P 也能逐渐把速度滚起来；
-                        但代价是速度�?strong>不能�?Ki 消除稳态误�?/strong>（会正反馈发散），速度环只当阻尼用�?                    </p>
+                        <strong>PID 参数：</strong>网页与固件用<strong>同一套值</strong>（这里填 9.0 固件就是 9.0），角度模式不做任何缩放。
+                        角度模式内部把上一拍输出当作基础速度（相当于给位置环一个积分器），所以小 P 也能逐渐把速度滚起来；
+                        但代价是速度环<strong>不能靠 Ki 消除稳态误差</strong>（会正反馈发散），速度环只当阻尼用。
+                    </p>
                 </div>
 
                 <div class="grid-2">
@@ -899,135 +908,144 @@
                 </div>
 
                 <div class="inline">
-                    <button class="primary" id="sendTargetBtn">发送目标位�?/button>
+                    <button class="primary" id="sendTargetBtn">发送目标位置</button>
                     <button id="zeroBtn">归零</button>
-                    <!-- 这里的「缓停」是全局唯一的减速停止（0x163）；立即�?失能是右下角红色急停钮（0x16E）�?                         原归零隔壁那个重复的缓停已删�?026-11-10）：两处入口只留一处，避免语义漂移�?-->
+                    <!-- 这里的「缓停」是全局唯一的减速停止（0x163）；立即断+失能是右下角红色急停钮（0x16E）。
+                         原归零隔壁那个重复的缓停已删（2026-11-10）：两处入口只留一处，避免语义漂移。 -->
                 </div>
 
                 <div class="status-line">
-                    <span>速度�?strong id="speedValue">0.00</strong> RPM</span>
-                    <span>加速度�?strong id="accelValue">0.00</strong> RPM/s</span>
-                    <span>电流�?strong id="currentValue">0.00</strong> A</span>
+                    <span>速度：<strong id="speedValue">0.00</strong> RPM</span>
+                    <span>加速度：<strong id="accelValue">0.00</strong> RPM/s</span>
+                    <span>电流：<strong id="currentValue">0.00</strong> A</span>
                 </div>
 
                 <div class="grid-2">
                     <div class="field">
-                        <label for="angleMaxRpmInput">闭环最大速度（RPM�?/label>
+                        <label for="angleMaxRpmInput">闭环最大速度（RPM）</label>
                         <input id="angleMaxRpmInput" min="1" max="12000" step="1" type="number" value="1200"/>
                     </div>
                     <div class="field">
-                        <label for="angleAccelRpmSInput">闭环加速度（RPM/s�?/label>
+                        <label for="angleAccelRpmSInput">闭环加速度（RPM/s）</label>
                         <input id="angleAccelRpmSInput" min="1" max="12000" step="1" type="number" value="6000"/>
                     </div>
                 </div>
 
                 <div class="grid-2">
                     <div class="field">
-                        <label for="resonanceLoRpmInput">共振带下限（RPM�?x16F�?/label>
+                        <label for="resonanceLoRpmInput">共振带下限（RPM，0x16F）</label>
                         <input id="resonanceLoRpmInput" min="0" max="6000" step="10" type="number" value="300"/>
                     </div>
                     <div class="field">
-                        <label for="resonanceHiRpmInput">共振带上限（RPM�?x170�?/label>
+                        <label for="resonanceHiRpmInput">共振带上限（RPM，0x170）</label>
                         <input id="resonanceHiRpmInput" min="0" max="6000" step="10" type="number" value="600"/>
                     </div>
                     <p class="tiny" style="grid-column:1/-1;margin:2px 0 0;">
-                        共振速度区间�?Flash，重启保持�?strong>这是检测热区的标记，仅供参�?/strong>—�?                        固件不会因它钳位任何运动（内�?外部/角度一律照你设定的速度跑，进带只在日志提示）�?                        上限�?0 或下限≥上限 = 清空标记�?                    </p>
+                        共振速度区间存 Flash，重启保持。<strong>这是检测热区的标记，仅供参考</strong>——
+                        固件不会因它钳位任何运动（内部/外部/角度一律照你设定的速度跑，进带只在日志提示）。
+                        上限填 0 或下限≥上限 = 清空标记。
+                    </p>
                     <div class="inline" style="grid-column:1/-1;margin-top:2px;">
-                        <button id="resonanceScanBtn" type="button">自动检测共振区�?/button>
-                        <span class="tiny">逐速巡检跟随误差残差骤增�?�?给出建议区间（让电机全速域自走，需空载�?/span>
+                        <button id="resonanceScanBtn" type="button">自动检测共振区间</button>
+                        <span class="tiny">逐速巡检跟随误差残差骤增段 → 给出建议区间（让电机全速域自走，需空载）</span>
                     </div>
                 </div>
 
                 <div class="grid-2">
                     <div class="field">
-                        <label for="stallQuietMsInput">堵转时长（ms�?x174�?/label>
+                        <label for="stallQuietMsInput">堵转时长（ms，0x174）</label>
                         <input id="stallQuietMsInput" min="50" max="3000" step="10" type="number" value="200"/>
                     </div>
                     <div class="field">
-                        <label for="stallMoveLsbInput">堵转位移（LSB�?x175�?/label>
+                        <label for="stallMoveLsbInput">堵转位移（LSB，0x175）</label>
                         <input id="stallMoveLsbInput" min="40" max="1500" step="5" type="number" value="100"/>
                     </div>
                     <p class="tiny" style="grid-column:1/-1;margin:2px 0 0;">
-                        堵转判据：命令转动（�?RPM）时，编码器<b>净位移</b>连续「堵转时长」都小于「堵转位移」→ 停机+失能+锁存�?                        右下角出现「解除堵转」。时长加�?= 更宽容（低速大惯量防误报），减�?= 更灵敏；
-                        位移阈值必须高于静止噪声窗内净位移（实测约 100LSB），否则永不触发�?                        默认 200ms / 100LSB。改动立即生效，「写入参数到 Flash」后掉电保持�?                    </p>
+                        堵转判据：命令转动（≥8RPM）时，编码器<b>净位移</b>连续「堵转时长」都小于「堵转位移」→ 停机+失能+锁存，
+                        右下角出现「解除堵转」。时长加大 = 更宽容（低速大惯量防误报），减小 = 更灵敏；
+                        位移阈值必须高于静止噪声窗内净位移（实测约 100LSB），否则永不触发。
+                        默认 200ms / 100LSB。改动立即生效，「写入参数到 Flash」后掉电保持。
+                    </p>
                 </div>
 
-                <!-- 模式区外框：�?tab 按钮、共用区、两个模式页包在一起，视觉上是一整块 -->
+                <!-- 模式区外框：把 tab 按钮、共用区、两个模式页包在一起，视觉上是一整块 -->
                 <div style="border:1px solid rgba(148,163,184,0.32);border-radius:14px;padding:14px;margin-bottom:16px;background:rgba(15,23,42,0.35);">
                 <div class="inline" style="margin-bottom:12px;">
                     <button class="primary" id="tabMotionBtn">内部规划运动</button>
                     <button id="tabExtFollowBtn">外部脉冲运动</button>
                     <span class="tiny" style="margin-left:8px;">
-                        两个模式共用同一�?STEP 输出通道，固件里本来就互斥；�?tab 会同时切固件模式�?                    </span>
+                        两个模式共用同一套 STEP 输出通道，固件里本来就互斥；切 tab 会同时切固件模式。
+                    </span>
                 </div>
 
-                <!-- 共用区：两个模式都会用到，不�?tab 隐藏 -->
+                <!-- 共用区：两个模式都会用到，不随 tab 隐藏 -->
                 <div class="card">
                     <h3 style="margin:0 0 12px;">控制模式</h3>
                     <div class="inline">
-                        <button id="motorEnableBtn">电机使能（EN=0�?/button>
-                        <button id="motorDisableBtn">电机失能（EN=1�?/button>
+                        <button id="motorEnableBtn">电机使能（EN=0）</button>
+                        <button id="motorDisableBtn">电机失能（EN=1）</button>
                         <button id="pauseWaveBtn">暂停查看</button>
                         <button id="popWaveBtn">弹出波形</button>
                     </div>
                     <div class="field mt">
-                        <label for="enableModeSelect">使能来源�?x161�?/label>
+                        <label for="enableModeSelect">使能来源（0x161）</label>
                         <select id="enableModeSelect">
-                            <option value="0">上位机控制（0x124 / 0x125�?/option>
-                            <option value="1">外部 EN 引脚（PC13，低电平使能�?/option>
+                            <option value="0">上位机控制（0x124 / 0x125）</option>
+                            <option value="1">外部 EN 引脚（PC13，低电平使能）</option>
                         </select>
                         <div class="tiny">
-                            外部模式�?PC13 是唯一权威：上面两个按钮只�?撤销许可"（失能），不能强行使能；
-                            故障/堵转仍然能压�?EN。改完点「写入参数到 Flash」才会掉电保持�?                            当前状态：<strong id="enableStateReadout">未知</strong>
+                            外部模式下 PC13 是唯一权威：上面两个按钮只能"撤销许可"（失能），不能强行使能；
+                            故障/堵转仍然能压住 EN。改完点「写入参数到 Flash」才会掉电保持。
+                            当前状态：<strong id="enableStateReadout">未知</strong>
                         </div>
                     </div>
                     <div class="field mt">
                         <label for="closedLoopEnableInput">闭环补偿（两个模式共用）</label>
                         <label class="checkbox-row">
                             <input id="closedLoopEnableInput" type="checkbox"/>
-                            <span>位置/速度�?PID 补偿。默认关闭：外部脉冲跟随开启补偿后会叠一层修正输出，无积压也会超速�?/span>
+                            <span>位置/速度环 PID 补偿。默认关闭：外部脉冲跟随开启补偿后会叠一层修正输出，无积压也会超速。</span>
                         </label>
                     </div>
                     <div class="status-line mt" style="flex-direction:column;align-items:flex-start;gap:4px;">
                         <span>即时转速：<strong id="waveSpeedReadout">0.00 RPM</strong></span>
                         <span>实时滞后角：<strong id="waveLagAngleReadout">0.000°</strong></span>
-                        <span>跟随误差�?strong id="waveErrorReadout">0.000°</strong></span>
+                        <span>跟随误差：<strong id="waveErrorReadout">0.000°</strong></span>
                     </div>
                 </div>
 
                 <!-- 波形图也是两个模式共用的：测速看梯形跟随，外部跟随看 1:1 转发质量 -->
                 <div class="card">
-                    <h3 style="margin:0 0 12px;">实时波形（转�?/ 跟随误差�?/h3>
+                    <h3 style="margin:0 0 12px;">实时波形（转速 / 跟随误差）</h3>
                     <label class="checkbox-row" style="margin:-6px 0 10px;">
                         <input id="waveExcludeLagAngleInput" type="checkbox"/>
-                        <span>误差不计滞后角（勾选后波形�?跟随误差 + 滞后�?绘制；仅影响显示，不改控制）</span>
+                        <span>误差不计滞后角（勾选后波形用 跟随误差 + 滞后角 绘制；仅影响显示，不改控制）</span>
                     </label>
-                    <div class="tiny mt" id="motionDurationEstimate">预计时间：等待参�?/div>
+                    <div class="tiny mt" id="motionDurationEstimate">预计时间：等待参数</div>
                     <canvas height="260" id="motionWaveCanvas" style="width:100%;height:260px;border:1px solid rgba(148,163,184,0.25);border-radius:12px;background:rgba(2,6,23,0.7);margin-top:12px;"
                             width="620"></canvas>
                     <div class="wave-readouts">
-                        <span>峰�?|误差| <strong id="waveErrorPeakReadout">0.000°</strong></span>
-                        <span>末值（停止瞬间�?<strong id="waveErrorLastReadout">0.000°</strong></span>
+                        <span>峰值 |误差| <strong id="waveErrorPeakReadout">0.000°</strong></span>
+                        <span>末值（停止瞬间） <strong id="waveErrorLastReadout">0.000°</strong></span>
                     </div>
                 </div>
 
                 <div class="card" id="cardMotion">
-                    <h3 style="margin:0 0 12px;">内部规划运动（梯形加减�?/ 位置角度控制�?/h3>
+                    <h3 style="margin:0 0 12px;">内部规划运动（梯形加减速 / 位置角度控制）</h3>
                     <div class="grid-2">
                         <div class="field">
-                            <label>启动转速（RPM�?/label>
+                            <label>启动转速（RPM）</label>
                             <select id="startRpmSelect"></select>
                         </div>
                         <div class="field">
-                            <label>最高转速（RPM�?/label>
+                            <label>最高转速（RPM）</label>
                             <select id="maxRpmSelect"></select>
                         </div>
                         <div class="field">
-                            <label>加速度（RPM/s�?/label>
+                            <label>加速度（RPM/s）</label>
                             <select id="accelRpmSelect"></select>
                         </div>
                         <div class="field">
-                            <label>脉冲数（STEP 个数�?/label>
+                            <label>脉冲数（STEP 个数）</label>
                             <input id="pulseCountInput" min="0" step="1" type="number" value="640000"/>
                         </div>
                         <div class="field">
@@ -1039,26 +1057,26 @@
                                 <option value="3">速度反转</option>
                                 <option value="4">正转归零</option>
                                 <option value="5">反转归零</option>
-                                <option value="6">正向起步往�?/option>
-                                <option value="7">反向起步往�?/option>
+                                <option value="6">正向起步往返</option>
+                                <option value="7">反向起步往返</option>
                             </select>
                         </div>
                         <div class="field">
-                            <label>窗口长度�?0 秒）</label>
+                            <label>窗口长度（10 秒）</label>
                             <input id="waveWindowMsInput" max="10000" min="10000" step="100" type="number" value="10000"/>
                         </div>
                         <div class="field">
-                            <label>STEP 脉宽（ns�?/label>
+                            <label>STEP 脉宽（ns）</label>
                             <input id="stepPulseWidthNsInput" max="20000" min="1000" step="20" type="number"
                                    value="1000"/>
                         </div>
                         <div class="field">
-                            <label for="encoderFilterWindowInput">编码器滤波窗口（样本�?/label>
+                            <label for="encoderFilterWindowInput">编码器滤波窗口（样本）</label>
                             <input id="encoderFilterWindowInput" max="256" min="0" step="1" type="number"
                                    value="4"/>
                         </div>
                         <div class="field">
-                            <label for="lagAngleFfRatioInput">滞后角前馈信任度�?�?/label>
+                            <label for="lagAngleFfRatioInput">滞后角前馈信任度（%）</label>
                             <input id="lagAngleFfRatioInput" max="100" min="0" step="5" type="number"
                                    value="100"/>
                         </div>
@@ -1068,27 +1086,36 @@
                         <button id="stopMotionBtn">缓停</button>
                         <button class="warn" id="singleStepBtn">半圈正向脉冲</button>
                     </div>
-                    <div class="tiny mt">说明：脉冲数就是实际下发给驱动器�?STEP 个数�? �?STEP = 1 个微步，
-                        与驱动器当前微步设置一致（一�?= 200 × 微步数，默认 64 细分 = 12800）。波形图�?                        “理论累计行程”也是按这个口径换算的，不再沿用过去那套“固�?256 细分 / 51200 一圈”的说法�?                    </div>
-                    <div class="tiny mt">编码器滤波窗口：0 = 关闭滤波（噪声最大、零滞后）�?                        窗口 = 4（默认）正好盖住一个控制周期内�?4 次喷发采�?                        （SPI 7.8MHz，每�?2.05µs，总跨�?8.2µs），
-                        每拍整个替换一遍，所以没有跨周期历史、也没有群延迟�?                        填大�?4 就会开始跨控制周期（每�?1 �?2.05µs 历史），
-                        跟随误差会随之变大，不建议。改完下发约 1 秒后才生效�?                        SPI 已实测上限：7.8MHz；再高到 15.6MHz 会因 MISO 建立时间不足而角度错乱�?                    </div>
-                    <div class="tiny mt">STEP 输入脚固定用内部下拉（约 40k），悬空时不会乱跳，推挽驱动可直连�?                        若改接开�?/ 源极跟随这类弱驱动，需要在 pulse_capture.cpp 里把
-                        PULSE_CAPTURE_INPUT_PULL_DOWN �?0（编译期开关）后重新烧写�?                    </div>
+                    <div class="tiny mt">说明：脉冲数就是实际下发给驱动器的 STEP 个数，1 个 STEP = 1 个微步，
+                        与驱动器当前微步设置一致（一圈 = 200 × 微步数，默认 64 细分 = 12800）。波形图的
+                        “理论累计行程”也是按这个口径换算的，不再沿用过去那套“固定 256 细分 / 51200 一圈”的说法。
+                    </div>
+                    <div class="tiny mt">编码器滤波窗口：0 = 关闭滤波（噪声最大、零滞后）。
+                        窗口 = 4（默认）正好盖住一个控制周期内的 4 次喷发采样
+                        （SPI 7.8MHz，每次 2.05µs，总跨度 8.2µs），
+                        每拍整个替换一遍，所以没有跨周期历史、也没有群延迟。
+                        填大于 4 就会开始跨控制周期（每超 1 多 2.05µs 历史），
+                        跟随误差会随之变大，不建议。改完下发约 1 秒后才生效。
+                        SPI 已实测上限：7.8MHz；再高到 15.6MHz 会因 MISO 建立时间不足而角度错乱。
+                    </div>
+                    <div class="tiny mt">STEP 输入脚固定用内部下拉（约 40k），悬空时不会乱跳，推挽驱动可直连。
+                        若改接开漏 / 源极跟随这类弱驱动，需要在 pulse_capture.cpp 里把
+                        PULSE_CAPTURE_INPUT_PULL_DOWN 置 0（编译期开关）后重新烧写。
+                    </div>
                 </div>
 
                 <div class="card" id="cardExtFollow" style="display:none;">
-                    <h3 style="margin:0 0 12px;">外部脉冲运动（PUL/DIR 从站�?/h3>
+                    <h3 style="margin:0 0 12px;">外部脉冲运动（PUL/DIR 从站）</h3>
                     <div class="grid-2">
                         <div class="field">
                             <label for="extFollowEnableInput">跟随使能</label>
                             <label class="checkbox-row">
                                 <input id="extFollowEnableInput" type="checkbox"/>
-                                <span>PB5/PB4 收到的脉�?1:1 重发给电�?/span>
+                                <span>PB5/PB4 收到的脉冲 1:1 重发给电机</span>
                             </label>
                         </div>
                         <div class="field">
-                            <label for="extFollowMaxStepSInput">跟随限速（�?s�? = 自动�?/label>
+                            <label for="extFollowMaxStepSInput">跟随限速（步/s，0 = 自动）</label>
                             <input id="extFollowMaxStepSInput" max="2560000" min="0" step="1000" type="number"
                                    value="0"/>
                         </div>
@@ -1098,11 +1125,11 @@
                     </div>
                     <div class="status-grid mt">
                         <div class="status-item">
-                            <div class="label">命令�?/div>
+                            <div class="label">命令步</div>
                             <div class="value" id="extFollowCmdValue">0</div>
                         </div>
                         <div class="status-item">
-                            <div class="label">已转�?/div>
+                            <div class="label">已转发</div>
                             <div class="value" id="extFollowEmittedValue">0</div>
                         </div>
                         <div class="status-item">
@@ -1118,11 +1145,15 @@
                             <div class="value" id="extFollowReversalValue">0</div>
                         </div>
                     </div>
-                    <div class="tiny mt">说明�? 个外�?PUL 脉冲 = 1 个驱动器微步。勾选后 PB5 上的脉冲立刻成为位置命令�?                        并与“启�?停止”按钮互斥（跟随时启动命令会被固件忽略）�?br/>
-                        开环（不勾“脉冲运�?PID 补偿”）：只按限速把积压 1:1 发出去�?br/>
-                        闭环（勾�?PID 补偿）：再叠一层位�?速度环修正，用编码器把实际角度拉回命令位置�?br/>
-                        积压超过一圈说明输入频率已经超过限速，超出的部分计入“累计丢步”只做告警，不中断跟随�?br/>
-                        “窗内换向”是 50µs 窗口�?DIR 翻过方向的次数。一个窗口只能落成一�?DMA 序列�?                        一个方向，这类窗口里的往返会被净和压平——终点位置仍对，但中间那段轨迹没执行�?                        有背�?弹性传动的机构会按次累积偏差。持续增长就说明外部频率高到要上段队列了�?                    </div>
+                    <div class="tiny mt">说明：1 个外部 PUL 脉冲 = 1 个驱动器微步。勾选后 PB5 上的脉冲立刻成为位置命令，
+                        并与“启动/停止”按钮互斥（跟随时启动命令会被固件忽略）。<br/>
+                        开环（不勾“脉冲运动 PID 补偿”）：只按限速把积压 1:1 发出去。<br/>
+                        闭环（勾上 PID 补偿）：再叠一层位置/速度环修正，用编码器把实际角度拉回命令位置。<br/>
+                        积压超过一圈说明输入频率已经超过限速，超出的部分计入“累计丢步”只做告警，不中断跟随。<br/>
+                        “窗内换向”是 50µs 窗口内 DIR 翻过方向的次数。一个窗口只能落成一个 DMA 序列、
+                        一个方向，这类窗口里的往返会被净和压平——终点位置仍对，但中间那段轨迹没执行，
+                        有背隙/弹性传动的机构会按次累积偏差。持续增长就说明外部频率高到要上段队列了。
+                    </div>
                 </div>
                 </div>
             </div>
@@ -1130,7 +1161,7 @@
 
         <div class="wave-popup" id="wavePopup">
             <div class="wave-popup-header" id="wavePopupHeader">
-                <h3>测速波形（独立窗口�?/h3>
+                <h3>测速波形（独立窗口）</h3>
                 <div class="wave-popup-actions">
                     <button id="maximizeWavePopupBtn">最大化</button>
                     <button id="closeWavePopupBtn">关闭</button>
@@ -1139,23 +1170,23 @@
             <div class="wave-popup-body">
                 <canvas height="320" id="motionWavePopupCanvas" width="820"></canvas>
                 <div class="wave-readouts">
-                    <span>即时转�?<strong id="wavePopupSpeedReadout">0.00 RPM</strong></span>
+                    <span>即时转速 <strong id="wavePopupSpeedReadout">0.00 RPM</strong></span>
                     <span>即时跟随误差 <strong id="wavePopupErrorReadout">0.000°</strong></span>
-                    <span>峰�?|误差| <strong id="wavePopupErrorPeakReadout">0.000°</strong></span>
-                    <span>末值（停止瞬间�?<strong id="wavePopupErrorLastReadout">0.000°</strong></span>
+                    <span>峰值 |误差| <strong id="wavePopupErrorPeakReadout">0.000°</strong></span>
+                    <span>末值（停止瞬间） <strong id="wavePopupErrorLastReadout">0.000°</strong></span>
                 </div>
             </div>
         </div>
 
         <aside class="panel">
             <div class="panel-header">
-                <h3>串口与协议状�?/h3>
+                <h3>串口与协议状态</h3>
                 <span class="badge" id="protoBadge">TMC 兼容</span>
             </div>
             <div class="panel-body">
                 <div class="grid-2">
                     <div class="field">
-                        <label>串口波特�?/label>
+                        <label>串口波特率</label>
                         <select id="baudRate">
                             <option selected value="115200">115200</option>
                             <option value="57600">57600</option>
@@ -1167,30 +1198,30 @@
                         <label>通信方式</label>
                         <select id="uartMode">
                             <option value="dual">双线 UART（推荐）</option>
-                            <option value="single">单线 UART（仅部分硬件支持�?/option>
+                            <option value="single">单线 UART（仅部分硬件支持）</option>
                         </select>
                     </div>
                 </div>
 
                 <div class="status-grid">
                     <div class="status-item">
-                        <div class="label">A 相电�?/div>
+                        <div class="label">A 相电流</div>
                         <div class="value" id="phaseACurrentValue">0.00 A</div>
                     </div>
                     <div class="status-item">
-                        <div class="label">B 相电�?/div>
+                        <div class="label">B 相电流</div>
                         <div class="value" id="phaseBCurrentValue">0.00 A</div>
                     </div>
                     <div class="status-item">
-                        <div class="label">位置环频�?/div>
+                        <div class="label">位置环频率</div>
                         <div class="value" id="posLoopRateValue">0 Hz</div>
                     </div>
                     <div class="status-item">
-                        <div class="label">速度环频�?/div>
+                        <div class="label">速度环频率</div>
                         <div class="value" id="velLoopRateValue">0 Hz</div>
                     </div>
                     <div class="status-item">
-                        <div class="label">电流环频�?/div>
+                        <div class="label">电流环频率</div>
                         <div class="value" id="curLoopRateValue">0 Hz</div>
                     </div>
                     <div class="status-item">
@@ -1206,31 +1237,33 @@
                         <div class="value" id="encoderJitterValue" style="white-space:nowrap;">--</div>
                     </div>
                     <div class="status-item">
-                        <div class="label">磁场状�?MGH / MGL</div>
+                        <div class="label">磁场状态 MGH / MGL</div>
                         <div class="value" id="magneticLevelValue">正常 / 正常</div>
                     </div>
                 </div>
 
                 <div class="log" id="logArea">
                     <p class="log-line">[INFO] 闭环驱动参数配置器已启动</p>
-                    <p class="log-line">[INFO] 当前支持：TMC2209 风格寄存器读�?+ 自定义闭环参�?/p>
+                    <p class="log-line">[INFO] 当前支持：TMC2209 风格寄存器读写 + 自定义闭环参数</p>
                 </div>
             </div>
 
             <div class="danger-box">
-                <strong>单线 UART 说明�?/strong><br/>
+                <strong>单线 UART 说明：</strong><br/>
                 常见 USB-TTL 适配器通常没有真正的单线半双工支持；多数场景下推荐使用双线 TX/RX + GND。只有特定硬件或 MCU
-                端口支持 开�?/ 半双工单线模式时，才可工作。若你用的是标准 CH340 / CP2102 / FT232，通常需要双线模式�?            </div>
+                端口支持 开漏 / 半双工单线模式时，才可工作。若你用的是标准 CH340 / CP2102 / FT232，通常需要双线模式。
+            </div>
 
             <div class="field mt">
                 <label>协议帮助</label>
                 <div class="tiny">
-                    这里�?TMC 兼容寄存器模型工作：官方寄存器保留真实地址，闭环扩展参数使�?0x100 以上区间，读写与 Klipper
-                    兼容工作流相同�?                </div>
+                    这里按 TMC 兼容寄存器模型工作：官方寄存器保留真实地址，闭环扩展参数使用 0x100 以上区间，读写与 Klipper
+                    兼容工作流相同。
+                </div>
             </div>
 
             <div class="field mt">
-                <label>寄存器地址与含�?/label>
+                <label>寄存器地址与含义</label>
                 <div class="tiny" id="registerMap"></div>
             </div>
         </aside>
@@ -1246,28 +1279,29 @@
                         <h3 style="margin-top:0;">电机基础参数</h3>
                         <div class="motor-base-grid">
                             <div class="field">
-                                <label>微步�?/label>
+                                <label>微步数</label>
                                 <input id="microsteps" max="256" min="2" type="number" value="64"/>
                             </div>
                             <div class="field">
-                                <label>插值微�?/label>
+                                <label>插值微步</label>
                                 <input id="interpMicrosteps" max="256" min="32" type="number" value="256"/>
                             </div>
                             <div class="field">
-                                <label>运行电流（A�?span class="tiny" style="color:#f59e0b;">仅显�?/span></label>
-                                <!-- 【仅显示】本�?TMC2209 �?UART 没有接（STEP/DIR 模式），
-                                     �?0x102/0x103 固件收得到、也存进配置表，但驱动器不会改变电流�?                                     置灰是为了诚实：不能让输入框看起来能调一个调不动的东西�?-->
+                                <label>运行电流（A）<span class="tiny" style="color:#f59e0b;">仅显示</span></label>
+                                <!-- 【仅显示】本板 TMC2209 的 UART 没有接（STEP/DIR 模式），
+                                     写 0x102/0x103 固件收得到、也存进配置表，但驱动器不会改变电流。
+                                     置灰是为了诚实：不能让输入框看起来能调一个调不动的东西。 -->
                                 <input id="runCurrent" max="3" min="0" step="0.01" type="number" value="0.8" disabled style="opacity:0.45;"/>
                             </div>
                             <div class="field">
-                                <label>保持电流（A�?span class="tiny" style="color:#f59e0b;">仅显�?/span></label>
+                                <label>保持电流（A）<span class="tiny" style="color:#f59e0b;">仅显示</span></label>
                                 <input id="holdCurrent" max="3" min="0" step="0.01" type="number" value="0.2" disabled style="opacity:0.45;"/>
                             </div>
                             <div class="field full-span">
-                                <label>步距�?/label>
+                                <label>步距角</label>
                                 <select id="stepAngle">
-                                    <option value="1.8">1.8�?/option>
-                                    <option value="0.9">0.9�?/option>
+                                    <option value="1.8">1.8度</option>
+                                    <option value="0.9">0.9度</option>
                                 </select>
                             </div>
                             <div class="field full-span">
@@ -1288,7 +1322,7 @@
             <section class="panel">
                 <div class="panel-header">
                     <h3>PID 参数</h3>
-                    <span class="badge ok">位置 / 速度�?/span>
+                    <span class="badge ok">位置 / 速度环</span>
                 </div>
                 <div class="panel-body">
                     <div class="grid-2">
@@ -1310,8 +1344,8 @@
                                 <label>超前 α</label>
                                 <input id="posLeadAlpha" min="1" max="5" step="0.01" type="number" value="1.0"/>
                             </div>
-                            <div class="tiny mt">超前校正系数�?x15C）：1.0 = 不启用。补回微分低通吃掉的相位裕度，范�?1.0~5.0；需配合 Kd&gt;0 才有作用。不�?Flash，重启后回到 1.0�?/div>
-                            <div class="tiny mt">【单位】输�?误差（圈）�?Kp = 输出附加速度（转/秒）。Kp=60 表示 1° 误差�?0.167 �?秒（10RPM）。两个环的输出都在固件里限幅到规划速度�?30%/20%，所以填大了也不会打穿速度指令�?/div>
+                            <div class="tiny mt">超前校正系数（0x15C）：1.0 = 不启用。补回微分低通吃掉的相位裕度，范围 1.0~5.0；需配合 Kd&gt;0 才有作用。不存 Flash，重启后回到 1.0。</div>
+                            <div class="tiny mt">【单位】输入=误差（圈）× Kp = 输出附加速度（转/秒）。Kp=60 表示 1° 误差给 0.167 转/秒（10RPM）。两个环的输出都在固件里限幅到规划速度的 30%/20%，所以填大了也不会打穿速度指令。</div>
                         </div>
 
                         <div class="card">
@@ -1328,36 +1362,39 @@
                                 <label>Kd</label>
                                 <input id="velKd" min="0" max="1" step="0.0001" type="number" value="0"/>
                             </div>
-                            <div class="tiny mt">【单位】增益就是“转/�?误差 �?�?�?修正”，无量纲�?.3 表示 1RPM 误差�?0.3RPM 修正；旧固件这里有个隐藏�?×0.01，所以当年的 30 等于现在�?0.3。Kd 作用在实测加速度上（微分先行），不是误差微分�?/div>
+                            <div class="tiny mt">【单位】增益就是“转/秒 误差 → 转/秒 修正”，无量纲。0.3 表示 1RPM 误差给 0.3RPM 修正；旧固件这里有个隐藏的 ×0.01，所以当年的 30 等于现在的 0.3。Kd 作用在实测加速度上（微分先行），不是误差微分。</div>
                         </div>
 
-                        <!-- 角度模式增益曾一度独立成 0x156~0x15B；改成“梯形轮�?+ 跟踪误差”之后，
-                             三种模式的位置环输入量级一致（都是跟踪误差），故合并为一组参数�?-->
+                        <!-- 角度模式增益曾一度独立成 0x156~0x15B；改成“梯形轮廓 + 跟踪误差”之后，
+                             三种模式的位置环输入量级一致（都是跟踪误差），故合并为一组参数。 -->
                         <div class="card">
-                            <h3 style="margin-top:0;">三种模式共用一组参�?/h3>
-                            <div class="tiny">角度伺服 / 规划运动 / 外部脉冲跟随都用上面那一组（0x129~0x12E）�?br/>
-                                角度模式�?strong>转速由 0x12F/0x130 的梯形轮廓决�?/strong>，Kp 只管跟踪刚度与抗扰，
-                                不再决定跑多快。写废弃�?0x156~0x15B 会在串口提示�?/div>
+                            <h3 style="margin-top:0;">三种模式共用一组参数</h3>
+                            <div class="tiny">角度伺服 / 规划运动 / 外部脉冲跟随都用上面那一组（0x129~0x12E）。<br/>
+                                角度模式的<strong>转速由 0x12F/0x130 的梯形轮廓决定</strong>，Kp 只管跟踪刚度与抗扰，
+                                不再决定跑多快。写废弃的 0x156~0x15B 会在串口提示。</div>
                         </div>
                         <div class="card">
-                            <h3 style="margin-top:0;">滞后角模型（可调，存 Flash�?/h3>
+                            <h3 style="margin-top:0;">滞后角模型（可调，存 Flash）</h3>
                             <div class="field">
-                                <label>加减速项系数（毫�?/ (RPM/s)�?/label>
+                                <label>加减速项系数（毫度 / (RPM/s)）</label>
                                 <input id="lagAccelCoef" min="0" max="50" step="1" type="number" value="1"/>
                             </div>
                             <div class="field mt">
-                                <label>恒速残差死区（毫度�?/label>
+                                <label>恒速残差死区（毫度）</label>
                                 <input id="lagDeadbandMdeg" min="10" max="2000" step="10" type="number" value="200"/>
                             </div>
                             <div class="tiny mt">
-                                加速时转子要多落后 ΔL �?c·a（物理上来自 J·a/k_t），c 就是上面这个系数�?                                1 表示 600RPM/s 时多�?0.6°。把它建模掉，就不会�?加速必然的滞后"
-                                当丢步补掉（那会让末端多转）�?br/>
-                                死区要和"滞后角表有多�?匹配：表是带载标的、负载变了就调大；重新标定后再收小�?                                两个值都随「写入参数到 Flash」保存�?                            </div>
+                                加速时转子要多落后 ΔL ≈ c·a（物理上来自 J·a/k_t），c 就是上面这个系数：
+                                1 表示 600RPM/s 时多算 0.6°。把它建模掉，就不会把"加速必然的滞后"
+                                当丢步补掉（那会让末端多转）。<br/>
+                                死区要和"滞后角表有多准"匹配：表是带载标的、负载变了就调大；重新标定后再收小。
+                                两个值都随「写入参数到 Flash」保存。
+                            </div>
                         </div>
                         <div class="field mt">
-                            <button id="savePidToFlashBtn" type="button">写入 PID 参数�?Flash</button>
-                            <button id="vloopSnapshotBtn" type="button">取一�?[VLOOP] 诊断</button>
-                            <span class="tiny" id="vloopSnapshotHint">�?0x155=1：串口输出一次速度环诊断（跟踪误差 err / P、I、D 分量 / 前馈 ff / web �?live 增益对比），打完自动清零；固件刻意不做周期打印，因为 23ms �?printf 会干扰被诊断的闭环本身�?/span>
+                            <button id="savePidToFlashBtn" type="button">写入 PID 参数到 Flash</button>
+                            <button id="vloopSnapshotBtn" type="button">取一次 [VLOOP] 诊断</button>
+                            <span class="tiny" id="vloopSnapshotHint">写 0x155=1：串口输出一次速度环诊断（跟踪误差 err / P、I、D 分量 / 前馈 ff / web 与 live 增益对比），打完自动清零；固件刻意不做周期打印，因为 23ms 的 printf 会干扰被诊断的闭环本身。</span>
                             <span class="tiny" id="savePidToFlashStatus"></span>
                         </div>
                     </div>
@@ -1371,17 +1408,18 @@
                 </div>
                 <div class="panel-body">
                     <div class="danger-box">
-                        <strong>警告�?/strong>
-                        自动整定会提高电机动态响应和输出电流，若增益过大或转速过高，可能导致振荡、发热、编码器丢步，甚至导致机械结构损坏。请在低负载状态下使用，且先确认机械固定可靠�?                    </div>
+                        <strong>警告：</strong>
+                        自动整定会提高电机动态响应和输出电流，若增益过大或转速过高，可能导致振荡、发热、编码器丢步，甚至导致机械结构损坏。请在低负载状态下使用，且先确认机械固定可靠。
+                    </div>
 
                     <div class="grid-2">
                         <div class="card">
                             <div class="field">
-                                <label>最大速度（RPM�?/label>
+                                <label>最大速度（RPM）</label>
                                 <input id="tuneMaxSpeed" min="3" max="250" step="1" type="number" value="200"/>
                             </div>
                             <div class="field mt">
-                                <label>加速度（RPM/s�?/label>
+                                <label>加速度（RPM/s）</label>
                                 <input id="tuneAccel" min="6" max="3000" step="1" type="number" value="400"/>
                             </div>
                             <div class="field mt">
@@ -1389,32 +1427,32 @@
                                 <input id="tuneGainStep" min="0.05" max="0.5" step="0.05" type="number" value="0.25"/>
                             </div>
                             <div class="field mt">
-                                <label>正反向测试圈�?/label>
+                                <label>正反向测试圈数</label>
                                 <input id="tuneTestTurns" min="1" max="5" step="1" type="number" value="3"/>
                             </div>
-                            <div class="tiny mt">本机 300~800RPM 有剧烈共振，整定上限先钉�?250RPM；高速整定等低速参数稳定后单独做�?/div>
+                            <div class="tiny mt">本机 300~800RPM 有剧烈共振，整定上限先钉在 250RPM；高速整定等低速参数稳定后单独做。</div>
                         </div>
 
                         <div class="card">
                             <div class="field">
-                                <label>整定状�?/label>
-                                <span aria-live="polite" class="tiny" id="tuneState">未启�?/span>
+                                <label>整定状态</label>
+                                <span aria-live="polite" class="tiny" id="tuneState">未启动</span>
                             </div>
                             <div class="field mt">
                                 <label>堵转保护</label>
-                                <span class="tiny" id="stallStatus">未触�?/span>
+                                <span class="tiny" id="stallStatus">未触发</span>
                                 <button id="clearStallBtn" type="button">清除堵转锁存</button>
                             </div>
                             <div class="field mt">
                                 <label>危险等级</label>
-                                <div class="tiny">高：过大电流 / 高增�?/ 高转�?/ 长时间振�?/div>
+                                <div class="tiny">高：过大电流 / 高增益 / 高转速 / 长时间振荡</div>
                             </div>
                             <div class="inline mt">
-                                <button class="warn" id="startTuneBtn">开始整�?/button>
+                                <button class="warn" id="startTuneBtn">开始整定</button>
                             </div>
                         </div>
                     </div>
-                    <div class="tiny">每个动作使用当前 PID 独立采样评分；自动运行遇到失败会停在该项，失败项可单独重试�?/div>
+                    <div class="tiny">每个动作使用当前 PID 独立采样评分；自动运行遇到失败会停在该项，失败项可单独重试。</div>
                     <div aria-live="polite" class="tune-action-list" id="tuneActionList"></div>
                 </div>
             </section>
@@ -1426,7 +1464,7 @@
                 </div>
                 <div class="panel-body">
                     <div aria-live="polite" class="tune-log" id="tuneLog"></div>
-                    <div class="tiny">当前 PID 与动作评�?/div>
+                    <div class="tiny">当前 PID 与动作评分</div>
                     <div class="tune-results" id="tuneResults">尚未完成自动整定</div>
                 </div>
             </section>
@@ -1439,26 +1477,26 @@
             <button id="closeCalibrationTableBtn" type="button">关闭</button>
         </div>
         <div class="cal-table-controls">
-            <select aria-label="校准表类�? id="calibrationTableSelect">
-                <option value="main">主表 800 �?/option>
-                <option value="fast">快速表 65536 �?/option>
+            <select aria-label="校准表类型" id="calibrationTableSelect">
+                <option value="main">主表 800 项</option>
+                <option value="fast">快速表 65536 项</option>
             </select>
-            <button id="calibrationTablePrevBtn" type="button">上一�?/button>
+            <button id="calibrationTablePrevBtn" type="button">上一页</button>
             <label>页码 <input id="calibrationTablePageInput" min="1" type="number" value="1"></label>
-            <button id="calibrationTableNextBtn" type="button">下一�?/button>
+            <button id="calibrationTableNextBtn" type="button">下一页</button>
             <button id="exportCalibrationTableBtn" type="button">导出 CSV</button>
         </div>
         <div class="cal-table-status">
             <span aria-live="polite" id="calibrationTableStatus">等待读取</span>
-            <span id="calibrationTablePageStatus">�?1 �?/span>
+            <span id="calibrationTablePageStatus">第 1 页</span>
             <progress id="calibrationTableProgress" max="1" value="0"></progress>
         </div>
-        <div class="cal-table-checksum">快速表校验码：<strong id="calibrationTableChecksum">未读�?/strong></div>
+        <div class="cal-table-checksum">快速表校验码：<strong id="calibrationTableChecksum">未读取</strong></div>
         <div class="cal-table-lookup">
             <div class="lookup-box">
-                <h4>原始�?�?校准后�?/ 角度</h4>
+                <h4>原始值 → 校准后值 / 角度</h4>
                 <div class="inline">
-                    <label>编码器原始�?/label>
+                    <label>编码器原始值</label>
                     <input id="calibrationRawInput" min="0" max="65535" step="1" type="number" value="0" />
                     <button id="calibrationRawLookupBtn" type="button">计算</button>
                 </div>
@@ -1466,35 +1504,35 @@
                 <div>校准后角度：<strong id="calibrationRawOutputAngle">--</strong></div>
             </div>
             <div class="lookup-box">
-                <h4>校准后�?�?原始�?/ 角度</h4>
+                <h4>校准后值 → 原始值 / 角度</h4>
                 <div class="inline">
-                    <label>校准后�?/label>
+                    <label>校准后值</label>
                     <input id="calibrationCorrectedInput" min="0" max="65535" step="1" type="number" value="0" />
                     <button id="calibrationCorrectedLookupBtn" type="button">计算</button>
                 </div>
                 <div>原始编码器值：<strong id="calibrationCorrectedOutputValue">--</strong></div>
-                <div>原始角度�?strong id="calibrationCorrectedOutputAngle">--</strong></div>
+                <div>原始角度：<strong id="calibrationCorrectedOutputAngle">--</strong></div>
             </div>
         </div>
-        <pre aria-label="校准表数�? class="cal-table-values" id="calibrationTableValues"></pre>
+        <pre aria-label="校准表数据" class="cal-table-values" id="calibrationTableValues"></pre>
     </dialog>
 
     <dialog class="lag-angle-dialog" id="lagAngleDialog">
         <div class="lag-angle-head">
-            <h2>速度-滞后角校�?/h2>
+            <h2>速度-滞后角校准</h2>
             <button id="closeLagAngleDialogBtn" type="button">关闭</button>
         </div>
         <div class="lag-angle-actions">
-            <button class="primary" id="startLagAngleCalibrationBtn" type="button">开始校�?/button>
+            <button class="primary" id="startLagAngleCalibrationBtn" type="button">开始校准</button>
             <button class="danger" id="cancelLagAngleCalibrationBtn" type="button" disabled>停止校准</button>
-            <button id="refreshLagAngleCalibrationBtn" type="button">读取已保存数�?/button>
+            <button id="refreshLagAngleCalibrationBtn" type="button">读取已保存数据</button>
         </div>
         <div class="lag-angle-settings">
-            <label>起始转�?(RPM)<input id="lagAngleStartRpm" type="number" min="0" max="12000" step="1" value="0"></label>
-            <label>结束转�?(RPM)<input id="lagAngleStopRpm" type="number" min="0" max="12000" step="1" value="3000"></label>
+            <label>起始转速 (RPM)<input id="lagAngleStartRpm" type="number" min="0" max="12000" step="1" value="0"></label>
+            <label>结束转速 (RPM)<input id="lagAngleStopRpm" type="number" min="0" max="12000" step="1" value="3000"></label>
             <label>速度步进 (RPM)<input id="lagAngleStepRpm" type="number" min="1" max="12000" step="1" value="50"></label>
-            <label>每点间隔 (�?<input id="lagAngleIntervalSec" type="number" min="2" max="120" step="0.5" value="2"></label>
-            <label>中心采样�?(�?<input id="lagAngleSampleWindowSec" type="number" min="0.2" max="30" step="0.1" value="1"></label>
+            <label>每点间隔 (秒)<input id="lagAngleIntervalSec" type="number" min="2" max="120" step="0.5" value="2"></label>
+            <label>中心采样窗 (秒)<input id="lagAngleSampleWindowSec" type="number" min="0.2" max="30" step="0.1" value="1"></label>
             <label>采样间隔 (毫秒)<input id="lagAngleSamplePeriodMs" type="number" min="20" max="1000" step="10" value="100"></label>
             <label>加速度 (RPM/s)<input id="lagAngleAccelRpmS" type="number" min="1" max="12000" step="1" value="6000"></label>
             <label>速度容差 (%)<input id="lagAngleTolerancePct" type="number" min="1" max="50" step="1" value="12"></label>
@@ -1503,69 +1541,72 @@
             <span aria-live="polite" id="lagAngleStatus">等待读取固件数据</span>
             <span id="lagAngleProgress">0 / 0</span>
         </div>
-        <canvas aria-label="速度与滞后角关系�? class="lag-angle-chart" id="lagAngleChart"></canvas>
-        <div class="lag-angle-legend"><span><i></i>上位机采样均�?/span><span><i class="fit-dot"></i>固件拟合查询</span></div>
-        <div class="lag-angle-equation" id="lagAngleEquation">固件拟合函数�?-</div>
+        <canvas aria-label="速度与滞后角关系图" class="lag-angle-chart" id="lagAngleChart"></canvas>
+        <div class="lag-angle-legend"><span><i></i>上位机采样均值</span><span><i class="fit-dot"></i>固件拟合查询</span></div>
+        <div class="lag-angle-equation" id="lagAngleEquation">固件拟合函数：--</div>
     </dialog>
 
     <!-- ================= 阶段 2：急刹冲击标定 =================
          参数完全独立（不与规划运动共用），因为两者场景不同：
-         规划运动是连续定位，这里是一组离散的速度 × 加速度倍数冲击�?-->
+         规划运动是连续定位，这里是一组离散的速度 × 加速度倍数冲击。 -->
     <dialog class="lag-angle-dialog" id="shockDialog">
         <div class="lag-angle-head">
             <h2>急刹冲击标定</h2>
             <button id="closeShockDialogBtn" type="button">关闭</button>
         </div>
         <div class="lag-angle-actions">
-            <button class="primary" id="startShockCalibrationBtn" type="button">开始标�?/button>
+            <button class="primary" id="startShockCalibrationBtn" type="button">开始标定</button>
             <button class="danger" id="cancelShockCalibrationBtn" type="button" disabled>停止</button>
         </div>
         <div class="lag-angle-settings">
-            <label>速度�?(RPM，逗号分隔)<input id="shockSpeedList" type="text" value="300, 600, 1200"></label>
+            <label>速度点 (RPM，逗号分隔)<input id="shockSpeedList" type="text" value="300, 600, 1200"></label>
             <label>加速度倍数 M (逗号分隔)<input id="shockAccelMultipliers" type="text" value="1, 2, 4, 8"></label>
             <label>加速度基准 (RPM/s)<input id="shockBaseAccelRpmS" type="number" min="1" max="12000" step="1" value="6000"></label>
             <label>每段圈数<input id="shockTurnsPerSegment" type="number" min="1" max="50" step="1" value="2"></label>
             <label>速度容差 (%)<input id="shockTolerancePct" type="number" min="1" max="50" step="1" value="12"></label>
-            <label><input id="shockTestOpenLoop" type="checkbox" checked> 测开�?/label>
-            <label><input id="shockTestClosedLoop" type="checkbox" checked> 测闭�?/label>
+            <label><input id="shockTestOpenLoop" type="checkbox" checked> 测开环</label>
+            <label><input id="shockTestClosedLoop" type="checkbox" checked> 测闭环</label>
         </div>
-        <!-- PID 面板：与主界面的 posKp/posKi/... 双向同步，改完即时写固件�?             角度模式下固件会�?P 项自动缩�?1/100，I/D 不缩放，所以这里填的就是运动模式的值�?-->
+        <!-- PID 面板：与主界面的 posKp/posKi/... 双向同步，改完即时写固件。
+             角度模式下固件会把 P 项自动缩小 1/100，I/D 不缩放，所以这里填的就是运动模式的值。 -->
         <div class="lag-angle-settings">
-            <label>位置�?Kp<input id="shockPosKp" type="number" min="0" max="30000" step="0.01" value="60"></label>
-            <label>位置�?Ki<input id="shockPosKi" type="number" min="0" max="3000" step="0.01" value="20"></label>
-            <label>位置�?Kd<input id="shockPosKd" type="number" min="0" max="30000" step="0.01" value="60"></label>
-            <label>速度�?Kp<input id="shockVelKp" type="number" min="0" max="30000" step="0.01" value="30"></label>
-            <label>速度�?Ki<input id="shockVelKi" type="number" min="0" max="3000" step="0.01" value="8"></label>
-            <label>速度�?Kd<input id="shockVelKd" type="number" min="0" max="30000" step="0.01" value="20"></label>
-            <button id="saveParamsBtn" type="button">写入参数�?Flash</button>
+            <label>位置环 Kp<input id="shockPosKp" type="number" min="0" max="30000" step="0.01" value="60"></label>
+            <label>位置环 Ki<input id="shockPosKi" type="number" min="0" max="3000" step="0.01" value="20"></label>
+            <label>位置环 Kd<input id="shockPosKd" type="number" min="0" max="30000" step="0.01" value="60"></label>
+            <label>速度环 Kp<input id="shockVelKp" type="number" min="0" max="30000" step="0.01" value="30"></label>
+            <label>速度环 Ki<input id="shockVelKi" type="number" min="0" max="3000" step="0.01" value="8"></label>
+            <label>速度环 Kd<input id="shockVelKd" type="number" min="0" max="30000" step="0.01" value="20"></label>
+            <button id="saveParamsBtn" type="button">写入参数到 Flash</button>
         </div>
         <div class="lag-angle-legend">
-            <span><strong>调参顺序�?/strong>�?先看开环基线（M=1）→ �?只改位置�?P（RMS 变小且峰值不爆）�?�?�?Kd 压峰值（恢复时间不增）→ �?�?Ki 消稳态（一振荡就退回）�?            每轮只改一个参数。峰�?稳态比 &gt;5 = Kd 不足；闭�?开环峰值比 &gt;0.9 = PID 几乎没起作用；闭�?RMS 反而变�?= Kd 在放大测速噪声�?/span>
+            <span><strong>调参顺序：</strong>① 先看开环基线（M=1）→ ② 只改位置环 P（RMS 变小且峰值不爆）→ ③ 加 Kd 压峰值（恢复时间不增）→ ④ 加 Ki 消稳态（一振荡就退回）。
+            每轮只改一个参数。峰值/稳态比 &gt;5 = Kd 不足；闭环/开环峰值比 &gt;0.9 = PID 几乎没起作用；闭环 RMS 反而变大 = Kd 在放大测速噪声。</span>
         </div>
         <div class="lag-angle-status">
-            <span aria-live="polite" id="shockStatus">等待开�?/span>
+            <span aria-live="polite" id="shockStatus">等待开始</span>
             <span id="shockProgress">0 / 0</span>
         </div>
         <div class="lag-angle-legend">
-            <span>峰�?= 冲击段最�?|跟随误差|；恢复时�?= 从峰值回落到稳态�?.2 的时间；稳�?RMS = 匀速段均方�?/span>
+            <span>峰值 = 冲击段最大 |跟随误差|；恢复时间 = 从峰值回落到稳态×1.2 的时间；稳态 RMS = 匀速段均方根</span>
         </div>
         <table class="shock-result-table" id="shockResultTable">
             <thead>
-                <tr><th>速度</th><th>M</th><th>模式</th><th>峰�?(°)</th><th>恢复 (ms)</th><th>稳�?RMS (°)</th></tr>
+                <tr><th>速度</th><th>M</th><th>模式</th><th>峰值 (°)</th><th>恢复 (ms)</th><th>稳态 RMS (°)</th></tr>
             </thead>
             <tbody></tbody>
         </table>
     </dialog>
 
-    <!-- ===== 共振区间自动检测（移植�?scripts/tt_resonance.py，逻辑说明�?web/js/resonance_scan.js�?====
-         用非模�?show()（不�?showModal）：急停钮必须始终可点；扫描期间手动运动�?         state.resonanceScanActive 在运动入口处拒绝�?-->
+    <!-- ===== 共振区间自动检测（移植自 scripts/tt_resonance.py，逻辑说明见 web/js/resonance_scan.js）=====
+         用非模态 show()（不是 showModal）：急停钮必须始终可点；扫描期间手动运动由
+         state.resonanceScanActive 在运动入口处拒绝。 -->
     <dialog class="lag-angle-dialog" id="resonanceScanDialog">
         <div class="lag-angle-head">
-            <h2>共振区间自动检�?/h2>
+            <h2>共振区间自动检测</h2>
             <button id="resonanceScanCloseBtn" type="button">关闭</button>
         </div>
         <div class="lag-angle-actions">
-            <button class="primary" id="resonanceScanStartBtn" type="button">开始扫�?/button>
+            <button class="primary" id="resonanceScanStartBtn" type="button">开始扫描</button>
             <button class="danger" id="resonanceScanAbortBtn" type="button" disabled>中止</button>
             <button id="resonanceScanApplyBtn" type="button" disabled>应用为共振带</button>
         </div>
@@ -1577,11 +1618,15 @@
             <label>加速度 (RPM/s)<input id="resonanceScanAccelRpmS" type="number" min="100" max="12000" step="100" value="1500"></label>
         </div>
         <div class="lag-angle-legend">
-            <span><strong>原理（v2 指标）：</strong>纹波量的�?strong>跟随误差(0x121)的去趋势残差</strong>——匀速跟随时它是常数滞后�?            对采样时间抖动免疫；共振摆动原样出现在残差上（�?峰峰就是你肉眼看到的抖幅）。基�?60RPM，逐点升速，
-            残差 �?× 基线连续 2 �?= 带起点，回落 �?.6× = 带终点�?            <strong>转不�?打滑不再算平�?/strong>：跟随误差斜�?+ 角度估�?+ 实测转速三重校验，任一露馅即按热点计入禁区�?            <strong>要求：电机空载、周围无人有�?/strong> —�?带内会真实地剧烈抖动�?            剧烈共振可能触发堵转：每次自动清锁存继续测，连炸 3 次中止。结束留在内部规划模式�?/span>
+            <span><strong>原理（v2 指标）：</strong>纹波量的是<strong>跟随误差(0x121)的去趋势残差</strong>——匀速跟随时它是常数滞后，
+            对采样时间抖动免疫；共振摆动原样出现在残差上（σ/峰峰就是你肉眼看到的抖幅）。基线 60RPM，逐点升速，
+            残差 ≥3× 基线连续 2 点 = 带起点，回落 ≤1.6× = 带终点。
+            <strong>转不动/打滑不再算平静</strong>：跟随误差斜率 + 角度估速 + 实测转速三重校验，任一露馅即按热点计入禁区。
+            <strong>要求：电机空载、周围无人有物</strong> —— 带内会真实地剧烈抖动，
+            剧烈共振可能触发堵转：每次自动清锁存继续测，连炸 3 次中止。结束留在内部规划模式。</span>
         </div>
         <div class="lag-angle-status">
-            <span aria-live="polite" id="resonanceScanStatus">等待开�?/span>
+            <span aria-live="polite" id="resonanceScanStatus">等待开始</span>
             <span id="resonanceScanProgress">0 / 0</span>
         </div>
         <div class="lag-angle-legend" style="max-height:220px;overflow:auto;">
