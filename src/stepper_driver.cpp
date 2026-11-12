@@ -60,17 +60,23 @@ namespace stepper_common
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, k_step_pulse_ticks);
         tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
 
-        // CH4：DIR 使用同一个 ARR 计时基准；前后加保护时间，保证 DIR 在 STEP 产生前后都稳定。
-        tmr_output_config_type dir_config;
-        tmr_output_default_para_init(&dir_config);
-        dir_config.oc_mode = TMR_OUTPUT_CONTROL_PWM_MODE_A;
-        dir_config.oc_idle_state = FALSE;
-        dir_config.occ_idle_state = FALSE;
-        dir_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
-        dir_config.oc_output_state = TRUE;
-        tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_4, &dir_config);
-        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, direction? 0xFFFFFFFF: 0U);
-        tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_4, TRUE);
+        // 【DIR 修复 2026-11-12】原 CH4 PWM 恒平 trick 不可靠：CCR4 是 16 位，
+        // 0xFFFFFFFF 截成 0xFFFF 与 PR 的关系随档位漂移，反向时引脚被钉在正向电平
+        // ——统一引擎反向测试当场抓包（转子原地不动/仍正转）。CH4 关闭，
+        // DIR 改由真 GPIO 推挽直驱（stepper_init_step_gpio 已把 PB11 配成输出），
+        // 本函数在发脉冲前写入方向，天然满足建立时间。
+        tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_4, FALSE);
+        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_4, 0U);
+        // 电平语义沿用旧 CH4 trick：低有效 PWM 恒置位 = 正向恒 LOW、反向 HIGH。
+        // 极性搞反 = 全部正转变反转，boot 初始化 DIR=LOW(正向) 与此一致。
+        if (direction)
+        {
+            DIR_OUTPUT_PORT->clr = (uint32_t)DIR_OUT_PIN;  // LOW = 正向
+        }
+        else
+        {
+            DIR_OUTPUT_PORT->scr = (uint32_t)DIR_OUT_PIN;  // HIGH = 反向
+        }
 
         tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, TRUE);
 
@@ -243,9 +249,16 @@ namespace stepper_common
 #else
         gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
 #endif
-        gpio_init_struct.gpio_pins = STEP_OUT_PIN | DIR_OUT_PIN;
+        gpio_init_struct.gpio_pins = STEP_OUT_PIN;
         gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
         gpio_init(STEP_OUTPUT_PORT, &gpio_init_struct);
+
+        // 【DIR = 真 GPIO 推挽 2026-11-12】MUX 模式下写 ODR 不生效，CH4 trick 又
+        // 不可靠（见 stepper_init_motion_timer 注释）。PB11 配成普通输出，
+        // 方向由 stepper_init_motion_timer / setDirection 直接写引脚。
+        gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
+        gpio_init_struct.gpio_pins = DIR_OUT_PIN;
+        gpio_init(DIR_OUTPUT_PORT, &gpio_init_struct);
 
         gpio_init_struct.gpio_pins = EN_OUT_PIN;
         gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
