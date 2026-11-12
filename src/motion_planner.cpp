@@ -305,6 +305,7 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
             c.motion_step_accumulator_ = 0.0f;
             c.compensated_motion_step_accumulator_ = 0.0f;
             c.compensated_rps_ = 0.0f;
+            velocityPwmHalt();  // 连续引擎自由运行，running=false 后再没人碰它——必须就地停车
             // 切到采样阶段并重置采样计数。这些计数现在属于 EncoderCalibrator，
             // 不再直接写 controller 成员，改成显式调用握手方法（与校准器共用一份）。
             c.calibrator_.beginSampling();
@@ -314,10 +315,13 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
         // 【已删 printf】这里原来每段运动收尾都无条件打 "motion_steps_emitted_/pulse_count"
         // （控制任务里约 8ms 停摆）。这两个数已经在 settle_report_ 的行程对账里，
         // 由 kSlow 档在真静止后统一打印。
-        // 关键：这里不能直接 stopMotion()。最后一个窗口的脉冲才刚进 TMR2/DMA 序列，
-        // 立即关定时器会把尾巴上几十个脉冲连同对应角度一起砍掉（高速下约 0.36°），
-        // 这就是上位机总是统计成“少了一点点角度”的原因。
+        // 关键（窗口路径）：这里不能直接 stopMotion()。最后一个窗口的脉冲才刚进
+        // TMR2/DMA 序列，立即关定时器会把尾巴上几十个脉冲连同对应角度一起砍掉
+        // （高速下约 0.36°），这就是上位机总是统计成“少了一点点角度”的原因。
         // 先挂起 DDA 并进入沉降阶段，等脉冲真正发完 + 轴静止，再由沉降块收尾。
+        // 【统一引擎】连续 PWM 没有 DMA 队列：发完的账=硬件发的数，直接停车，
+        // 沉降阶段不再有人碰定时器（这条路径 updateTrapezoid 直接 return true）。
+        velocityPwmHalt();
         c.motion_ramp_stage_ = ClosedLoopController::RAMP_STAGE_SETTLE;
         c.current_step_speed_ = 0.0f;  // 运动结束强制清零，防止下次运动残留速度
         c.motion_speed_rpm_ = 0.0f;
@@ -756,19 +760,42 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
         pps = 0.0f;
     }
 
-    // ---------- 频率量程（两档分频 + 迟滞） ----------
-    // tier0：PSC=0，tick=4ns  → 3815 .. 500000 pps（16 位 PR / 驱动器 2µs 最小周期）
-    // tier1：PSC=7，tick=32ns →  477 .. 496000 pps（64 细分下探到 2.2 RPM，消灭死区）
-    // pps>8000 进 tier0、pps<3000 进 tier1，中间保持原档；换档要重装定时器，
-    // 间隙约一个步周期，只在低速起步/蠕行穿越时发生一次。
+    // ---------- 频率量程（四档分频 + 迟滞） ----------
+    // tier0：PSC=0   tick=4ns      → 3815 .. 500000 pps（窄脉冲档顶到 1M）
+    // tier1：PSC=7   tick=32ns     →  477 .. 496000 pps
+    // tier2：PSC=15  tick=64ns     →  239 .. 496000 pps
+    // tier3：PSC=255 tick≈1.024µs  → 14.9 .. 495000 pps（蠕行档：角度模式最后逼近
+    // 与减速末端，<1RPM 也照发；再低于 15pps 按 14.9pps 地板出，账本发多少记多少，
+    // 计数照样跑完，只是末端从"渐停"变"0.07RPM 蠕一步收住"）。
+    // 换档重装定时器，间隙约一个步周期；都发生在低速切换点，微步级不可见。
+    static constexpr uint32_t kTierClockHz[4] = {250000000U, 31250000U, 15625000U, 976562U};
+    // 迟滞带刻意错开且互相重叠覆盖：每档的"退出阈值"都高于本档可表达下限，
+    // 杜绝两档之间乒乓重装，也堵死旧版 3815~4200pps（≈14-18RPM）的表达空洞。
+    // 单向一拍走完级联（上下限带宽 ≥120pps，不会出现同拍往复）。
     uint8_t tier = velocity_pwm_tier_;
-    if (pps >= 8000.0f)
-    {
-        tier = 0U;
-    }
-    else if (pps < 3000.0f)
+    if (tier == 0U && pps < 4200.0f)
     {
         tier = 1U;
+    }
+    if (tier == 1U && pps < 480.0f)
+    {
+        tier = 2U;
+    }
+    if (tier == 2U && pps < 250.0f)
+    {
+        tier = 3U;
+    }
+    if (tier == 3U && pps >= 350.0f)
+    {
+        tier = 2U;
+    }
+    if (tier == 2U && pps >= 700.0f)
+    {
+        tier = 1U;
+    }
+    if (tier == 1U && pps >= 8000.0f)
+    {
+        tier = 0U;
     }
 
     // 窄脉冲判档（仅 tier0）：>450k pps 进窄脉冲（300ns 高、周期下限 1µs，
@@ -776,10 +803,8 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
     const bool narrow = (tier == 0U) &&
                         (velocity_pwm_narrow_ ? (pps > 420000.0f) : (pps >= 450000.0f));
 
-    const uint32_t clock_hz = (tier == 0U) ? 250000000U : 31250000U;
-    // 运行可调脉宽（0x172，诊断"驱动输入吃边沿"vs"转子微观滑步"）：
-    // 1µs 高电平在 213k pps 下是 TMC 规格下限，若丢步源于边沿漏检，加宽应缓解；
-    // 微观滑步则加宽无效。下限周期保证低电平 ≥1µs。tier1（<14RPM 蠕行）维持原宽。
+    const uint32_t clock_hz = kTierClockHz[tier];
+    // 运行可调脉宽（0x123）：周期下限保证低电平 ≥1µs；各档按本档 tick 折算高电平。
     uint32_t width_ns = c.step_pulse_width_ns_;
     if (width_ns < 1000U)
     {
@@ -789,14 +814,33 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
     {
         width_ns = 5000U;
     }
-    const uint32_t wide_ccr = (tier == 0U) ? (width_ns / 4U) : stepper_common::k_step_pulse_ticks;
-    const uint32_t ccr_ticks = narrow ? 75U : wide_ccr;
-    const uint32_t wide_min_with_margin = (width_ns / 4U) + 250U;  // 低电平≥1µs
-    const uint32_t pr_min = (tier != 0U)
-        ? 63U
-        : (narrow ? 250U
-                  : (kMinDriverStepPeriodTicks > wide_min_with_margin ? kMinDriverStepPeriodTicks
-                                                                      : wide_min_with_margin));
+    uint32_t ccr_ticks;
+    uint32_t pr_min;
+    switch (tier)
+    {
+    case 0U:
+        ccr_ticks = narrow ? 75U : (width_ns / 4U);
+        {
+            const uint32_t wide_min_with_margin = (width_ns / 4U) + 250U;  // 低电平≥1µs
+            pr_min = narrow ? 250U
+                            : (kMinDriverStepPeriodTicks > wide_min_with_margin
+                                   ? kMinDriverStepPeriodTicks
+                                   : wide_min_with_margin);
+        }
+        break;
+    case 1U:
+        ccr_ticks = (width_ns + 31U) / 32U;
+        pr_min = 63U;   // ≥2µs 周期
+        break;
+    case 2U:
+        ccr_ticks = (width_ns + 63U) / 64U;
+        pr_min = 32U;   // ≥2.05µs
+        break;
+    default:
+        ccr_ticks = (width_ns + 1023U) / 1024U;
+        pr_min = 2U;
+        break;
+    }
     uint32_t pr_ticks = 0U;
     if (pps >= 1.0f)
     {
@@ -806,16 +850,20 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
         // pps/PR 预测逐位吻合，脉宽 1/2/3µs 五档 -5.11~-5.13°/s 纹丝不动，
         // 排除驱动吃边沿）。现在按 周期拍数-1 装 PR，速度同时更准；
         // 账本 emitted_pps = clock/(PR+1) 与硬件严格一致。
-        uint32_t period = static_cast<uint32_t>(static_cast<float>(clock_hz) / pps + 0.5f);
+        uint64_t period = static_cast<uint64_t>(static_cast<float>(clock_hz) / pps + 0.5f);
         if (period < pr_min)
         {
             period = pr_min;
         }
-        if (period <= 65536U)
+        if (period <= 65536ULL)
         {
-            pr_ticks = period - 1U;
+            pr_ticks = static_cast<uint32_t>(period) - 1U;
         }
-        // pr_ticks==0：连粗分频档的下限（477pps≈2.2RPM@64细分）都够不着，不发
+        else if (tier == 3U)
+        {
+            pr_ticks = 65535U;  // 蠕行地板 14.9pps：宁可蠕一步也别停发
+        }
+        // pr_ticks==0：目标速率低于本引擎物理下限，不发（账本同步记 0）
     }
 
     if (pr_ticks == 0U)
@@ -828,18 +876,23 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
     }
     else
     {
+        // DIR 也纳入重装判据：换向命令（位置往返/往复模式换 leg）在停稳后发生，
+        // 重装一次定时器把新方向带上；运行中方向不变则零开销。
+        const int8_t dir_now = (c.motion_direction_ > 0) ? 1 : -1;
         if (!velocity_pwm_running_ || tier != velocity_pwm_tier_ || narrow != velocity_pwm_narrow_ ||
-            ccr_ticks != velocity_pwm_ccr_)
+            ccr_ticks != velocity_pwm_ccr_ || dir_now != velocity_pwm_dir_)
         {
             // 高电平必须短于周期（PR+1 拍），CCR 顶到 PR 会出恒定高。
             const uint32_t ccr_load = (ccr_ticks > pr_ticks) ? pr_ticks : ccr_ticks;
-            stepper_common::stepper_init_motion_timer((tier == 0U) ? 0U : 7U,
+            static constexpr uint16_t kTierPsc[4] = {0U, 7U, 15U, 255U};
+            stepper_common::stepper_init_motion_timer(kTierPsc[tier],
                                                       ccr_load,
-                                                      c.motion_direction_ > 0);
+                                                      dir_now > 0);
             velocity_pwm_running_ = true;
             velocity_pwm_tier_ = tier;
             velocity_pwm_narrow_ = narrow;
             velocity_pwm_ccr_ = ccr_ticks;
+            velocity_pwm_dir_ = dir_now;
         }
         tmr_period_value_set(TMR2, pr_ticks);
         c.step_period_us_ = static_cast<uint16_t>(
@@ -882,5 +935,6 @@ void MotionPlanner::velocityPwmHalt()
         stepper_common::stepper_stop_motion_timer();
         velocity_pwm_running_ = false;
     }
+    velocity_pwm_dir_ = 0;  // 停机后 DIR 状态未知，下次启动强制重装
     velocity_pwm_active_ = false;
 }

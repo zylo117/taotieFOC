@@ -591,6 +591,10 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
     motion_step_accumulator_ = 0.0f;
     compensated_motion_step_accumulator_ = 0.0f;
     compensated_rps_ = 0.0f;
+    // 【统一输出引擎】角度模式不过 startMotion，这里自己挂连续 PWM；
+    // PID 算出的 current_step_speed_/compensated_rps_ 语义与窗口路径完全一致，
+    // 换的只是末级脉冲出口（蠕逼近低速率由 tier2/3 挡位兜住，最低 15pps）。
+    motion_planner_.velocity_pwm_active_ = true;
     // 【同一个坑：其余共享状态也要在启动时归零】
     // 上位机启动只用 0x11F=1，**不会先调 stopMotion**，所以上次运动/角度模式留下的：
     //   current_step_speed_      → 起跑速度直接跳变（从旧速度接着跑）
@@ -1153,19 +1157,25 @@ void ClosedLoopController::startMotion()
 
         max_step_per_ramp = 0;
 
-        // 速度模式一律走连续 PWM，**与计数无关**：带计数时的"跑完"判定靠
-        // motion_steps_emitted_ 账本（两条出口共用同一账本，机制不变）。
-        // 旧条件限定 count=0 才启用——网页启动永远写非零脉冲数，速度模式被
-        // 打回窗口路径，撞容量墙 440k pps≈2062RPM@64细分，表现为"网页最高
-        // 2000 转、脚本能上 2700"（2026-11-12 实测定位）。
-        motion_planner_.velocity_pwm_active_ =
-            (motion_mode_ == MOTION_MODE_VELOCITY_FORWARD ||
-             motion_mode_ == MOTION_MODE_VELOCITY_REVERSE);
+        // 【统一输出引擎】所有内部规划运动（位置/速度/回零/往复/角度/校准）
+        // 一律走连续 PWM 直出，与计数无关。
+        // 演化史：①旧条件限 count=0 → 网页永远写非零计数，被打回窗口路径撞
+        // 2062RPM 容量墙；②改"仅速度模式"后实测同一条 600RPM/s 斜坡：窗口
+        // DMA 引擎 FE 漂到 -20°，连续引擎只有 -2° 滞后角——窗口跨窗重武装在
+        // 脉冲流里掺相位毛刺，陡斜坡下泵进振荡能量导致扑极丢步。连续引擎
+        // 全速域（15pps..1Mpps，四档分频）验证干净后统一之。
+        // 窗口路径只保留给外部脉冲跟随（1:1 保真优先，跟随激活时 startMotion
+        // 不运行，active 已由 stopMotion 清 false）。
+        motion_planner_.velocity_pwm_active_ = true;
         motion_planner_.velocity_pwm_running_ = false;
+        motion_planner_.velocity_pwm_dir_ = 0;
         // 预同步沉降：速度模式启动后先静置（不发脉冲），让使能拉入振荡熄灭，
         // 再进梯形斜坡——消除冷启动一次性拉入丢步（~43°，A/B 实测，见 0x179）。
-        presync_remaining_ns_ = motion_planner_.velocity_pwm_active_
-            ? static_cast<uint64_t>(start_dwell_ms_) * 1000000ULL : 0ULL;
+        presync_remaining_ns_ =
+            (motion_mode_ == MOTION_MODE_VELOCITY_FORWARD ||
+             motion_mode_ == MOTION_MODE_VELOCITY_REVERSE)
+                ? static_cast<uint64_t>(start_dwell_ms_) * 1000000ULL
+                : 0ULL;
 
         // 全部参数准备好再开始
         motion_first_run_ = true;
@@ -2126,9 +2136,12 @@ void ClosedLoopController::enableExternalPulseFollow(bool enable)
         return;
     }
 
-    // 切换时先把内部运动状态清干净：跟随和规划共用 DDA/TMR2，
+    // 切换时先把内部运动状态清干净：跟随和规划共用 TMR2，
     // 残留的积压或半途的梯形都会在下一拍变成莫名其妙的脉冲。
+    // 【统一引擎后必须显式停车】连续 PWM 引擎是自由运行的，光清软件标志停不掉，
+    // 不 halt 就是"内部脉冲惯性输出 + 跟随脉冲"双发。
     motion_running_ = false;
+    motion_planner_.velocityPwmHalt();
     motion_ramp_stage_ = RAMP_STAGE_DONE;
     closed_loop_angle_mode_enabled_ = false;
     motion_steps_emitted_ = 0U;
