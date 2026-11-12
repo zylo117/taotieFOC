@@ -244,7 +244,10 @@
         // 旧流程每点都要 stopLagAngleMotion() + 重新启动，每次从 0 加速，
         // 一段一段测极慢。现在固件支持速度模式连续运行（0x11D = 0 → 无限跑）
         // 和运行时变速（改 0x11B 即生效），所以这里只启动一次。
-        async function startLagAngleSweep(targetRpm, accelRpmS) {
+        async function startLagAngleSweep(targetRpm, accelRpmS, mode) {
+            // mode: 2=速度正转，3=速度反转。往返换向后要用 3 重新起步，
+            // 借 startMotion() 把累计行程/跟随误差清零，避免换向污染整条下降段。
+            const dirMode = mode === 3 ? 3 : 2;
             await writeRegisterAndWaitAck(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0);
             // 【必须非零】固件 startMotion() 里有兜底：
             //   if (motion_max_rpm_ <= 0) motion_max_rpm_ = angle_max_rpm_ ?: 1200;
@@ -257,10 +260,25 @@
             await writeRegisterAndWaitAck(0x11B, safeRpm);
             await writeRegisterAndWaitAck(0x11C, accelRpmS);
             await writeRegisterAndWaitAck(0x11D, 0);   // ★ 0 = 无限跑，不停机
-            await writeRegisterAndWaitAck(0x11E, 2);   // 速度正转
+            await writeRegisterAndWaitAck(0x11E, dirMode);
             await writeRegisterAndWaitAck(0x123, 200);
             await writePidParameters();
             await writeRegisterAndWaitAck(0x11F, 1);
+        }
+
+        // 等转子真正静止（|0x120| 落到阈值以下）。换向清零前必须真停下，
+        // 否则重新 startMotion 时还带着残余转速，误差角基线照样是脏的。
+        async function waitForLagAngleStop(timeoutMs) {
+            const deadline = performance.now() + (timeoutMs || 5000);
+            while (performance.now() < deadline && !state.lagAngleCalibrationCancelled) {
+                const sp = Math.abs(readSigned32(await readRegisterValue(CUSTOM_REGS.SPEED_RPM)));
+                if (sp < 5) {
+                    await lagAngleDelay(400);   // 到零后再稳一下，让残余振动落定
+                    return;
+                }
+                await lagAngleDelay(100);
+            }
+            await lagAngleDelay(400);
         }
 
         // 只改目标速度，不碰其它寄存器
@@ -353,15 +371,21 @@
                 if (state.lagAngleCalibrationCancelled) throw new Error('已停止校准');
                 const speedRpm = config.speeds[index];
 
-                // 【往返换向】第一次出现“速度比上一个点小”说明进入下降段。
-                // 固件速度模式只认 0x11E（2=正转 3=反转），改它会先刹到 0 再反向加速，
-                // 所以这里切完要留一段换向时间，再去等目标转速。
+                // 【往返换向清零】第一次出现“速度比上一个点小”说明进入下降段。
+                // 跟随误差 = 编码器累计行程 − 命令累计行程（从 startMotion 起累积、仅
+                // ±180° 归一）。开环急刹+反向会产生一大坨行程偏离（甚至丢步），这是
+                // 累计量的【永久偏置】，会污染整条下降段 —— 表现为“反转滞后角明显偏大”。
+                // 旧做法只切 0x11E=3 + 睡 800ms，既没真停稳也没清误差角。
+                // 正确做法：完全停转 → 等转子真静止 → 重新 startMotion（把累计行程/
+                // 跟随误差归零）→ 以反向重新起步采样。只在换向处做一次，不拖慢流程。
                 if (!directionReversed && index > 0 && speedRpm < config.speeds[index - 1]) {
                     document.getElementById('lagAngleStatus').textContent =
-                        `到达最高点，切换反向（先刹到 0）...`;
-                    await writeRegisterAndWaitAck(0x11E, 3);
+                        '到达最高点：彻底停稳并清零跟随误差，再反向起步...';
+                    await stopLagAngleMotion();                 // 0x11F=0 → stopMotion()
+                    await waitForLagAngleStop();                 // 等 |0x120| < 5RPM，真静止
                     directionReversed = true;
-                    await lagAngleDelay(800);
+                    await startLagAngleSweep(speedRpm, config.accelRpmS, 3);  // 反向重新起步，误差角清零
+                    await lagAngleDelay(500);
                 }
 
                 // 0 RPM：不启动、不等待、不采样（滞后角定义为 0）
