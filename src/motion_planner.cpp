@@ -800,10 +800,20 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
     uint32_t pr_ticks = 0U;
     if (pps >= 1.0f)
     {
-        const uint32_t want = static_cast<uint32_t>(static_cast<float>(clock_hz) / pps + 0.5f);
-        if (want <= 65535U)
+        // 【2026-11-12 off-by-one 修正】定时器 0..PR 循环，一周期 = PR+1 拍。
+        // 原来把"周期拍数"直接装进 PR：硬件比账本慢 1/PR——1000RPM 下
+        // 账本快 182µstep/s，0x121 以 -5.1°/s 假漂（实测 600/1000RPM 斜率与
+        // pps/PR 预测逐位吻合，脉宽 1/2/3µs 五档 -5.11~-5.13°/s 纹丝不动，
+        // 排除驱动吃边沿）。现在按 周期拍数-1 装 PR，速度同时更准；
+        // 账本 emitted_pps = clock/(PR+1) 与硬件严格一致。
+        uint32_t period = static_cast<uint32_t>(static_cast<float>(clock_hz) / pps + 0.5f);
+        if (period < pr_min)
         {
-            pr_ticks = (want < pr_min) ? pr_min : want;
+            period = pr_min;
+        }
+        if (period <= 65536U)
+        {
+            pr_ticks = period - 1U;
         }
         // pr_ticks==0：连粗分频档的下限（477pps≈2.2RPM@64细分）都够不着，不发
     }
@@ -821,8 +831,10 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
         if (!velocity_pwm_running_ || tier != velocity_pwm_tier_ || narrow != velocity_pwm_narrow_ ||
             ccr_ticks != velocity_pwm_ccr_)
         {
+            // 高电平必须短于周期（PR+1 拍），CCR 顶到 PR 会出恒定高。
+            const uint32_t ccr_load = (ccr_ticks > pr_ticks) ? pr_ticks : ccr_ticks;
             stepper_common::stepper_init_motion_timer((tier == 0U) ? 0U : 7U,
-                                                      ccr_ticks,
+                                                      ccr_load,
                                                       c.motion_direction_ > 0);
             velocity_pwm_running_ = true;
             velocity_pwm_tier_ = tier;
@@ -831,7 +843,7 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
         }
         tmr_period_value_set(TMR2, pr_ticks);
         c.step_period_us_ = static_cast<uint16_t>(
-            (pr_ticks * ((tier == 0U) ? 4U : 32U) + 500U) / 1000U);
+            ((pr_ticks + 1U) * ((tier == 0U) ? 4U : 32U) + 500U) / 1000U);
     }
 
     // ---------- 记账：按"实际发出的速率"入账，FollowError 不造假 ----------
@@ -847,7 +859,7 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
     }
     c.motion_speed_rpm_ = c.current_step_speed_ * 60.0f / static_cast<float>(spr);
     const float emitted_pps =
-        (pr_ticks != 0U) ? (static_cast<float>(clock_hz) / static_cast<float>(pr_ticks)) : 0.0f;
+        (pr_ticks != 0U) ? (static_cast<float>(clock_hz) / static_cast<float>(pr_ticks + 1U)) : 0.0f;
     c.motion_step_accumulator_ += emitted_pps * dt;
     uint32_t n = 0U;
     if (c.motion_step_accumulator_ >= 1.0f)
