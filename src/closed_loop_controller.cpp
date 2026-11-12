@@ -1153,12 +1153,14 @@ void ClosedLoopController::startMotion()
 
         max_step_per_ramp = 0;
 
-        // 连续速度模式（0x11D=0 → 0xFFFFFFFF）走"恒定周期 PWM"出口（见
-        // motion_planner.h velocityPwmTick 注释）；带计数/位置/角度/校准仍走窗口路径。
+        // 速度模式一律走连续 PWM，**与计数无关**：带计数时的"跑完"判定靠
+        // motion_steps_emitted_ 账本（两条出口共用同一账本，机制不变）。
+        // 旧条件限定 count=0 才启用——网页启动永远写非零脉冲数，速度模式被
+        // 打回窗口路径，撞容量墙 440k pps≈2062RPM@64细分，表现为"网页最高
+        // 2000 转、脚本能上 2700"（2026-11-12 实测定位）。
         motion_planner_.velocity_pwm_active_ =
-            ((motion_mode_ == MOTION_MODE_VELOCITY_FORWARD ||
-              motion_mode_ == MOTION_MODE_VELOCITY_REVERSE) &&
-             motion_pulse_count_ == 0xFFFFFFFFU);
+            (motion_mode_ == MOTION_MODE_VELOCITY_FORWARD ||
+             motion_mode_ == MOTION_MODE_VELOCITY_REVERSE);
         motion_planner_.velocity_pwm_running_ = false;
 
         // 全部参数准备好再开始
