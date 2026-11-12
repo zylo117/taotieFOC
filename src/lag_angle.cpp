@@ -12,6 +12,20 @@ extern "C"
 namespace
 {
     uint16_t lag_angle_flash_words[LagAngle::MAX_POINTS * 3U];
+
+    // float 与 32 位原始值的位级转换（存拟合参数用，不做数值换算）
+    inline uint32_t f2u(float f)
+    {
+        union { float f; uint32_t u; } v;
+        v.f = f;
+        return v.u;
+    }
+    inline float u2f(uint32_t u)
+    {
+        union { uint32_t u; float f; } v;
+        v.u = u;
+        return v.f;
+    }
 }
 
 LagAngle::LagAngle()
@@ -164,29 +178,45 @@ bool LagAngle::saveToFlash()
                                          words[word_count - 2U] + words[word_count - 1U]);
     }
 
-    uint16_t metadata[8] = {
+    uint16_t metadata[16] = {
         static_cast<uint16_t>(FLASH_MAGIC & 0xFFFFU),
         static_cast<uint16_t>(FLASH_MAGIC >> 16U),
         point_count_,
         checksum,
-        0U,
-        0U,
-        0U,
-        0U
+        1U,       // [4] 数据有效标志
+        1U,       // [5] 拟合参数有效标志（有则开机直接用，不再重拟合）
+        0U, 0U, 0U, 0U, 0U, 0U,
+        0U, 0U, 0U, 0U
     };
+    // [6..11] 三个 float 各拆两个半字（lo,hi）；[12] 参数校验和。
+    const uint32_t c_bits = f2u(power_coefficient_);
+    const uint32_t i_bits = f2u(intercept_deg_);
+    const uint32_t e_bits = f2u(exponent_);
+    metadata[6]  = static_cast<uint16_t>(c_bits & 0xFFFFU);
+    metadata[7]  = static_cast<uint16_t>(c_bits >> 16U);
+    metadata[8]  = static_cast<uint16_t>(i_bits & 0xFFFFU);
+    metadata[9]  = static_cast<uint16_t>(i_bits >> 16U);
+    metadata[10] = static_cast<uint16_t>(e_bits & 0xFFFFU);
+    metadata[11] = static_cast<uint16_t>(e_bits >> 16U);
+    uint16_t fit_ck = 0U;
+    for (int k = 6; k <= 11; ++k)
+    {
+        fit_ck = static_cast<uint16_t>(fit_ck + metadata[k]);
+    }
+    metadata[12] = fit_ck;
+
     if (flash_write(FLASH_DATA_BASE, words, word_count) != SUCCESS)
     {
         return false;
     }
 
-    metadata[4] = 1U;
-    return flash_write(FLASH_META_BASE, metadata, 8U) == SUCCESS;
+    return flash_write(FLASH_META_BASE, metadata, 16U) == SUCCESS;
 }
 
 bool LagAngle::loadFromFlash()
 {
-    uint16_t metadata[8];
-    flash_read(FLASH_META_BASE, metadata, 8U);
+    uint16_t metadata[16];
+    flash_read(FLASH_META_BASE, metadata, 16U);
     const uint32_t magic = static_cast<uint32_t>(metadata[0]) |
                            (static_cast<uint32_t>(metadata[1]) << 16U);
     const uint16_t count = metadata[2];
@@ -222,6 +252,32 @@ bool LagAngle::loadFromFlash()
         points_[i].speed_rpm = words[offset];
         points_[i].lag_angle_mdeg = static_cast<int32_t>(angle_bits);
         received_[i] = true;
+    }
+
+    // 【开机不再重拟合】元数据里带了校验通过的拟合参数就直接采用，省掉每次上电
+    // 几百毫秒的 fit()。旧记录（无参数标志 / 校验不过）落回 fit()，向后兼容：
+    // 那批 flash 数据本就没有可用参数，只能现算。
+    if (metadata[5] == 1U)
+    {
+        uint16_t fit_ck = 0U;
+        for (int k = 6; k <= 11; ++k)
+        {
+            fit_ck = static_cast<uint16_t>(fit_ck + metadata[k]);
+        }
+        if (fit_ck == metadata[12])
+        {
+            const uint32_t c_bits = static_cast<uint32_t>(metadata[6]) |
+                                    (static_cast<uint32_t>(metadata[7]) << 16U);
+            const uint32_t i_bits = static_cast<uint32_t>(metadata[8]) |
+                                    (static_cast<uint32_t>(metadata[9]) << 16U);
+            const uint32_t e_bits = static_cast<uint32_t>(metadata[10]) |
+                                    (static_cast<uint32_t>(metadata[11]) << 16U);
+            power_coefficient_ = u2f(c_bits);
+            intercept_deg_ = u2f(i_bits);
+            exponent_ = u2f(e_bits);
+            fitted_ = true;
+            return true;
+        }
     }
     return fit();
 }

@@ -429,8 +429,12 @@
         }
 
         async function uploadLagAnglePoints(points) {
-            if (points.length > 32) {
-                throw new Error(`拟合点 ${points.length} 个，超过固件上限 32`);
+            // 上限必须与固件 LagAngle::MAX_POINTS(128) 一致。这里曾是写死的 32，
+            // 而开跑前的 lagAngleSweepConfig 预检已按 128 挡过（单程≤64、往返≤127），
+            // 于是这条滞后的 32 会在整个扫描跑完（好几分钟）之后才把合法的 ≤128 点
+            // 数据拒掉，白跑一趟。真正“点数太多”的提示由开跑前的预检负责，这里只兜底。
+            if (points.length > 128) {
+                throw new Error(`拟合点 ${points.length} 个，超过固件上限 128`);
             }
             await writeRegisterAndWaitAck(CUSTOM_REGS.LAG_ANGLE_UPLOAD_COUNT, points.length);
             for (let index = 0; index < points.length; index++) {

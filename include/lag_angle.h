@@ -6,7 +6,7 @@
 class LagAngle
 {
 public:
-    // 【拟合点数上限 = 32】
+    // 【拟合点数上限 = 128】
     // 旧值 1024 在实际使用中完全不必要，而且代价惊人：
     //   points_[1024]  = 8KB（Point 是 uint16+int32，对齐到 8 字节）
     //   received_[1024] = 1KB
