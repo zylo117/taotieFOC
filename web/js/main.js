@@ -526,7 +526,7 @@
                 await writeRegister(0x11B, maxRpm);
                 await writeRegister(0x11C, accelRpm);
                 await writeRegister(0x11E, motionMode);
-                const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 200), 200, 20000);
+                const stepPulseWidthNs = clamp(Number(document.getElementById('stepPulseWidthNsInput').value || 1000), 1000, 20000);
                 await writeRegister(0x123, stepPulseWidthNs);
 
                 // 再触发单步正向脉冲命令寄存器

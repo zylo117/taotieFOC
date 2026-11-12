@@ -83,7 +83,7 @@ class ClosedLoopController
 public:
     // STEP 脉宽的硬限制（ns）。没写明细分步距时，100ns 已经接近 TMC2209 的
     // 最小脉宽识别能力；再短就会被驱动器整步忽略。上限 20us 是给低速调试留的。
-    static constexpr uint64_t kMinStepPulseNs = 100ULL;
+    static constexpr uint64_t kMinStepPulseNs = 1000ULL;  // TMC2209 STEP 规格 ≥1µs，200ns 是规格外
     static constexpr uint64_t kMaxStepPulseNs = 20000ULL;
 
     enum FaultFlags : uint32_t
