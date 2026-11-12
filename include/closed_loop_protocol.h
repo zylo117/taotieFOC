@@ -262,6 +262,9 @@ enum Tmc2209CustomExtensionRegister
     // 0x178 = 控制任务停顿事件累计（窗口间隔 >150µs 的次数，DDA 已截断补账）
     TMC2209_EXT_PARAM_STEP_MAX_WINDOW_STEPS = 0x177U,
     TMC2209_EXT_PARAM_STEP_TASK_STALL_EVENTS = 0x178U,
+    // 速度模式启动预同步沉降时长 ms（见 ClosedLoopController::start_dwell_ms_ 注释）。
+    // 启动后先不发脉冲，让使能拉入振荡熄灭再起跑，消除冷启动一次性 ~43° 拉入丢步。
+    TMC2209_EXT_PARAM_START_DWELL_MS = 0x179U,
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -326,7 +329,7 @@ private:
 
     ClosedLoopDriverProtocolConfig config_;
     // 扩展参数表长度：覆盖 0x100 ~ 0x167，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x178U - 0x100U + 1U;
+    static constexpr uint16_t kCustomParameterCount = 0x179U - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

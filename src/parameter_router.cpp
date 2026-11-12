@@ -580,6 +580,18 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
                owner_.resonance_bypass_ ? 1U : 0U);
         return true;
     }
+    if (reg == TMC2209_EXT_PARAM_START_DWELL_MS)
+    {
+        // 速度模式启动预同步沉降时长 ms。钳位 0~3000；0=关闭。USB 任务里跑，printf 安全。
+        uint32_t v = value;
+        if (v > 3000U)
+        {
+            v = 3000U;
+        }
+        owner_.start_dwell_ms_ = v;
+        printf("[START] presync dwell = %lu ms\r\n", static_cast<unsigned long>(v));
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_STALL_QUIET_MS)
     {
         // 堵转判定的"静止时长"阈值。钳位 50~3000ms。USB 任务里跑，printf 安全。
@@ -830,6 +842,11 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_STEP_TASK_STALL_EVENTS)
     {
         *value = owner_.step_catchup_events_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_START_DWELL_MS)
+    {
+        *value = owner_.start_dwell_ms_;
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_CALIBRATION_LOOKUP_RAW_TO_CORRECTED)

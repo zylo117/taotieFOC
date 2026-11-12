@@ -76,3 +76,4 @@ __pycache__/
 autotune_*.json
 autotune_*.log
 compare.log
+docs/_tmc2209_text.txt

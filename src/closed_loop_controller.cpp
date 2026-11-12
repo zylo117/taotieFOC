@@ -1162,6 +1162,10 @@ void ClosedLoopController::startMotion()
             (motion_mode_ == MOTION_MODE_VELOCITY_FORWARD ||
              motion_mode_ == MOTION_MODE_VELOCITY_REVERSE);
         motion_planner_.velocity_pwm_running_ = false;
+        // 预同步沉降：速度模式启动后先静置（不发脉冲），让使能拉入振荡熄灭，
+        // 再进梯形斜坡——消除冷启动一次性拉入丢步（~43°，A/B 实测，见 0x179）。
+        presync_remaining_ns_ = motion_planner_.velocity_pwm_active_
+            ? static_cast<uint64_t>(start_dwell_ms_) * 1000000ULL : 0ULL;
 
         // 全部参数准备好再开始
         motion_first_run_ = true;
@@ -1683,6 +1687,20 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         motion_first_run_ = false;
     }
 
+    // 【预同步沉降窗口（0x179）】速度模式启动后的静置段：斜坡不推进、不发脉冲，
+    // 编码器反馈/遥测照常刷新（0x120 能看到拉入摆动的衰减），堵转守卫保持解除
+    // （本段命令速度是起跑速度但没有任何脉冲，不能用"命令 vs 编码器"判静止）。
+    if (presync_remaining_ns_ > 0ULL)
+    {
+        const uint64_t spent_ns = now_ns - motion_last_ramp_time_ns_;
+        presync_remaining_ns_ = (presync_remaining_ns_ > spent_ns)
+            ? (presync_remaining_ns_ - spent_ns) : 0ULL;
+        motion_last_ramp_time_ns_ = now_ns;
+        stall_armed_ = false;
+        syncProtocolTelemetry();
+        return;
+    }
+
     // 获取两次rampUpdate生成之间真实流逝的纳秒
     uint64_t delta_ramp_ns = now_ns - motion_last_ramp_time_ns_;
 
@@ -1958,6 +1976,7 @@ void ClosedLoopController::stopMotion()
     compensated_motion_step_accumulator_ = 0.0f;
     // 连续速度模式的恒定 PWM 输出（若在跑）一并停掉并解除接管。
     motion_planner_.velocityPwmHalt();
+    presync_remaining_ns_ = 0;
     // 【必须清零】这三个都是有“记忆”的状态，不清理会让下一次启动从错误速度起跑：
     //
     // compensated_rps_（补偿速度 rps）：自从加了加速度限制后，它每拍的值是
