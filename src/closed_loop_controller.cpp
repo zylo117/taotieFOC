@@ -1489,7 +1489,12 @@ void ClosedLoopController::updateStallGuard(uint64_t now_ns)
     // 200ms，堵转永远不锁（实测正反馈振荡的电机"该报不报"）。
     // 改成只统计命令方向投影 progress = span * dir：回摆时 progress 为负，绝不重置，
     // 计时单调累加 → 原地震必然锁存。真运动时 progress 每窗远超 move_lsb，不误报。
-    const int32_t dir = (current_step_speed_ >= 0.0f) ? 1 : -1;
+    // 【方向取 motion_direction_，不是速度符号】current_step_speed_ 恒为非负
+    // （幅值语义，方向只由 motion_direction_/DIR 表达），旧写法 (speed>=0)?1:-1
+    // 在反转运动里把编码器负位移乘成"负进度"，转子明明转得好好的，200ms 后
+    // 照样误判堵转（2026-11-13 反转回归实测 t+0.4s 锁死）。角度模式 PID 刹车
+    // 瞬间速度符号抖动也会误触发。振荡仍锁：回摆 progress 为负不重置的本意保留。
+    const int32_t dir = (motion_direction_ >= 0) ? 1 : -1;
     const int32_t progress = wrapped_span * dir;
     if (progress > move_lsb)
     {

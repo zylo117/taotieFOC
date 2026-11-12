@@ -50,8 +50,22 @@ time.sleep(0.5)
 pk, fe, err = run_counted(h, 0, 120, 1000, 150, 640000, 40)
 print(f'T2 位置 fwd a150: 峰值{pk:.1f}° 末值{fe if fe is None else round(fe,2)}° {err or "OK"}')
 time.sleep(0.5)
-pk, fe, err = run_counted(h, 1, 120, 800, 300, 256000, 30)
-print(f'T3 位置 REV a300: 峰值{pk:.1f}° 末值{fe if fe is None else round(fe,2)}° {err or "OK"}')
+# T3 反转：运动中必须有负速度样本（物理反转确认），且不误报堵转
+h.write(0x11A, 120); h.write(0x11B, 800); h.write(0x11C, 300)
+h.write(0x11D, 224000); h.write(0x11E, 1); h.write(0x11F, 1)
+t0 = time.time(); sps = []; st3 = None; fe3 = 0.0
+while time.time() - t0 < 20:
+    for _ in h._pump(0.03): pass
+    v = s32(h.read(0x120)); sps.append(v)
+    f = s32(h.read(0x121)) / 1000.0; fe3 = min(fe3, f)
+    if h.read(0x15D) == 1: st3 = 'STALL'; break
+    if h.latest.get(0x11F) == 0 and time.time() - t0 > 1.0: break
+neg = sum(1 for v in sps if v < -100)
+time.sleep(0.8)
+for _ in h._pump(0.3): pass
+fe3e = s32(h.read(0x121)) / 1000.0
+print(f'T3 位置 REV a300: {"STALL" if st3 else "完成"} 负速样本{neg}/{len(sps)} '
+      f'峰值FE{fe3:.1f}° 末值{fe3e:.2f}° {"OK" if (not st3 and neg > 3) else "FAIL"}')
 time.sleep(0.5)
 
 # T4 速度 2000 无限计数 10s：漂移
@@ -76,16 +90,20 @@ if n >= 3:
 print(f'T4 速度2000 10s: 漂移{slope:+.2f}°/s FE {[round(f,1) for _,f in pts]}')
 h.write(0x15F, 1); time.sleep(0.8)
 
-# T5 角度模式 +90/-90
+# T5 角度模式 +90/-90（目标取模到合法绝对角）
 for _ in h._pump(0.3): pass
-base = s32(h.read(0x116)) / 1000.0
+base = (s32(h.read(0x116)) / 1000.0) % 360.0
 for tgt_off in (90.0, 0.0):
-    h.write(0x128, int((base + tgt_off) * 1000))
-    r = wait_idle(h, 12)
-    time.sleep(0.6)
+    tgt = (base + tgt_off) % 360.0
+    h.write(0x128, int(tgt * 1000))
+    r = wait_idle(h, 15)
+    time.sleep(0.8)
     for _ in h._pump(0.3): pass
-    now = s32(h.read(0x116)) / 1000.0
-    print(f'T5 角度→{base+tgt_off:.0f}°: {"STALL" if r == "STALL" else "到位" if r is True else "超时"} 角度{now:.1f} (Δ{now-(base+tgt_off):+.1f})')
+    now = (s32(h.read(0x116)) / 1000.0) % 360.0
+    d = ((now - tgt + 180.0) % 360.0) - 180.0
+    print(f'T5 角度→{tgt:.1f}°: {"STALL" if r == "STALL" else "到位" if r is True else "超时"} 实测{now:.1f}° 误差{d:+.1f}°')
+    if r == 'STALL':
+        h.write(0x15F, 1); h.write(0x124, 1); time.sleep(0.5)
 h.write(0x107, 0)  # 角度模式带过的补偿开关复原
 time.sleep(0.5)
 
