@@ -149,19 +149,18 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
         const float unconstrained_rps =
             fast_clamp(position_reference_rps + velocity_correction_rps, -max_rps, max_rps);
 
-        // 【方向钳位：位置伺服不能反向输出】
-        // 恢复原逻辑并说明为什么它是对的：
-        //   PID 输出与误差方向相反时，说明 P 项已经被 D 项压到底了，
-        //   此时正确的做法是“不再加速”，而不是“反向走”。
-        //   允许负输出会让位置伺服真的倒转 -> 越转越远 -> 乱转。
-        // （之前一度把它改成 unrestricted，那是错的，已回退。）
-        const float target_direction = desired_error_deg >= 0.0f ? 1.0f : -1.0f;
-        const float directed_rps = unconstrained_rps * target_direction < 0.0f ? 0.0f : unconstrained_rps;
+        // 【双向伺服 2026-11-13】旧版这里有一道「方向钳位」：PID 输出与误差反号
+        // 就掐成 0，导致过冲收不回、反向目标去不了（用户报“角度模式只能正转”）。
+        // 当年“去掉会越转越远”的真凶是 DIR 引脚从来不翻转（CH4 trick），命令倒车、
+        // 电机物理正转 → 速度环误差发散。DIR 已改真 GPIO、堵转守卫角度模式豁免、
+        // 编码器符号已核（encoder_speed_rpm_ 正向为正，与环同在世界系），钳位拆除。
+        // 换向安全由斜坡保证：angle_cmd_rps_（带符号上一拍指令）到 0 后才换向，
+        // 且换向那一拍 |speed| 已被斜率限制到接近 0——DIR 在零速翻转，物理安全。
         const float accel_limit_rps2 = c.angle_accel_rpm_s_ / 60.0f;
-        const float previous_rps = c.motion_speed_rpm_ / 60.0f;
+        const float previous_rps = c.angle_cmd_rps_;
         const float max_delta_rps = accel_limit_rps2 * dt;
         const float desired_rps =
-            fast_clamp(directed_rps, previous_rps - max_delta_rps, previous_rps + max_delta_rps);
+            fast_clamp(unconstrained_rps, previous_rps - max_delta_rps, previous_rps + max_delta_rps);
 
         // 校准归零阶段：接近目标 0.25° 以内就强制停，避免 PID 在零点附近来回抖，
         // 影响采样。顺带把两个环和累加器一起清干净，进入 SAMPLING 时状态是确定的。
@@ -185,8 +184,13 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
         }
 
         const uint32_t micro_steps_per_round = c.getStepsPerRound();
-        c.current_step_speed_ = calibration_rps * static_cast<float>(micro_steps_per_round);
-        c.motion_speed_rpm_ = calibration_rps * 60.0f;
+        // 引擎（velocityPwmTick）把 current_step_speed_ 当“非负幅值”，方向由
+        // motion_direction_/DIR 表达（与梯形路径同契约）。这里 calibration_rps 是
+        // 世界系带符号指令，必须拆成幅值 + 方向，否则反向时 pps<0 被引擎钳成 0，
+        // 一个脉冲都不发 —— 这就是“反向命令毫无反应”的第二层（更隐蔽的）锁。
+        c.current_step_speed_ = fast_abs(calibration_rps) * static_cast<float>(micro_steps_per_round);
+        c.motion_speed_rpm_ = calibration_rps * 60.0f;  // 遥测用带符号（引擎随后会覆写成幅值，无妨）
+        c.angle_cmd_rps_ = calibration_rps;             // 带符号斜坡状态
         if (calibration_rps != 0.0f)
         {
             const int8_t want_dir = (calibration_rps >= 0.0f) ? 1 : -1;
@@ -195,6 +199,7 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
                 // 【角度模式换向必须挂 DIR 翻转标志】emitSteps 的 emit(direction_changed)
                 // 靠它决定“先换 DIR 脚、等建立时间再发脉冲”。原来这里只改方向不发标志，
                 // 首窗脉冲会在 DIR 还指着旧方向时发出去 —— 反向第一步变正向。
+                // 斜坡保证换向这一拍 |speed|≈0，DIR 翻转发生在零速，物理安全。
                 c.motion_direction_ = want_dir;
                 c.motion_direction_change_pending_ = true;
             }

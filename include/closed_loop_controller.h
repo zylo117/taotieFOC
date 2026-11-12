@@ -416,6 +416,10 @@ private:
     volatile float angle_profile_pos_deg_ = 0.0f;
     volatile float angle_profile_vel_rps_ = 0.0f;
     volatile bool angle_profile_valid_ = false;
+    // 角度模式上一拍“世界系带符号指令速度”(rps)。斜坡状态专用，不能借用
+    // motion_speed_rpm_——统一引擎每拍会把 motion_speed_rpm_ 重算成无符号幅值，
+    // 反向斜坡在过零点会读到跳变。方向换向靠它把速度先滑到 0 再翻 DIR。
+    float angle_cmd_rps_ = 0.0f;
     // 一次性打印开关（写 0x155 置位）：遥测慢档打印一次后自动归零。
     volatile bool vloop_debug_once_ = false;
     volatile uint32_t motion_pulse_count_;

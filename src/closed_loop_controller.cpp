@@ -602,6 +602,7 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
     //   motion_commanded_travel_deg_ / motion_encoder_travel_raw_ → follow_error 从旧偏差异位开始
     // 都必须在 startMotion 里自己清，不能指望 stopMotion 已经被调过。
     current_step_speed_ = 0.0f;
+    angle_cmd_rps_ = 0.0f;  // 与 current_step_speed_ 同步：新目标从 0 起斜，不带旧速度
     motion_speed_rpm_ = 0.0f;
     motion_ramp_stage_ = RAMP_STAGE_ACCEL;
     motion_commanded_travel_deg_ = 0.0f;
@@ -2016,6 +2017,7 @@ void ClosedLoopController::stopMotion()
     // motion_ramp_stage_：如果上次停在 DECEL，下次启动第一拍会先减速而不是从 0 加速。
     compensated_rps_ = 0.0f;
     current_step_speed_ = 0.0f;
+    angle_cmd_rps_ = 0.0f;  // 带符号斜坡状态同步归零，避免下次进角度模式从旧速度起跳
     motion_ramp_stage_ = RAMP_STAGE_ACCEL;
     // 角度模式用的是独立实例，停止时同样要清干净：否则上一次锁定留下的积分会
     // 带进下一次角度模式（这正是“换个目标角度第一下就猛冲”的成因）。
