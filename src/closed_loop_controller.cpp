@@ -1002,9 +1002,12 @@ void ClosedLoopController::startMotion()
     {
         motion_accel_rpm_s_ = angle_accel_rpm_s_ > 0.0f ? angle_accel_rpm_s_ : 6000.0f;
     }
+    // 对齐起始速与目标速（原来方向反了：max<start 时把 max 抬到 start——
+    // 用户设 10RPM 被悄悄抬成 60，表现为"减速指令无效、永远卡在 60"）。
+    // 速度模式的语义是"目标=用户意图"，应该把起步降下来对齐。
     if (motion_max_rpm_ < motion_start_rpm_)
     {
-        motion_max_rpm_ = motion_start_rpm_;
+        motion_start_rpm_ = motion_max_rpm_;
     }
 
     // 【共振带＝信息标记，不钳位】（2026-11-12 改版，用户设计裁定）

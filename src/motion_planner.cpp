@@ -756,20 +756,32 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
         pps = 0.0f;
     }
 
-    // 16 位 PR @4ns tick：可表示上限 250k pps、下限 3815 pps（64 细分 ≈17.9 RPM）。
-    // 掉到下限以下（只发生在运行时换向的过零瞬间）就干脆不发，等斜坡升上来。
+    // ---------- 频率量程（两档分频 + 迟滞） ----------
+    // tier0：PSC=0，tick=4ns  → 3815 .. 500000 pps（16 位 PR / 驱动器 2µs 最小周期）
+    // tier1：PSC=7，tick=32ns →  477 .. 496000 pps（64 细分下探到 2.2 RPM，消灭死区）
+    // pps>8000 进 tier0、pps<3000 进 tier1，中间保持原档；换档要重装定时器，
+    // 间隙约一个步周期，只在低速起步/蠕行穿越时发生一次。
+    uint8_t tier = velocity_pwm_tier_;
+    if (pps >= 8000.0f)
+    {
+        tier = 0U;
+    }
+    else if (pps < 3000.0f)
+    {
+        tier = 1U;
+    }
+
+    const uint32_t clock_hz = (tier == 0U) ? 250000000U : 31250000U;
+    const uint32_t pr_min = (tier == 0U) ? kMinDriverStepPeriodTicks : 63U;  // 两档都 ≈2µs
     uint32_t pr_ticks = 0U;
     if (pps >= 1.0f)
     {
-        const float want = 1.0e9f / (static_cast<float>(stepper_common::target_tick_time) * pps);
-        if (want <= 65535.0f)
+        const uint32_t want = static_cast<uint32_t>(static_cast<float>(clock_hz) / pps + 0.5f);
+        if (want <= 65535U)
         {
-            pr_ticks = static_cast<uint32_t>(want + 0.5f);
-            if (pr_ticks < kMinDriverStepPeriodTicks)
-            {
-                pr_ticks = kMinDriverStepPeriodTicks;
-            }
+            pr_ticks = (want < pr_min) ? pr_min : want;
         }
+        // pr_ticks==0：连粗分频档的下限（477pps≈2.2RPM@64细分）都够不着，不发
     }
 
     if (pr_ticks == 0U)
@@ -782,19 +794,23 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
     }
     else
     {
-        if (!velocity_pwm_running_)
+        if (!velocity_pwm_running_ || tier != velocity_pwm_tier_)
         {
-            stepper_common::stepper_init_motion_timer(stepper_common::k_psc,
+            stepper_common::stepper_init_motion_timer((tier == 0U) ? 0U : 7U,
                                                       stepper_common::k_step_pulse_ticks,
                                                       c.motion_direction_ > 0);
             velocity_pwm_running_ = true;
+            velocity_pwm_tier_ = tier;
         }
         tmr_period_value_set(TMR2, pr_ticks);
-        c.step_period_us_ =
-            static_cast<uint16_t>((pr_ticks * stepper_common::target_tick_time + 500U) / 1000U);
+        c.step_period_us_ = static_cast<uint16_t>(
+            (pr_ticks * ((tier == 0U) ? 4U : 32U) + 500U) / 1000U);
     }
 
-    // ---------- 记账（与窗口路径同一套账本，FollowError/对账/0x11F 语义不变） ----------
+    // ---------- 记账：按"实际发出的速率"入账，FollowError 不造假 ----------
+    // 上一版按目标 pps 入账，被上限钳位时账面跑得比脉冲快，0x121 在 2343RPM
+    // 之上"不可控暴涨"是假账。现在发多少记多少：FE 回归真实同步误差本义。
+    // （0x14C 指令速度维持目标语义不变。）
     constexpr float kDtCapS = 150.0e-6f;  // 任务停顿保护，与 emitSteps 同值同理由
     float dt = static_cast<float>(delta_ramp_ns) * 1.0e-9f;
     if (dt > kDtCapS)
@@ -803,7 +819,9 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
         c.step_catchup_events_++;
     }
     c.motion_speed_rpm_ = c.current_step_speed_ * 60.0f / static_cast<float>(spr);
-    c.motion_step_accumulator_ += pps * dt;
+    const float emitted_pps =
+        (pr_ticks != 0U) ? (static_cast<float>(clock_hz) / static_cast<float>(pr_ticks)) : 0.0f;
+    c.motion_step_accumulator_ += emitted_pps * dt;
     uint32_t n = 0U;
     if (c.motion_step_accumulator_ >= 1.0f)
     {

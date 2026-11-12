@@ -46,6 +46,11 @@ public:
     // startMotion 置位，stopMotion 经 velocityPwmHalt 清零。
     bool velocity_pwm_active_ = false;
     bool velocity_pwm_running_ = false;
+    // 分频档：0=PSC0（4ns tick，3815pps~500kpps），1=PSC7（32ns tick，477~496kpps）。
+    // 64 细分下 16 位 PR + PSC0 的最低可表示速率是 3815pps≈17.9RPM——低于它的
+    // 指令原来直接不发脉冲（死区，低速起步会被误判堵转）。加粗分频档后低速
+    // 下探到 477pps≈2.2RPM；两档重叠区用迟滞（>8000 升档、<3000 降档）避免抖档。
+    uint8_t velocity_pwm_tier_ = 0;
 
     // 每拍调用（rampUpdate，updateTrapezoid 与补偿之后）。返回 true = 本拍脉冲
     // 已由连续 PWM 处理并完成记账，不要再走 emitSteps。
