@@ -961,9 +961,21 @@ void ClosedLoopController::startMotion()
     {
         motion_accel_rpm_s_ = 6000.0f;
     }
+    // 【起始速 0 = 从静止起爬，绝不是「直接最高速」】
+    // 旧代码这里把 0 解释成「取 motion_max_rpm_」，于是起始速一旦是 0（网页起始速
+    // 下拉第一档就是 0，且 0x11A 有一条下发路径不做非零兜底），ACCEL 分支第一拍就把
+    // current_step_speed_ 钳进 CRUISE —— 现象正是用户报的「开局直接跳最高速、
+    // 根本没有加速过程」；而 DECEL 是另一套逻辑，缓停照旧，所以看起来「只有减速
+    // 没有加速」。另外原作者准备的 60RPM 地板写在下面 max 兜底之后，被这里提前
+    // 填成 max 之后条件永不成立，是永远走不到的死代码。
+    // 现在与角度模式 setTargetAngleDeg 用同一条语义：0 → min(60RPM, max 的 10%)，最低 10。
     if (motion_start_rpm_ <= 0.0f)
     {
-        motion_start_rpm_ = motion_max_rpm_;
+        motion_start_rpm_ = fminf(60.0f, motion_max_rpm_ * 0.1f);
+        if (motion_start_rpm_ <= 0.0f)
+        {
+            motion_start_rpm_ = 10.0f;
+        }
     }
 
     // 【安全锁】用户主动失能后拒绝任何启动（含自动测试循环的 0x11F=1），
@@ -995,10 +1007,9 @@ void ClosedLoopController::startMotion()
         motion_pulse_count_ = 0xFFFFFFFFU;
     }
 
-    if (motion_start_rpm_ <= 0.0f)
-    {
-        motion_start_rpm_ = 60.0f;
-    }
+    // （原「if (motion_start_rpm_ <= 0) = 60」已删：上面起始速兜底后恒 >0，
+    //  这段是够不到的死代码，留着只会让人以为地板是这里给的。）
+
     if (motion_max_rpm_ <= 0.0f)
     {
         motion_max_rpm_ = angle_max_rpm_ > 0.0f ? angle_max_rpm_ : 1200.0f;
