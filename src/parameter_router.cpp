@@ -572,6 +572,32 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         printf("[RESONANCE] band hi = %lu rpm\r\n", static_cast<unsigned long>(owner_.resonance_hi_rpm_));
         return true;
     }
+    if (reg == TMC2209_EXT_PARAM_BAND_DITHER_ENABLE)
+    {
+        owner_.band_dither_en_ = (value != 0U);
+        owner_.band_dither_phase_ = 0.0f;
+        printf("[DITHER] enable = %u (band %u..%u rpm)\r\n",
+               owner_.band_dither_en_ ? 1U : 0U, owner_.resonance_lo_rpm_, owner_.resonance_hi_rpm_);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_BAND_DITHER_PERCENT)
+    {
+        uint16_t v = static_cast<uint16_t>(value > 50U ? 50U : value);
+        owner_.band_dither_percent_ = v;
+        printf("[DITHER] depth = +-%u %%\r\n", v);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_BAND_DITHER_HZ)
+    {
+        uint16_t v = static_cast<uint16_t>(value > 200U ? 200U : value);
+        if (v < 1U)
+        {
+            v = 1U;
+        }
+        owner_.band_dither_hz_ = v;
+        printf("[DITHER] rate = %u Hz\r\n", v);
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_RESONANCE_BYPASS)
     {
         owner_.resonance_bypass_ = value != 0U;
@@ -1065,6 +1091,26 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     {
         *value = static_cast<uint32_t>(static_cast<int32_t>(owner_.motion_speed_rpm_ *
                                                              static_cast<float>(owner_.motion_direction_) * 1000.0f));
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_BAND_DITHER_ENABLE)
+    {
+        *value = owner_.band_dither_en_ ? 1U : 0U;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_BAND_DITHER_PERCENT)
+    {
+        *value = owner_.band_dither_percent_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_BAND_DITHER_HZ)
+    {
+        *value = owner_.band_dither_hz_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_BAND_DITHER_ACTIVE)
+    {
+        *value = owner_.band_dither_active_;
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_RESONANCE_TAP_FREQ_HZ)

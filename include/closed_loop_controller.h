@@ -475,6 +475,13 @@ private:
     volatile uint16_t tap_amp_mdeg_ = 0U;
     volatile uint16_t tap_acrms_mdeg_ = 0U;
     volatile uint16_t tap_bin_mask_ = 0U;
+    // 带内速度微抖：见 TMC2209_EXT_PARAM_BAND_DITHER_* 注释。施加点在
+    // MotionPlanner::velocityPwmTick 的 pps 形成处（只改输出脉冲率）。
+    volatile bool band_dither_en_ = false;
+    volatile uint16_t band_dither_percent_ = 4U;
+    volatile uint16_t band_dither_hz_ = 7U;
+    volatile uint8_t band_dither_active_ = 0U;
+    float band_dither_phase_ = 0.0f;   // [0,1)
     // 滞后角表用的更慢的速度（滞后角本身是慢变量，不需要 20kHz 更新）
     volatile float lag_angle_speed_rpm_ = 0.0f;
     // 滞后角的一阶平滑 + 变化率限幅后的“实际生效值”（度，已带方向）

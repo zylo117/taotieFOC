@@ -765,6 +765,30 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
         pps = 0.0f;
     }
 
+    // ---------- 带内速度微抖（见 TMC2209_EXT_PARAM_BAND_DITHER_* 注释） ----------
+    // 只调制"输出脉冲率"：current_step_speed_ 一个 bit 都不动，所以规划器的
+    // 加速/巡航/减速判定、剩余步数、方向逻辑全部保持原样；实发步数照旧记账，
+    // 一个游走周期内积分为零 → 平均速度与总行程不变。
+    c.band_dither_active_ = 0U;
+    if (c.band_dither_en_ && c.band_dither_percent_ > 0U && pps > 0.0f)
+    {
+        const float rpm_now = c.current_step_speed_ * 60.0f / static_cast<float>(spr);
+        if (rpm_now >= static_cast<float>(c.resonance_lo_rpm_) &&
+            rpm_now <= static_cast<float>(c.resonance_hi_rpm_))
+        {
+            const float dt_s = static_cast<float>(delta_ramp_ns) * 1.0e-9f;
+            c.band_dither_phase_ += static_cast<float>(c.band_dither_hz_) * dt_s;
+            c.band_dither_phase_ -= std::floor(c.band_dither_phase_);
+            pps += pps * (static_cast<float>(c.band_dither_percent_) * 0.01f) *
+                   std::sin(6.2831853071795865f * c.band_dither_phase_);
+            if (pps < 0.0f)
+            {
+                pps = 0.0f;
+            }
+            c.band_dither_active_ = 1U;
+        }
+    }
+
     // ---------- 频率量程（四档分频 + 迟滞） ----------
     // tier0：PSC=0   tick=4ns      → 3815 .. 500000 pps（窄脉冲档顶到 1M）
     // tier1：PSC=7   tick=32ns     →  477 .. 496000 pps

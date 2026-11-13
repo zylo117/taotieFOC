@@ -277,6 +277,18 @@ enum Tmc2209CustomExtensionRegister
     TMC2209_EXT_PARAM_RESONANCE_TAP_AMP_MDEG = 0x17BU,
     TMC2209_EXT_PARAM_RESONANCE_TAP_ACRMS_MDEG = 0x17CU,
     TMC2209_EXT_PARAM_RESONANCE_TAP_BIN_MASK = 0x17DU,
+    // 带内速度微抖（治 300~800RPM 动态失稳；带边界沿用 0x16F/0x170）：
+    // 只在输出脉冲率上叠加一个低频正弦游走，规划器速度状态保持干净、步数记账
+    // 跟着实发走 → 平均速度与总步数都不受影响（实测均值跟随本就精确到 ±0.4%）。
+    // 机理：失稳需要"在同一相位上连续吸能若干周期"才会被捕获，游走破坏相位连续性。
+    // 0x17E = 使能 0/1
+    // 0x17F = 深度 ±%，默认 4，范围 0..50
+    // 0x180 = 游走频率 Hz，默认 7，范围 1..200
+    // 0x181 = 只读：本拍是否正在施加（1=在带内且已生效）
+    TMC2209_EXT_PARAM_BAND_DITHER_ENABLE = 0x17EU,
+    TMC2209_EXT_PARAM_BAND_DITHER_PERCENT = 0x17FU,
+    TMC2209_EXT_PARAM_BAND_DITHER_HZ = 0x180U,
+    TMC2209_EXT_PARAM_BAND_DITHER_ACTIVE = 0x181U,
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -341,7 +353,7 @@ private:
 
     ClosedLoopDriverProtocolConfig config_;
     // 扩展参数表长度：覆盖 0x100 ~ 0x167，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x17DU - 0x100U + 1U;
+    static constexpr uint16_t kCustomParameterCount = 0x181U - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };
