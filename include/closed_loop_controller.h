@@ -445,6 +445,36 @@ private:
     uint32_t speed_time_ring_[kSpeedWindowTicks] = {};
     uint16_t speed_ring_index_ = 0U;
     uint16_t speed_ring_count_ = 0U;
+    // =========================================================================
+    // 共振抽头（Goertzel 组）——见 TMC2209_EXT_PARAM_RESONANCE_TAP_* 注释。
+    //
+    // 为什么必须在固件里做：USB 遥测实测只有 fs≈38Hz（奈奎斯特 19Hz），而机械
+    // 振荡典型在几十~几百 Hz，从串口量到的"主频"全是混叠产物（实测同一现象两轮
+    // 报 3.5~12.5Hz 乱跳，就是这个原因）。控制任务是 20kHz，就地抽 4kHz 做 10 个
+    // 频点，代价约 4 万次乘加/秒，可以忽略。
+    //
+    // 窗口 2048 点 @4kHz = 0.512s，频率分辨率 1.953Hz；频点全部取它的整数倍，
+    // 窗内正好整周期 → 无泄漏，各频点互相正交，幅值可直接比较。
+    // 输入先过一阶去直流（τ≈1s），否则 FE 的 -1.5° 均值会灌进低频点。
+    // =========================================================================
+    static constexpr uint16_t kTapBins = 10U;
+    static constexpr uint16_t kTapWindow = 2048U;      // 0.512s @ 4kHz
+    static constexpr uint8_t kTapDecim = 5U;           // 20kHz / 5 = 4kHz
+    // 频点表放在 closed_loop_controller.cpp（文件域 constexpr）：静态 constexpr 数组
+    // 在成员函数里按下标取用会被判 odr-use，链接期要不到定义。
+    void updateResonanceTap(float fe_deg);
+    float tap_state1_[kTapBins] = {};
+    float tap_state2_[kTapBins] = {};
+    float tap_coeff_[kTapBins] = {};
+    float tap_dc_ema_ = 0.0f;
+    float tap_sum_sq_ = 0.0f;
+    uint16_t tap_count_ = 0U;
+    uint8_t tap_decim_cnt_ = 0U;
+    bool tap_tables_ready_ = false;
+    volatile uint16_t tap_freq_hz_ = 0U;
+    volatile uint16_t tap_amp_mdeg_ = 0U;
+    volatile uint16_t tap_acrms_mdeg_ = 0U;
+    volatile uint16_t tap_bin_mask_ = 0U;
     // 滞后角表用的更慢的速度（滞后角本身是慢变量，不需要 20kHz 更新）
     volatile float lag_angle_speed_rpm_ = 0.0f;
     // 滞后角的一阶平滑 + 变化率限幅后的“实际生效值”（度，已带方向）

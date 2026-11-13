@@ -1282,10 +1282,113 @@ float ClosedLoopController::refreshEncoderFeedback(uint64_t now_ns)
         auto motion_encoder_travel_angle_ = static_cast<float>(motion_encoder_travel_raw_) * 360.0F / 65536.0F;
         motion_follow_error_deg_ = normalize_signed_angle_error_deg(
             motion_encoder_travel_angle_ - motion_commanded_travel_deg_);  // 比如命令要走3度，结果才走了2度，那跟随误差就是-1度。实际-目标
+        updateResonanceTap(motion_follow_error_deg_);
     }
     motion_encoder_previous_raw_ = encoder_filtered_raw_;
 
     return encoder_delta_deg;
+}
+
+// ===========================================================================
+// 共振抽头（只读诊断，不在任何控制通路里）
+//
+// 动机：300~800RPM 区间的震动是"绕着正确平均位置振荡"（FE 均值全程 -1.4~-2.1°
+// 不变、平均转速精确到 ±0.4%），要判断该不该用"改脉冲间隔"的手段去治，必须先
+// 知道振荡频率随不随转速走。而 USB 遥测实测 fs≈38Hz，奈奎斯特只有 19Hz，从串口
+// 量到的主频全是混叠产物。控制任务 20kHz，就地抽 4kHz 做 10 个 Goertzel 频点。
+//
+// 注意：FE 是 ±180° 环绕量，失步/剧烈摆动的窗口里会出现环绕断点，那一窗的抽头
+// 值会虚高，判读时要避开 STALL 的那几个点。
+// ===========================================================================
+// 频点表：全部是 1.953Hz（=4000/2048）的整数倍 → 窗内整周期，无泄漏。
+static constexpr float kTapFreqHz[10] = {
+    19.53f, 31.25f, 48.83f, 78.13f, 125.0f,
+    195.31f, 312.5f, 500.0f, 781.25f, 1250.0f};
+
+void ClosedLoopController::updateResonanceTap(float fe_deg)
+{
+    static_assert(kTapBins == 10U, "kTapBins 与 closed_loop_controller.cpp 里的频点表长度不一致");
+    if (!tap_tables_ready_)
+    {
+        for (uint16_t i = 0U; i < kTapBins; ++i)
+        {
+            const float w = 2.0f * 3.1415926535897931f * kTapFreqHz[i] / 4000.0f;
+            tap_coeff_[i] = 2.0f * std::cos(w);
+            tap_state1_[i] = 0.0f;
+            tap_state2_[i] = 0.0f;
+        }
+        tap_tables_ready_ = true;
+    }
+
+    if (++tap_decim_cnt_ < kTapDecim)
+    {
+        return;
+    }
+    tap_decim_cnt_ = 0U;
+    if (!std::isfinite(fe_deg))
+    {
+        return;
+    }
+
+    // 去直流（τ≈1s @4kHz：alpha = 1/(2π·1·4000) ≈ 3.98e-5）。不去直流的话，
+    // FE 那个 -1.5° 的均值会灌满低频点，主峰永远落在 19.5Hz。
+    tap_dc_ema_ += (fe_deg - tap_dc_ema_) * 3.98e-5f;
+    const float x = fe_deg - tap_dc_ema_;
+    tap_sum_sq_ += x * x;
+
+    for (uint16_t i = 0U; i < kTapBins; ++i)
+    {
+        const float s0 = x + tap_coeff_[i] * tap_state1_[i] - tap_state2_[i];
+        tap_state2_[i] = tap_state1_[i];
+        tap_state1_[i] = s0;
+    }
+
+    if (++tap_count_ < kTapWindow)
+    {
+        return;
+    }
+
+    float amps[kTapBins];
+    float peak_amp = 0.0f;
+    uint16_t peak_idx = 0U;
+    for (uint16_t i = 0U; i < kTapBins; ++i)
+    {
+        const float s1 = tap_state1_[i];
+        const float s2 = tap_state2_[i];
+        float p = s1 * s1 + s2 * s2 - tap_coeff_[i] * s1 * s2;
+        if (p < 0.0f)
+        {
+            p = 0.0f;
+        }
+        amps[i] = 2.0f * std::sqrt(p) / static_cast<float>(kTapWindow);
+        if (amps[i] > peak_amp)
+        {
+            peak_amp = amps[i];
+            peak_idx = i;
+        }
+    }
+    uint16_t mask = 0U;
+    for (uint16_t i = 0U; i < kTapBins; ++i)
+    {
+        if (amps[i] >= 0.5f * peak_amp)
+        {
+            mask |= static_cast<uint16_t>(1U << i);
+        }
+    }
+    tap_freq_hz_ = static_cast<uint16_t>(kTapFreqHz[peak_idx] + 0.5f);
+    tap_amp_mdeg_ = static_cast<uint16_t>(peak_amp * 1000.0f > 65535.0f
+                                              ? 65535.0f : peak_amp * 1000.0f);
+    tap_acrms_mdeg_ = static_cast<uint16_t>(
+        std::sqrt(tap_sum_sq_ / static_cast<float>(kTapWindow)) * 1000.0f);
+    tap_bin_mask_ = mask;
+
+    for (uint16_t i = 0U; i < kTapBins; ++i)
+    {
+        tap_state1_[i] = 0.0f;
+        tap_state2_[i] = 0.0f;
+    }
+    tap_sum_sq_ = 0.0f;
+    tap_count_ = 0U;
 }
 
 // ===========================================================================

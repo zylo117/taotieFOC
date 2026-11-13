@@ -1067,6 +1067,26 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
                                                              static_cast<float>(owner_.motion_direction_) * 1000.0f));
         return true;
     }
+    if (reg == TMC2209_EXT_PARAM_RESONANCE_TAP_FREQ_HZ)
+    {
+        *value = owner_.tap_freq_hz_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_RESONANCE_TAP_AMP_MDEG)
+    {
+        *value = owner_.tap_amp_mdeg_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_RESONANCE_TAP_ACRMS_MDEG)
+    {
+        *value = owner_.tap_acrms_mdeg_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_RESONANCE_TAP_BIN_MASK)
+    {
+        *value = owner_.tap_bin_mask_;
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_CPU_USAGE_CENTIPERCENT)
     {
         *value = owner_.cpu_usage_centi_percent_;

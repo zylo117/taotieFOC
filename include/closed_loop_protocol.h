@@ -265,6 +265,18 @@ enum Tmc2209CustomExtensionRegister
     // 速度模式启动预同步沉降时长 ms（见 ClosedLoopController::start_dwell_ms_ 注释）。
     // 启动后先不发脉冲，让使能拉入振荡熄灭再起跑，消除冷启动一次性 ~43° 拉入丢步。
     TMC2209_EXT_PARAM_START_DWELL_MS = 0x179U,
+    // 共振抽头（只读，2026-11-14 定位 300~800RPM 震动用）：跟随误差 FE 的交流成分
+    // 在 10 个频点上的能量。USB 遥测只有 ~38Hz 采样（奈奎斯特 19Hz），从串口永远
+    // 量不到机械振荡频率，必须在 20kHz 控制任务里就地做频谱抽头。
+    // 0x17A = 主频 Hz（窗口内幅值最大的频点）
+    // 0x17B = 该主频分量的幅值 mdeg
+    // 0x17C = 整个窗口 FE 交流 RMS，mdeg（"震度"，与频率无关的量）
+    // 0x17D = 频点掩码：bit i = 第 i 个频点幅值 > 50% 峰值。单个 bit → 单一频率
+    //         （共振）；连续多个 bit → 宽带/噪声，抖动那类手段就无效。
+    TMC2209_EXT_PARAM_RESONANCE_TAP_FREQ_HZ = 0x17AU,
+    TMC2209_EXT_PARAM_RESONANCE_TAP_AMP_MDEG = 0x17BU,
+    TMC2209_EXT_PARAM_RESONANCE_TAP_ACRMS_MDEG = 0x17CU,
+    TMC2209_EXT_PARAM_RESONANCE_TAP_BIN_MASK = 0x17DU,
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -329,7 +341,7 @@ private:
 
     ClosedLoopDriverProtocolConfig config_;
     // 扩展参数表长度：覆盖 0x100 ~ 0x167，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x179U - 0x100U + 1U;
+    static constexpr uint16_t kCustomParameterCount = 0x17DU - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };
