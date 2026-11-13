@@ -270,7 +270,11 @@
                 log('[WARN] 尚未连接串口，无法启动测速运动');
                 return;
             }
-            const startRpm = Number(document.getElementById('startRpmSelect').value || 120);
+            // 起始速：0 是合法选项（= 从静止起爬，固件按 min(60, max*10%) 给地板）。
+            // 原来写 `|| 120` 会把用户明确选的 0 悄悄改成 120，而「单步」那条路径
+            // 又原样发 0 —— 同一个下拉框两条路径语义不同，排查时极易误判。现在两条
+            // 都原样下发，只在读不到数字时才兜底。
+            const startRpm = Number(document.getElementById('startRpmSelect').value ?? 0);
             const maxRpm = Number(document.getElementById('maxRpmSelect').value || 1000);
             const accelRpm = Number(document.getElementById('accelRpmSelect').value || 600);
             const motionMode = Number(document.getElementById('motionModeSelect').value || 0);
