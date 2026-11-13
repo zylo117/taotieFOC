@@ -94,6 +94,31 @@ def main():
             run(h, 'vel', start_rpm=0)
             time.sleep(0.6)
             run(h, 'vel', start_rpm=120)
+        elif which == 'pos0':
+            # 位置模式（定量脉冲）起始速 0：既要看斜坡，也要看是否走满行程不失步
+            h.write(0x16D, 0)
+            h.enable()
+            time.sleep(0.2)
+            h.write(0x11A, 0)
+            h.write(0x11B, MAX_RPM)
+            h.write(0x11C, ACCEL)
+            h.write(0x11D, 20 * SPR)
+            h.write(0x11E, 0)
+            a0 = h.read(0x116)
+            h.write(0x11F, 1)
+            trace = sample_trace(h, 5.0, 'pos')
+            h.wait_settled(20.0)
+            time.sleep(1.0)
+            marks, peak, ramp_t = judge(trace, MAX_RPM, ACCEL)
+            print(f'pos 模式 start=0 max={MAX_RPM} accel={ACCEL}：20 圈 = {20*SPR} 脉冲')
+            for frac, t in sorted(marks.items()):
+                print(f'  越过 {int(frac*100)}% 目标速 用时 {t:.3f}s')
+            print(f'  峰值 {peak:.1f} RPM（理论 {MAX_RPM}）')
+            head = [f'{t:.2f}s:{r:.0f}' for t, r in trace if t <= 1.2]
+            print('  起步轨迹: ' + '  '.join(head[:60]))
+            mdeg = h.read(0x121)
+            run_s = h.read(0x11F)
+            print(f'  收尾：0x11F running={run_s} 跟随误差 0x121={mdeg} mdeg')
         else:
             run(h, which)
     finally:

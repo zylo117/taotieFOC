@@ -20,6 +20,13 @@ def wait_idle(h, tmo):
     return False
 
 def run_counted(h, mode, srpm, mrpm, accel, count, tmo):
+    # 【测试间恢复】堵转守卫的动作是“停机+关驱动器输出”，只清 0x15F 不重新使能的话，
+    # 下一条测试是在电机没通电的状态下跑的 —— 编码器不动 → 又判堵转，整条链全假。
+    # （实测级联：T1 一锁，T2/T3/T7 全部 STALL，而会自己 requestDriverEnable(true)
+    #   的角度模式 T5 反而正常，正是这个特征的指纹。）
+    h.write(0x15F, 1)
+    h.write(0x124, 1)
+    time.sleep(0.25)
     h.write(0x11A, srpm); h.write(0x11B, mrpm); h.write(0x11C, accel)
     h.write(0x11D, count); h.write(0x11E, mode); h.write(0x11F, 1)
     t0 = time.time(); peak = 0.0
@@ -51,6 +58,7 @@ pk, fe, err = run_counted(h, 0, 120, 1000, 150, 640000, 40)
 print(f'T2 位置 fwd a150: 峰值{pk:.1f}° 末值{fe if fe is None else round(fe,2)}° {err or "OK"}')
 time.sleep(0.5)
 # T3 反转：运动中必须有负速度样本（物理反转确认），且不误报堵转
+h.write(0x15F, 1); h.write(0x124, 1); time.sleep(0.25)
 h.write(0x11A, 120); h.write(0x11B, 800); h.write(0x11C, 300)
 h.write(0x11D, 224000); h.write(0x11E, 1); h.write(0x11F, 1)
 t0 = time.time(); sps = []; st3 = None; fe3 = 0.0
@@ -69,6 +77,7 @@ print(f'T3 位置 REV a300: {"STALL" if st3 else "完成"} 负速样本{neg}/{le
 time.sleep(0.5)
 
 # T4 速度 2000 无限计数 10s：漂移
+h.write(0x15F, 1); h.write(0x124, 1); time.sleep(0.25)
 h.write(0x11A, 120); h.write(0x11B, 2000); h.write(0x11C, 1000)
 h.write(0x11D, 0xFFFFFFFF); h.write(0x11E, 2); h.write(0x11F, 1)
 t0 = time.time(); pts = []
