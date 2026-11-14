@@ -86,9 +86,15 @@ public:
     static constexpr uint64_t kMinStepPulseNs = 1000ULL;  // TMC2209 STEP 规格 ≥1µs，200ns 是规格外
     // 脉冲引擎可达上限（详见 TMC2209_EXT_PARAM_MOTION_MAX_RPM_LIMIT 注释）：
     // tier0 窄脉冲档 pr_min = 250 拍 @250MHz = 1µs 周期 → 1,000,000 pps。该档低电平
-    // 写死 300ns、无视 0x123，所以上限与脉宽无关。想抬高它只能把 STEP 脉冲压得更窄
-    // （MCU 侧 4ns 分辨率完全够，200ns 低 + 200ns 高 = 2.5Mpps），但那是超 TMC2209
-    // 规格的硬件决定，不由软件擅自担保。
+    // 写死 300ns、无视 0x123，所以上限与脉宽无关。
+    // 换算：spr = FULL_STEPS_PER_ROUND(200) × 细分数 = 200×64 = 12800 微步/圈
+    //（见 main.cpp:326 与 closed_loop_controller.cpp:8），所以 64 细分下
+    //      上限 = 1,000,000 × 60 / 12800 = 4687 RPM —— 不是 2343，别再按 25600 折算。
+    // 实测跑到过 4600RPM，离硬上限只剩 2%：意味着 pps = 规划速度 + 闭环补偿 里的
+    // 补偿量在这个转速附近会被 pr_min 直接削掉，速度越高闭环越没有 authority。
+    // 想再抬高上限只能把 STEP 压到 1µs 周期以下（MCU 侧 4ns 分辨率够：
+    // 200ns 低 + 200ns 高 = 2.5Mpps = 11719RPM），但那超出 TMC2209 规格（见上面
+    // kMinStepPulseNs 注释），是硬件决定，软件不擅自担保。
     static constexpr float kMaxPulsePps = 1000000.0f;
     // 当前细分数下引擎真正发得出来的最高转速（RPM，浮点）。
     float maxAchievableRpm()
