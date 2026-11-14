@@ -83,7 +83,17 @@ class ClosedLoopController
 public:
     // STEP 脉宽的硬限制（ns）。没写明细分步距时，100ns 已经接近 TMC2209 的
     // 最小脉宽识别能力；再短就会被驱动器整步忽略。上限 20us 是给低速调试留的。
-    static constexpr uint64_t kMinStepPulseNs = 1000ULL;  // TMC2209 STEP 规格 ≥1µs，200ns 是规格外
+    // 【2026-11-14 更正】这里原来写"TMC2209 STEP 规格 ≥1µs，200ns 是规格外"，是错的，
+    // 而且这个错误结论把上限推算带偏了一整轮。规格书 WJ337769 13.1 Timing 原文：
+    //   t_SL（STEP 最小低电平）= max(t_FILT_SD, t_CLK+20) → 100 ns
+    //   t_SH（STEP 最小高电平）= max(t_FILT_SD, t_CLK+20) → 100 ns
+    //   t_DSU / t_DSH（DIR 建立/保持）= 20 ns；t_FILT_SD（输入尖峰滤波）13/20/30 ns
+    // 所以 200ns 周期在电学规格内。真正先到的限制是同一张表里的
+    //   f_STEP = ½·f_CLK，f_FS = f_CLK/512（内部波形引擎推进整步的速率）
+    // f_CLK 由 OTP 预置为内部 12MHz → f_FS = 23.4kHz 整步/秒，64µ 输入下约
+    // 1.5Mpps（≈7031RPM）。本下限取 1µs 是工程保守（留滤波/走线/线缆余量），
+    // 不是芯片要求；抬高上限时按 1.5Mpps 这条算，不要按 5Mpps。
+    static constexpr uint64_t kMinStepPulseNs = 1000ULL;
     // 脉冲引擎可达上限（详见 TMC2209_EXT_PARAM_MOTION_MAX_RPM_LIMIT 注释）：
     // tier0 窄脉冲档 pr_min = 250 拍 @250MHz = 1µs 周期 → 1,000,000 pps。该档低电平
     // 写死 300ns、无视 0x123，所以上限与脉宽无关。
