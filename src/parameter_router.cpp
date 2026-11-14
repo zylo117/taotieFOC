@@ -336,7 +336,17 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
     }
     if (reg == TMC2209_EXT_PARAM_MAX_RPM)
     {
-        owner_.motion_max_rpm_ = static_cast<float>(value);
+        // 钳到脉冲引擎量程（见 0x182）：超出量程的步发不出去，缺口会在减速末尾被
+        // 蠕行补尾以 ~0.94RPM 慢慢磨出来，并留下一小段跟随误差——就是"高速跑完
+        // 转速归零后电机还往前挪一小段"的根因。读回 0x11B 得到的是钳后的真实值。
+        float rpm = static_cast<float>(value);
+        const float cap = owner_.maxAchievableRpm();
+        if (rpm > cap)
+        {
+            printf("[LIMIT] 0x11B %lu rpm clamped to engine ceiling %lu rpm\r\n",
+                   static_cast<unsigned long>(value), static_cast<unsigned long>(rpm = cap));
+        }
+        owner_.motion_max_rpm_ = rpm;
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_ACCEL_RPM_S)
@@ -1111,6 +1121,22 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_BAND_DITHER_ACTIVE)
     {
         *value = owner_.band_dither_active_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_MOTION_MAX_RPM_LIMIT)
+    {
+        const float cap = owner_.maxAchievableRpm();
+        *value = static_cast<uint32_t>(cap);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_CREEP_EVENTS)
+    {
+        *value = owner_.creep_events_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_CREEP_LAST_DEFICIT_STEPS)
+    {
+        *value = owner_.creep_last_deficit_;
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_RESONANCE_TAP_FREQ_HZ)

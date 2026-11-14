@@ -289,6 +289,15 @@ enum Tmc2209CustomExtensionRegister
     TMC2209_EXT_PARAM_BAND_DITHER_PERCENT = 0x17FU,
     TMC2209_EXT_PARAM_BAND_DITHER_HZ = 0x180U,
     TMC2209_EXT_PARAM_BAND_DITHER_ACTIVE = 0x181U,
+    // 脉冲引擎量程（只读）：tier0 窄脉冲档 pr_min = 250 拍 @250MHz = 1µs 周期
+    // → 1,000,000 pps，64 细分下 = 2343 RPM。命令速度超过它时发不出那么多步，
+    // 少发的部分会在减速末尾被"蠕行补尾"以 ~0.94RPM 慢慢磨，留下残差。
+    // 现在 0x11B 会被钳到这个值，读回即是钳后的真实上限（与细分联动）。
+    TMC2209_EXT_PARAM_MOTION_MAX_RPM_LIMIT = 0x182U,
+    // 蠕行补尾事件（只读）：进入补尾分支的次数 / 最近一次补尾的差额微步数。
+    // 不打印（转动时禁止串口输出），靠这两个寄存器事后取证。
+    TMC2209_EXT_PARAM_CREEP_EVENTS = 0x183U,
+    TMC2209_EXT_PARAM_CREEP_LAST_DEFICIT_STEPS = 0x184U,
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -353,7 +362,7 @@ private:
 
     ClosedLoopDriverProtocolConfig config_;
     // 扩展参数表长度：覆盖 0x100 ~ 0x167，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x181U - 0x100U + 1U;
+    static constexpr uint16_t kCustomParameterCount = 0x184U - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

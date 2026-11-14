@@ -84,6 +84,24 @@ public:
     // STEP 脉宽的硬限制（ns）。没写明细分步距时，100ns 已经接近 TMC2209 的
     // 最小脉宽识别能力；再短就会被驱动器整步忽略。上限 20us 是给低速调试留的。
     static constexpr uint64_t kMinStepPulseNs = 1000ULL;  // TMC2209 STEP 规格 ≥1µs，200ns 是规格外
+    // 脉冲引擎可达上限（详见 TMC2209_EXT_PARAM_MOTION_MAX_RPM_LIMIT 注释）：
+    // tier0 窄脉冲档 pr_min = 250 拍 @250MHz = 1µs 周期 → 1,000,000 pps。该档低电平
+    // 写死 300ns、无视 0x123，所以上限与脉宽无关。想抬高它只能把 STEP 脉冲压得更窄
+    // （MCU 侧 4ns 分辨率完全够，200ns 低 + 200ns 高 = 2.5Mpps），但那是超 TMC2209
+    // 规格的硬件决定，不由软件擅自担保。
+    static constexpr float kMaxPulsePps = 1000000.0f;
+    // 当前细分数下引擎真正发得出来的最高转速（RPM，浮点）。
+    float maxAchievableRpm()
+    {
+        const uint32_t spr = getStepsPerRound();
+        return (spr != 0U) ? (kMaxPulsePps * 60.0f / static_cast<float>(spr)) : 0.0f;
+    }
+    // 把"步/秒"速度钳到引擎量程内。所有从 RPM 换算出 motion_max_step_s_ 的地方都必须过它，
+    // 否则规划曲线不可实现，缺口会在减速末尾由蠕行补尾慢慢磨出来（见 creep_*）。
+    float clampToPulseCeiling(float step_s)
+    {
+        return (step_s > kMaxPulsePps) ? kMaxPulsePps : step_s;
+    }
     static constexpr uint64_t kMaxStepPulseNs = 20000ULL;
 
     enum FaultFlags : uint32_t
@@ -482,6 +500,10 @@ private:
     volatile uint16_t band_dither_hz_ = 7U;
     volatile uint8_t band_dither_active_ = 0U;
     float band_dither_phase_ = 0.0f;   // [0,1)
+    // 蠕行补尾取证：进入补尾分支的次数与最近一次的差额微步（见 0x183/0x184）。
+    volatile uint16_t creep_events_ = 0U;
+    volatile uint32_t creep_last_deficit_ = 0U;
+    bool creep_active_ = false;
     // 滞后角表用的更慢的速度（滞后角本身是慢变量，不需要 20kHz 更新）
     volatile float lag_angle_speed_rpm_ = 0.0f;
     // 滞后角的一阶平滑 + 变化率限幅后的“实际生效值”（度，已带方向）

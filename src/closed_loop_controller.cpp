@@ -1100,7 +1100,7 @@ void ClosedLoopController::startMotion()
         // f_step(step/s) = RPM * micro_steps_per_round / 60，每秒多少微步
         const float rpm2step = static_cast<float>(micro_steps_per_round) / 60.0f;
         motion_start_step_s_ = motion_start_rpm_ * rpm2step;
-        motion_max_step_s_ = motion_max_rpm_ * rpm2step;
+        motion_max_step_s_ = clampToPulseCeiling(motion_max_rpm_ * rpm2step);
         motion_accel_step_s2_ = motion_accel_rpm_s_ * rpm2step;
 
         // 加速段：从start速度加速到max速度，需要多少步

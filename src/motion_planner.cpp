@@ -383,12 +383,14 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
                 c.velocity_pid_.resetDeriv();
             }
             // 换向期间不做后续变速，避免一拍内既要刹车又要改目标
-            c.motion_max_step_s_ = c.motion_max_rpm_ * static_cast<float>(c.getStepsPerRound()) / 60.0f;
+            c.motion_max_step_s_ = c.clampToPulseCeiling(
+                c.motion_max_rpm_ * static_cast<float>(c.getStepsPerRound()) / 60.0f);
             return false;
         }
 
         const uint32_t speed_spr = c.getStepsPerRound();
-        const float new_max_step_s = c.motion_max_rpm_ * static_cast<float>(speed_spr) / 60.0f;
+        const float new_max_step_s = c.clampToPulseCeiling(
+            c.motion_max_rpm_ * static_cast<float>(speed_spr) / 60.0f);
 
         // 【运行时改加速度】motion_accel_step_s2_ 同样只在 startMotion 算一次。
         // 阶段 2 的急刹测试需要把加速度临时放大 M 倍（0x11C = 原值 x M）
@@ -442,6 +444,7 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
 
     if (c.motion_ramp_stage_ == ClosedLoopController::RAMP_STAGE_ACCEL)
     {
+        c.creep_active_ = false;   // 重新进入加速段 = 新的一刀运动，补尾取证重新计数
         c.current_step_speed_ += c.motion_accel_step_s2_ * dt_ramp_s;
         if (c.current_step_speed_ >= c.motion_max_step_s_)
         {
@@ -480,6 +483,19 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
             // 现在的处理：用一个小爬行速度把尾巴补完，让“全部发完 -> SETTLE”正常接管。
             else if (remaining_steps > 0U)
             {
+                // 取证（0x183/0x184）：只在首次进入时记一次，避免每拍重复计数。
+                // 走到这里说明规划减速段"想发"的步数比引擎"发得出"的步数多——
+                // 绝大多数情况是命令速度超过了 0x182 的脉冲量程（现在已被钳位，
+                // 正常情况不该再触发；触发了就说明还有别的原因在少发步）。
+                if (!c.creep_active_)
+                {
+                    c.creep_active_ = true;
+                    if (c.creep_events_ < 0xFFFFU)
+                    {
+                        c.creep_events_++;
+                    }
+                    c.creep_last_deficit_ = remaining_steps;
+                }
                 float creep = c.motion_start_step_s_ * 0.5f;
                 if (creep < 400.0f)
                 {
