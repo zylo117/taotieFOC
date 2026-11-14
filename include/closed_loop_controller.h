@@ -95,17 +95,17 @@ public:
     // 不是芯片要求；抬高上限时按 1.5Mpps 这条算，不要按 5Mpps。
     static constexpr uint64_t kMinStepPulseNs = 1000ULL;
     // 脉冲引擎可达上限（详见 TMC2209_EXT_PARAM_MOTION_MAX_RPM_LIMIT 注释）：
-    // tier0 窄脉冲档 pr_min = 250 拍 @250MHz = 1µs 周期 → 1,000,000 pps。该档低电平
-    // 写死 300ns、无视 0x123，所以上限与脉宽无关。
+    // tier0 窄脉冲档 pr_min = 166 拍 @250MHz = 664ns 周期 → 1,506,024 pps，本常量取
+    // 1,500,000（略低于硬件值，保证钳位一定钳得住）。该档低电平写死 300ns、无视
+    // 0x123，所以上限与脉宽无关。
     // 换算：spr = FULL_STEPS_PER_ROUND(200) × 细分数 = 200×64 = 12800 微步/圈
     //（见 main.cpp:326 与 closed_loop_controller.cpp:8），所以 64 细分下
-    //      上限 = 1,000,000 × 60 / 12800 = 4687 RPM —— 不是 2343，别再按 25600 折算。
-    // 实测跑到过 4600RPM，离硬上限只剩 2%：意味着 pps = 规划速度 + 闭环补偿 里的
-    // 补偿量在这个转速附近会被 pr_min 直接削掉，速度越高闭环越没有 authority。
-    // 想再抬高上限只能把 STEP 压到 1µs 周期以下（MCU 侧 4ns 分辨率够：
-    // 200ns 低 + 200ns 高 = 2.5Mpps = 11719RPM），但那超出 TMC2209 规格（见上面
-    // kMinStepPulseNs 注释），是硬件决定，软件不擅自担保。
-    static constexpr float kMaxPulsePps = 1000000.0f;
+    //      上限 = 1,500,000 × 60 / 12800 = 7031 RPM
+    // 为什么停在 1.5Mpps 而不是规格允许的 5Mpps（100+100ns）：规格书 13.1 同一张表
+    // 给出 f_FS = f_CLK/512，f_CLK 由 OTP 预置内部 12MHz → 23.4kHz 整步/秒，64µ 输入
+    // 下正好约 1.5Mpps。超过它引脚吃得下、芯片内部波形引擎消化不了，会形成"MCU 账本
+    // 记了、芯片没执行"的隐形吞步。是否真的卡在这里，用 0x183/0x184 实测判定。
+    static constexpr float kMaxPulsePps = 1500000.0f;
     // 当前细分数下引擎真正发得出来的最高转速（RPM，浮点）。
     float maxAchievableRpm()
     {

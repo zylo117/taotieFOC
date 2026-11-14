@@ -867,7 +867,15 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
         ccr_ticks = narrow ? 75U : (width_ns / 4U);
         {
             const uint32_t wide_min_with_margin = (width_ns / 4U) + 250U;  // 低电平≥1µs
-            pr_min = narrow ? 250U
+            // 窄脉冲档周期下限：250 拍(1µs) → 166 拍(664ns) ≈ 1.5Mpps。
+            // 依据规格书 WJ337769 13.1：STEP 最小低/高电平各仅 100ns，1µs 从来不是
+            // 芯片要求；本档低电平固定 75 拍(300ns)、高电平 91 拍(364ns)，两侧仍是
+            // 规格的 3 倍以上。上限不再往上抬，是因为同一张表里 f_FS = f_CLK/512
+            //（内部波形引擎推进整步的速率，f_CLK=12MHz → 23.4kHz 整步/秒，64µ 下
+            // 约 1.5Mpps）：脉冲率再高，引脚吃得下而芯片内部消化不了，那会变成
+            // 我们看不见的"芯片吞步"。是否真卡在 1.5Mpps，用 0x183/0x184 跑一次量
+            // 出来——编码器跟不上命令转速就说明芯片侧先到了。
+            pr_min = narrow ? 166U
                             : (kMinDriverStepPeriodTicks > wide_min_with_margin
                                    ? kMinDriverStepPeriodTicks
                                    : wide_min_with_margin);
