@@ -895,10 +895,26 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
         // pps/PR 预测逐位吻合，脉宽 1/2/3µs 五档 -5.11~-5.13°/s 纹丝不动，
         // 排除驱动吃边沿）。现在按 周期拍数-1 装 PR，速度同时更准；
         // 账本 emitted_pps = clock/(PR+1) 与硬件严格一致。
-        uint64_t period = static_cast<uint64_t>(static_cast<float>(clock_hz) / pps + 0.5f);
+        // 【周期小数进位】ARR 只能装整数拍，直接四舍五入会让实发频率长期偏离命令
+        // 频率：3000RPM 命令 640,000pps、理想周期 390.625 拍 → 装 391 → 实发
+        // 639,386pps，长期少发 0.096%；以 300RPM/s 减速要跑 250 圈，就欠下约 3070
+        // 微步，这部分在速度归零后被 DECEL 的蠕行补尾以 ~0.94RPM 磨 7.7 秒——就是
+        // "转速到 0 了电机还超缓慢往前走一小段"（开环闭环都出现，与补偿无关，因为它
+        // 在脉冲生成的公共通路上）。反过来 1500RPM 理想周期 781.25 → 装 781 → 实发
+        // 偏快，步数先跑完而速度还没归零，末端提前硬收。同一处代码两种症状，取决于
+        // 四舍五入的方向。
+        // 现在把小数残差留给下一拍，让 ARR 在 390/391 之间按比例交替：长期平均严格
+        // 等于命令频率，残差始终限制在 ±0.5 拍（±2ns），不会积累，账本照旧按
+        // emitted_pps = clock/(PR+1) 记实发。
+        float want_period = static_cast<float>(clock_hz) / pps + velocity_pwm_period_carry_;
+        uint64_t period = static_cast<uint64_t>(want_period + 0.5f);
+        velocity_pwm_period_carry_ = want_period - static_cast<float>(period);
         if (period < pr_min)
         {
             period = pr_min;
+            // 已经顶到量程天花板：欠下的步数本来就发不出来。残差必须清零，否则会攒
+            // 出一个永远还不清的"假债"，等转速掉出天花板时突然补发一串脉冲。
+            velocity_pwm_period_carry_ = 0.0f;
         }
         if (period <= 65536ULL)
         {
@@ -935,6 +951,7 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
                                                       dir_now > 0);
             velocity_pwm_running_ = true;
             velocity_pwm_tier_ = tier;
+            velocity_pwm_period_carry_ = 0.0f;   // 换档 = 时间基准变了，小数残差作废
             velocity_pwm_narrow_ = narrow;
             velocity_pwm_ccr_ = ccr_ticks;
             velocity_pwm_dir_ = dir_now;

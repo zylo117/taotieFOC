@@ -57,6 +57,9 @@ public:
     // 下限对这块硬件不是墙，把它当墙是我的错误（低速段仍用 1µs 宽脉冲抗振铃，
     // 那是 24V 窄脉冲丢步修复保留的部分）。迟滞 450k 进 / 420k 出。
     bool velocity_pwm_narrow_ = false;
+    // 周期小数进位（见 velocityPwmTick 里的【周期小数进位】注释）：单位是"当前
+    // 档位的时间拍"，换档时时间基准变了，必须清零。
+    float velocity_pwm_period_carry_ = 0.0f;
     uint32_t velocity_pwm_ccr_ = 0U;   // 当前 CCR 装载值；0x123 改脉宽后触发重装
     int8_t velocity_pwm_dir_ = 0;      // 当前 DIR（0=未知，强制重装）；换向判据
 
