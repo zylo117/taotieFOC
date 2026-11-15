@@ -2144,6 +2144,17 @@ void ClosedLoopController::stopMotion()
     // 不清的话，停止前那个“已经走到一半”的轮廓会在下次启动时直接把前馈叠上去，
     // 表现为“一上电/一进角度模式就先跑一下”。
     angle_profile_valid_ = false;
+    // 在位死区状态必须跟着一起清（1d8d113/c97614c 引入的四个新状态里，只有这里能清）。
+    // 不清的两个真实后果：
+    //   ① 同一目标重发会被旧锁卡住——解锁要 |误差|>0.45°，也就是缓停留下的那
+    //      最多 0.45°（8 微步）残差，伺服拒绝收回；
+    //   ② 低通值和 40 拍计数跨停止是陈旧值：停下时若 filt≈0、ticks=39，重入
+    //      **第一拍就锁定**、命令被强制 0，下一拍才由退出判据解锁——表现为新角度
+    //      运动开头 50µs 一次停顿。
+    angle_in_position_ = false;
+    angle_in_pos_ticks_ = 0U;
+    angle_in_pos_target_deg_ = 0.0f;
+    angle_err_filt_deg_ = 0.0f;
     motion_last_ramp_time_ns_ = 0ULL;
     // printf("fuck3 motion_last_ramp_time_ns_: %f\n", motion_last_ramp_time_ns_/1e9);
     motion_step_high_ = false;

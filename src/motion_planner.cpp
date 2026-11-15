@@ -549,16 +549,30 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
                     }
                     c.creep_last_deficit_ = remaining_steps;
                 }
-                float creep = c.motion_start_step_s_ * 0.5f;
-                if (creep < 400.0f)
-                {
-                    creep = 400.0f;          // 至少 400 微步/s，低于这个 emit 会长时间不足 1 步/拍
-                }
+                // 补尾速率（F1，治"收尾/缓停抖一下"）：原来是 max(400, 0.5×起始转速)，
+                // 默认起始 60RPM 时 = 3200pps = **180°/s**，而且是**从 0 一拍直接赋值**。
+                // 那是全固件唯一一处脉冲速率瞬时阶跃（其余全部受斜率限制）：约 5ms 一个
+                // 锯齿，每周期净走 8 微步，手感到来就是"抖一下"。
+                // 现在：小速率 + 按斜率爬升。尾差本来只有几微步~几十微步（主要是换档/
+                // 首拍重装定时器白送、账本看不见的那些脉冲，记账对齐后更少），用
+                // 60~300pps（0.34~1.7°/s）磨完完全不可感。
+                // 不变式（防旧死锁复发，见上面 25220/25600 的记录）：补尾必须存在，且
+                // 必须在**有限拍**内把 motion_steps_emitted_ 推到 motion_pulse_count_；
+                // 300pps 是 16 位 ARR 内的安全值（tier3 时钟下 6510 拍），不会出现
+                // "停发但不改 pulse_count" 让上位机等 0x11F 超时。
+                float creep = 300.0f;
                 if (creep > c.motion_max_step_s_)
                 {
                     creep = c.motion_max_step_s_;
                 }
-                c.current_step_speed_ = creep;
+                // 每拍最多 +32pps，等价默认 0x11C=6000RPM/s 的斜率（640000pps/s ÷ 20kHz），
+                // 所以补尾起步不再比正常加速更猛。
+                float creep_next = c.current_step_speed_ + 32.0f;
+                if (creep_next > creep)
+                {
+                    creep_next = creep;
+                }
+                c.current_step_speed_ = creep_next;
             }
             else
             {
