@@ -290,8 +290,10 @@ enum Tmc2209CustomExtensionRegister
     TMC2209_EXT_PARAM_BAND_DITHER_HZ = 0x180U,
     TMC2209_EXT_PARAM_BAND_DITHER_ACTIVE = 0x181U,
     // 脉冲引擎量程（只读）：tier0 窄脉冲档 pr_min = 166 拍 @250MHz = 664ns 周期
-    // → 1.5Mpps；spr = 200 × 细分数 = 200×64 = 12800 微步/圈，所以 64 细分下上限
-    // = 7031 RPM。取 1.5Mpps 为顶的依据见 ClosedLoopController::kMaxPulsePps 注释
+    // → 1.5Mpps；spr = 200 × 细分数，细分数取自 DEFAULT_MICROSTEPS（现板 TMC2208 @32µ
+    // → spr = 6400 → 14062 RPM；旧板 TMC2209 @64µ → spr = 12800 → 7031 RPM）。
+    // 所以 0x182 同时是"引擎按几分之折算"的试纸：读 14062 = 32µ，读 7031 = 64µ。
+    // 取 1.5Mpps 为顶的依据见 ClosedLoopController::kMaxPulsePps 注释
     //（规格书 13.1：f_FS = f_CLK/512，内部波形引擎决定，不是引脚开关速度）。命令速度超过它时发不出那么多步，
     // 少发的部分会在减速末尾被"蠕行补尾"以 ~0.94RPM 慢慢磨，留下残差。
     // 现在 0x11B 会被钳到这个值，读回即是钳后的真实上限（与细分联动）。

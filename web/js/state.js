@@ -32,9 +32,14 @@
             currentAngle: 0,
             targetAngle: 0,
             targetPosition: 0,
-            microsteps: 64,
+            // 微步默认值 = 固件 DEFAULT_MICROSTEPS（现板 TMC2208 @32µ）。这里以前是 64，
+            // 连上设备之前所有按圈/步折算的显示都按 12800/圈 算，正好差一倍。
+            microsteps: 32,
             pendingTargetAngle: null,
             targetWriteInFlight: false,
+            // 低频配置回读（ui.js 的 syncConfigFromDevice）的进行中标志：
+            // 防止一轮还没跑完（最坏 6 个寄存器各等超时）又被下一个 3 秒 tick 叠第二遍。
+            configSyncInFlight: false,
             speed: 0,
             accel: 0,
             currentA: 0,

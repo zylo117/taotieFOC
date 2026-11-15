@@ -6,8 +6,10 @@
 
 #define STEP_PERIOD_US_DEFAULT  5000U
 #define FULL_STEPS_PER_ROUND    200U  // 1.8度步进
-#define DEFAULT_MICROSTEPS      32U   // ← 板上驱动器的**实际**细分（现为 TMC2208 @32µ）。
-                                      //   换回 TMC2209 @64µ 时只改这一行，见 :304 的载入规则。
+// DEFAULT_MICROSTEPS 已上移到 closed_loop_controller.h（细分口径的唯一真值源）。
+// 原来它是本文件私有的宏，于是 main.cpp 里 g_protocol.configure() 只能再写死一份
+// 64，两份数字各改各的 —— 0x100 读回与引擎实际折算用的细分数就此分叉。
+// 换驱动器现在只改头文件里那一行。
 #define DEFAULT_STEP_PULSE_NS   2000ULL
 // 脉宽的硬上下限已改为 ClosedLoopController::kMinStepPulseNs / kMaxStepPulseNs，
 // 因为 ParameterRouter 做 clamp 时也要用同一组值（避开两份宏各自漂移）。
@@ -274,7 +276,12 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
     // 【上电恢复】从 Flash 读回上次保存的 PID / 微步 / 脉宽。
     // 固件原来完全没有参数持久化，掉电后 PID 全丢、回到编译期默认值；
     // 现在只要用户点过一次「写入参数」，重启就能自动恢复。
-    uint16_t boot_microsteps = 0U;
+    // 细分 = 硬件属性，开机初值直接给 DEFAULT_MICROSTEPS，而不是 0。
+    // 原来这里写的是 0：Flash 读失败（或旧记录里 microsteps==0，历史上真的存进去过 0）
+    // 时 boot_microsteps 保持 0，下面 `if (boot_microsteps >= 1U)` 就整块跳过，
+    // 驱动器于是留下 main.cpp / protocol init 推进去的那份初值 ——
+    // "读不到 Flash"会悄悄退化成"用另一个细分数"，正是最隐蔽的那类错。
+    uint16_t boot_microsteps = DEFAULT_MICROSTEPS;
     uint16_t boot_enable_mode = ENABLE_MODE_HOST;
     uint32_t boot_motion_source = MOTION_SOURCE_EXTERNAL;   // 上电默认：外部脉冲跟随
     uint16_t boot_res_lo = 300U;
@@ -299,19 +306,25 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
             base_velocity_kp_ = velocity_pid_.kp;
             base_velocity_ki_ = velocity_pid_.ki;
             base_velocity_kd_ = velocity_pid_.kd;
-            // 【微步必须一起恢复】它是"一圈多少微步"的唯一来源：丢了它，
-            // getStepsPerRound() 会退回驱动器默认值（历史默认 32），
-            // 而脉冲数、滞后角表、网页行程全按 64 口径 —— 行程正好差一倍。
-            if (params.microsteps >= 1U && params.microsteps <= 256U)
+            // 【微步不从 Flash 恢复】它是"一圈多少微步"的唯一来源：一旦 Flash 里的值
+            // 和板子的实际细分不符，脉冲数、滞后角表、网页行程全部按错口径换算。
+            // 细分是**硬件属性**（由驱动芯片和 M0/M1 电平决定），不是运行时偏好。Flash
+            // 存的值一旦和当前板子不符，**所有转速都会按倍数错**——实测就是这一条：板子换成了
+            // 32 细分的 TMC2208，Flash 还存着 64，于是"命令 250RPM、轴真转 500RPM"，一整批
+            // 关于落点误差和"闭环自激"的测量结论全部作废（0x182 是试纸：7031=spr12800=64µ，
+            // 14062=spr6400=32µ）。而且 0x100 的运行时写入不持久化，重启/重刷就回 64。
+            // 所以这里以 DEFAULT_MICROSTEPS 为准；换驱动器时只改那一个常量。
+            // 【但 Flash 里那个值不能不作声地扔掉】它是否等于 DEFAULT_MICROSTEPS 正是
+            // "这台板子的历史数据还能不能拿来对比"的判据，不一致就必须在串口上喊一声。
+            if (params.microsteps != DEFAULT_MICROSTEPS)
             {
-                // 细分是**硬件属性**（由驱动芯片和 M0/M1 电平决定），不是运行时偏好。Flash 里
-        // 存的值一旦和当前板子不符，**所有转速都会按倍数错**——实测就是这一条：板子换成了
-        // 32 细分的 TMC2208，Flash 还存着 64，于是"命令 250RPM、轴真转 500RPM"，一整批
-        // 关于落点误差和"闭环自激"的测量结论全部作废（0x182 是试纸：7031=spr12800=64µ，
-        // 14062=spr6400=32µ）。而且 0x100 的运行时写入不持久化，重启/重刷就回 64。
-        // 所以这里以 DEFAULT_MICROSTEPS 为准；换驱动器时只改那一个常量。
-        boot_microsteps = DEFAULT_MICROSTEPS;
+                printf("[PARAM] flash microsteps=%u IGNORED, hardware = %u (换了驱动板？"
+                       "此前按 %u 口径记录的行程/转速与现在不可比)\r\n",
+                       static_cast<unsigned>(params.microsteps),
+                       static_cast<unsigned>(DEFAULT_MICROSTEPS),
+                       static_cast<unsigned>(params.microsteps));
             }
+            boot_microsteps = DEFAULT_MICROSTEPS;
             if (params.en_mode <= 1U)
             {
                 boot_enable_mode = params.en_mode;
@@ -387,6 +400,22 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
     position_pid_.setGains(base_position_kp_, base_position_ki_, base_position_kd_);
     velocity_pid_.setGains(base_velocity_kp_, base_velocity_ki_, base_velocity_kd_);
 
+    // 【0x100 的读回值必须等于引擎真正在用的细分】
+    // 读回源和真值源本来是两个人：
+    //   · getStepsPerRound() / 0x182 量程 / 脉冲数换算 → driver_->config().microsteps
+    //   · 主机读 0x100 → ParameterRouter 落到 protocol_->readRegister() →
+    //     Tmc2209ProtocolAdapter::getCustomParameter() 返回 **protocol 自己的 config_.microsteps**
+    // protocol 那份是 main.cpp 里 configure() 传进来的编译期初值，开机从没被 boot 口径
+    // 覆盖过 —— 于是实测出现"引擎按 32µ 折算（0x182=14062）但 0x100 回 64"。
+    // 修法：在 attachDriver/init **之前**把 boot 口径写进 protocol，protocol 的两条下发
+    // 路径（syncToDriver / init）从此推给驱动器的就是这个值。走 writeRegister 这条既有
+    // 写入路径（它同时更新 protocol 的 config_、扩展参数表和 driver 的 config），
+    // 不新增第二份镜像变量。
+    if (protocol_ != nullptr && boot_microsteps >= 1U)
+    {
+        protocol_->writeRegister(TMC2209_EXT_PARAM_MICROSTEPS, boot_microsteps);
+    }
+
     if (protocol_ != nullptr && driver_ != nullptr)
     {
         protocol_->attachDriver(driver_);
@@ -412,7 +441,10 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
     if (driver_ != nullptr)
     {
         driver_->init();
-        // 恢复 Flash 里的微步设置。
+        // 把硬件口径再按一次（driver_->init() 之后的最终断言）。
+        // 正常路径下上面 writeRegister(0x100) → protocol init 已经把这个值推给驱动器了，
+        // 这里重复一次是防"驱动器 init 将来改了 config"——两处写的必须是同一个值，
+        // 幂等，不存在第二个来源。
         // 【注意】本固件里 TMC UART 是关的（tmc2209_driver.cpp 的 writeRegister 直接返回
         // false），所以 setMicrosteps 只改"软件口径"：一圈按多少微步折算脉冲。
         // 它必须和驱动器面板/引脚决定的**实际细分**一致，否则行程会正好差整数倍
@@ -425,9 +457,19 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
         driver_enabled_ = false;
         driver_->setDirection(false);
         driver_->setStepState(false);
-        printf("[PARAM] microsteps active = %u (steps/rev = %lu)\r\n",
+        // 【开机自检试纸】三个数字必须完全相等，不相等就是"存的/读的/用的"又分叉了：
+        //   active   = 引擎折算步数用的（driver_->config().microsteps）
+        //   0x100    = 主机读回的（protocol 适配器的 config_）
+        //   steps/rev 应当 = 200 × active，量程 0x182 = 1.5Mpps×60/(steps/rev)
+        uint32_t host_microsteps_readback = 0U;
+        if (protocol_ != nullptr)
+        {
+            protocol_->readRegister(TMC2209_EXT_PARAM_MICROSTEPS, &host_microsteps_readback);
+        }
+        printf("[PARAM] microsteps active = %u (steps/rev = %lu) 0x100 readback = %lu\r\n",
                static_cast<unsigned>(driver_->config().microsteps),
-               static_cast<unsigned long>(getMicroStepsPerRound(driver_)));
+               static_cast<unsigned long>(getMicroStepsPerRound(driver_)),
+               static_cast<unsigned long>(host_microsteps_readback));
         // 恢复使能来源（必须在 driver init 之后：setEnableMode 会写一次 EN）。
         if (boot_enable_mode == ENABLE_MODE_EXTERNAL_PIN)
         {

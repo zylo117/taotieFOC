@@ -233,7 +233,9 @@
         function getStepsPerRevolution() {
             // 一圈 STEP 数 = 200 步/圈 x 驱动器实际微步数，必须跟 “微步” 输入框保持一致，
             // 不能再用写死的 51200（那是 200x256 的老口径，与实际下发脉冲不符）。
-            const microsteps = Number(document.getElementById('microsteps').value || 64);
+            // 兜底值必须等于固件的 DEFAULT_MICROSTEPS（现板 32µ → 6400/圈）；这里以前写 64，
+            // 输入框一旦被清空就按 12800/圈 折算 —— 又是一份游离在外的第二真值。
+            const microsteps = Number(document.getElementById('microsteps').value || 32);
             return 200 * Math.max(1, microsteps);
         }
 
@@ -874,6 +876,16 @@
         setInterval(() => {
             if (state.connected) void refreshEnableState();
         }, 1000);
+
+        // 【低频配置回读】每 3 秒把参数框（0x100 微步 / 0x11A~0x11C 运动三参数 /
+        // 0x123 脉宽 / 0x167 滞后角死区）与 MCU 对齐一次：显示值永远等于固件真值。
+        // 未连接不跑；串口忙（有写在等 ACK、有读在等回包、整定/标定/表 dump 进行中）
+        // 时 syncConfigFromDevice 自己跳过本轮，所以不会和写命令抢帧。
+        // 为什么是 3 秒：这些是人工调参级别的量，3s 的收敛速度肉眼无感，
+        // 而总线代价 <1%；再快就是拿遥测带宽换一个看不见的收益。
+        setInterval(() => {
+            if (state.connected) void syncConfigFromDevice();
+        }, 3000);
 
         const originalHandleIncomingFrame = handleIncomingFrame;
         handleIncomingFrame = function (frame) {

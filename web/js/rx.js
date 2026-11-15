@@ -135,7 +135,14 @@
             }
             if (frame.reg === CUSTOM_REGS.MICROSTEPS) {
                 state.microsteps = frame.value;
-                document.getElementById('microsteps').value = frame.value;
+                // 【不要覆盖用户正在编辑的输入框】0x100 现在除了连接时那一次，还会被
+                // 低频配置回读每 3 秒读一次（ui.js 的 syncConfigFromDevice）；任何一条
+                // 回包都走到这里，没有这个判断的话，用户在「微步」框里打字打到一半
+                // 就会被固件值顶回去（本文件 0x149/0x16F/0x170 早就这么防了，一视同仁）。
+                const microstepsInput = document.getElementById('microsteps');
+                if (microstepsInput && document.activeElement !== microstepsInput) {
+                    microstepsInput.value = frame.value;
+                }
             }
             if (frame.reg === CUSTOM_REGS.CLOSED_LOOP_ENABLE) {
                 document.getElementById('closedLoopEnableInput').checked = frame.value !== 0;

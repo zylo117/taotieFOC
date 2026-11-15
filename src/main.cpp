@@ -323,12 +323,14 @@ int main(void)
 
     g_protocol.attachDriver(&g_driver);
     g_protocol.configure(
-        // 【microsteps 默认 64，不是 32】机器实际是 200x64 = 12800 微步/圈：
-        //   1) 网页「微步」输入框默认就是 64，getStepsPerRound() 也按驱动真实配置换算；
-        //   2) 默认 32 时每次重新上电都会把驱动器改回 32，而 Flash 里存的是 64 口径的
-        //      脉冲数/滞后角表 —— 表现为“行程正好差一倍”，而且只有上电后才出现。
-        // 真正的当前值由 Flash 参数恢复（见 ClosedLoopController::init）。
-        {64U, 256U, 0.8f, 0.2f, true, true, 0.110f, true, TMC2209_UART_GPIO, TMC2209_UART_PIN, 115200U});
+        // 【微步必须是 DEFAULT_MICROSTEPS，不能写死数字】这个 aggregate 的第一项是
+        // protocol 适配器的 microsteps，而 0x100 的读回值读的就是它。这里历史上写死 64
+        //（当时的板子是 200x64=12800 微步/圈），换成 32 细分的 TMC2208 后没人改这里，
+        // 于是引擎按 32µ 折算而 0x100 一直回 64 —— 一个硬件属性有两份真值的必然结果。
+        // 现在两处共用 closed_loop_controller.h 里那唯一一行常量：换驱动芯片只改那一行。
+        // 真正的运行值由 ClosedLoopController::init() 用同一个 DEFAULT_MICROSTEPS 覆盖
+        // protocol + driver（Flash 里的 microsteps 不参与，细分不是运行时偏好）。
+        {DEFAULT_MICROSTEPS, 256U, 0.8f, 0.2f, true, true, 0.110f, true, TMC2209_UART_GPIO, TMC2209_UART_PIN, 115200U});
     g_encoder.init();
     // 旧代码先声明 crm_clocks_freq_type clocks; 就直接读 clocks.apb1_freq，
     // 从来没调过 crm_clocks_freq_get()，打印出来的是栈上的垃圾值。

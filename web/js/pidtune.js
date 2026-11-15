@@ -328,7 +328,7 @@
 
             try {
                 state.microsteps = (await readRegisterValue(CUSTOM_REGS.MICROSTEPS)) | 0;
-                if (!state.microsteps) state.microsteps = 64;
+                if (!state.microsteps) state.microsteps = 32;   // 兜底 = 固件 DEFAULT_MICROSTEPS（现板 32µ，旧值 64 会多算一倍）
                 document.getElementById('microsteps').value = state.microsteps;
                 savedConfig = {
                     closedLoopEnabled: await readRegisterValue(CUSTOM_REGS.CLOSED_LOOP_ENABLE),
@@ -481,7 +481,7 @@
             let savedConfig = null;
             try {
                 state.microsteps = (await readRegisterValue(CUSTOM_REGS.MICROSTEPS)) | 0;
-                if (!state.microsteps) state.microsteps = 64;
+                if (!state.microsteps) state.microsteps = 32;   // 兜底 = 固件 DEFAULT_MICROSTEPS（现板 32µ，旧值 64 会多算一倍）
                 savedConfig = {
                     closedLoopEnabled: await readRegisterValue(CUSTOM_REGS.CLOSED_LOOP_ENABLE),
                     startRpm: await readRegisterValue(0x11A),

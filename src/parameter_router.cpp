@@ -169,6 +169,11 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         // 而保存代码只写了 PID：于是 Flash 里 microsteps/step_pulse_ns 永远是 0，
         // 重启后驱动器退回编译期默认微步（32），而脉冲数/滞后角表都是 64 口径 ——
         // 表现为“重新上电后行程正好差一倍”。现在按现场真实值一起存。
+        // 【microsteps 存的是"记账"，不是"下次开机生效值"】细分是硬件属性，
+        // 开机一律以 DEFAULT_MICROSTEPS 为准（见 ClosedLoopController::init），
+        // Flash 里这个字段只用来记录"这份 PID/表是在几细分口径下标定的"，
+        // 与当前板子不符时载入处会打一条 IGNORED 日志。所以"存的/读的/用的"
+        // 三者恒等：存 = driver config = protocol config(0x100) = 引擎折算口径。
         params.microsteps = owner_.driver_ != nullptr ? owner_.driver_->config().microsteps : 0U;
         params.step_pulse_ns = static_cast<uint16_t>(
             owner_.step_pulse_width_ns_ > 65535U ? 65535U : owner_.step_pulse_width_ns_);

@@ -87,7 +87,7 @@
 
 // 注意：这里不再假设固定细分。1 个外部 PUL 脉冲 = 1 个驱动器微步，
 // 一圈脉冲数 = 200 步/圈 x 驱动器实际微步数，运行期由
-// ClosedLoopController::getStepsPerRound() 给出（默认 200 x 64 = 12800）。
+// ClosedLoopController::getStepsPerRound() 给出（现板 200 × DEFAULT_MICROSTEPS(32) = 6400）。
 // （旧代码写死的 51200 = 200x256 只是打印口径，会让 [PUL] 的 deg 恒为真实值的 1/4。）
 
 // 环形缓冲区里的一条记录（软件消费时按这个结构体解释两条 DMA 环上的同一号元素）
