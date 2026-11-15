@@ -162,11 +162,53 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
         const float desired_rps =
             fast_clamp(unconstrained_rps, previous_rps - max_delta_rps, previous_rps + max_delta_rps);
 
+        // 【在位死区 2026-11-15】角度模式以前"永不到位"：RAMP_STAGE_SETTLE 只有
+        // updateTrapezoid 一个入口，而角度模式不走 updateTrapezoid，于是伺服永远在跑、
+        // 每拍都在写 PR，没有到位判定也没有死区。后果是编码器静止噪声（同一份滤波 raw，
+        // 静止 26~31 LSB 峰峰 = 0.143~0.170°）未经滤波直接进 kp=60 的位置环，等效指令
+        // 纹波 ≈ 60/360 × 0.17 × 12800 ≈ 360pps（32 细分下 ≈ 180pps），而引擎的武装门
+        // 只有 pps>=1.0、tier3 还有 14.9pps 强制地板——两者都远小于噪声纹波，于是命令
+        // 被噪声反复拖过零：DIR 翻转 → 重装定时器 → 每次白送 1 个微步，形成抖动
+        // （斜率限制算得主频 0.7~1.6kHz，轴被踢 ±1~3 微步）。
+        // 死区阈值必须显著大于噪声等效指令才可能真静止：进入 0.45°（≈2.6 倍噪声等效，
+        // 也大于项目自测的动态滞后角 0.5~0.9° 的下限，不会把还在跑的转速误判为到位），
+        // 退出 0.70° 做迟滞，防止在阈值上抖动。在位时清两个环的积分，避免带着积分冲出。
+        // 目标角一旦改变立即解除，所以小增量目标不会被"在位"卡住不动。
+        constexpr float kAnglePosEnterDeg = 0.45f;
+        constexpr float kAnglePosExitDeg = 0.70f;
+        if (c.angle_in_position_)
+        {
+            if ((c.target_angle_deg_ != c.angle_in_pos_target_deg_) ||
+                (fast_abs(desired_error_deg) > kAnglePosExitDeg))
+            {
+                c.angle_in_position_ = false;
+                c.angle_in_pos_ticks_ = 0U;
+            }
+        }
+        else if (fast_abs(desired_error_deg) <= kAnglePosEnterDeg)
+        {
+            if (++c.angle_in_pos_ticks_ >= 8U)
+            {
+                c.angle_in_position_ = true;
+                c.angle_in_pos_ticks_ = 0U;
+                c.angle_in_pos_target_deg_ = c.target_angle_deg_;
+                c.position_pid_.resetIntegral();
+                c.velocity_pid_.resetIntegral();
+            }
+        }
+        else
+        {
+            c.angle_in_pos_ticks_ = 0U;
+        }
+
         // 校准归零阶段：接近目标 0.25° 以内就强制停，避免 PID 在零点附近来回抖，
         // 影响采样。顺带把两个环和累加器一起清干净，进入 SAMPLING 时状态是确定的。
+        // 角度模式在位死区走同一道出口：在位时命令恒为 0（速度斜坡状态 angle_cmd_rps_
+        // 随之收敛到 0，下一拍起 pps=0，velocityPwmTick 会停掉定时器）。
         const float calibration_rps =
-            (c.calibration_stage_ == ClosedLoopController::CALIBRATION_HOMING &&
-             fast_abs(desired_error_deg) <= 0.25f)
+            ((c.calibration_stage_ == ClosedLoopController::CALIBRATION_HOMING &&
+              fast_abs(desired_error_deg) <= 0.25f) ||
+             c.angle_in_position_)
                 ? 0.0f
                 : desired_rps;
         if (c.calibration_stage_ == ClosedLoopController::CALIBRATION_HOMING && calibration_rps == 0.0f)

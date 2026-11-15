@@ -23,7 +23,26 @@ h.write(0x16D, 0)
 time.sleep(0.15)
 h.write(0x15F, 1)
 h.write(0x124, 1)
-time.sleep(0.35)
+# 使能瞬间转子会被拽向激励平衡位置（用户说的"抖一下"）。这一段单独积分并等 1.2s，
+# 否则使能抖动会被算进运动误差里，测出来的"少走/多走"就不是运动本身的账。
+prev = h.read(0x116)
+jerk = 0.0
+tg = time.time()
+while time.time() - tg < 1.2:
+    for _ in h._pump(0.02):
+        pass
+    a = h.latest.get(0x116)
+    if a is not None and prev is not None:
+        d = a - prev
+        if d > 180000:
+            d -= 360000
+        elif d < -180000:
+            d += 360000
+        jerk += d
+        prev = a
+print(f'使能抖动（使能后 1.2s 内编码器累计）：{jerk / 1000.0:+.3f}°')
+# 关键基线：20 整圈（128000/6400）跑完静置后，绝对角应回到这里，误差才是真误差。
+a_base = h.read(0x116)
 h.write(0x107, 0)              # 开环
 spr = h.read(0x130) or 0       # 只试探：读不到就留 0，下面用命令圈数对比即可
 print(f'读到的 microsteps/spr 相关：0x130={spr}')
@@ -70,9 +89,19 @@ while time.time() - t0 < 60.0:
         break
 t_run = time.time() - t0
 s1 = h.read(0x134) or 0
-h.write(0x163, 1)
-time.sleep(1.2)
 h.write(0x11F, 0)
+# 静置 2.5s：等最终齿位附近的振铃衰减完，再读"绝对角"。20 整圈的命令位移是
+# 360° 的整数倍，所以静置后的绝对角应当等于使能基线；这个差才是真正静态落点误差，
+# 不受"我在振铃的哪个相位收尾"影响。
+for _ in range(250):
+    for __ in h._pump(0.01):
+        pass
+a_end = h.read(0x116)
+if a_end is not None and a_base is not None:
+    dstatic = (a_end - a_base + 180000) % 360000 - 180000
+    print(f'【静置 2.5s 后】绝对角基线 {a_base} mdeg -> 终点 {a_end} mdeg，'
+          f'静态落点误差 = {dstatic / 1000.0:+.3f}°  '
+          f'（{dstatic / 1000.0 / 360.0 * 6400:+.1f} 微步 @32细分）')
 ev1 = h.read(0x183) or 0
 df1 = h.read(0x184) or 0
 cu1 = h.read(0x178) or 0

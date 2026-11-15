@@ -516,6 +516,11 @@ private:
     volatile uint16_t band_dither_hz_ = 7U;
     volatile uint8_t band_dither_active_ = 0U;
     float band_dither_phase_ = 0.0f;   // [0,1)
+    // 角度模式在位死区（2026-11-15）：机理与阈值依据见 motion_planner.cpp 里
+    // updateAngleMode 的【在位死区】注释。目标角一变就自动解除，无需外部清。
+    bool angle_in_position_ = false;
+    uint8_t angle_in_pos_ticks_ = 0U;
+    float angle_in_pos_target_deg_ = 0.0f;
     // 蠕行补尾取证：进入补尾分支的次数与最近一次的差额微步（见 0x183/0x184）。
     volatile uint16_t creep_events_ = 0U;
     volatile uint32_t creep_last_deficit_ = 0U;
