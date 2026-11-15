@@ -503,9 +503,13 @@
                 ensureMotionTabForPositionControl();
                 zeroEncoder();
             });
-            // stopBtn（归零隔壁的缓停）已删除：全局唯一「缓停」入口挪到规划卡
-            // （stopMotionBtn → stopMotor/0x163）。这里不能再绑已不存在的元素，
-            // 否则 addEventListener(null) 抛异常，bindControls 后半段全部失效。
+            // 归零隔壁的「缓停」（2026-11-15 加回，应用户要求）：绑同一个 stopMotor()，
+            // 即 0x163 减速斜坡，与规划卡 stopMotionBtn 完全同一实现——同一函数入口，
+            // 不存在历史上那种「这里立即断脉冲、那里减速停」的语义漂移。
+            // 必须 if 保护：元素缺失时 addEventListener(null) 抛异常会让 bindControls
+            // 后半段全部失效（c406a41 提交信息里就记过这个坑）。
+            const zeroStopBtn = document.getElementById('zeroStopBtn');
+            if (zeroStopBtn) zeroStopBtn.addEventListener('click', stopMotor);
             const emergencyStopBtn = document.getElementById('emergencyStopBtn');
             if (emergencyStopBtn) emergencyStopBtn.addEventListener('click', emergencyStop);
             document.getElementById('startMotionBtn').addEventListener('click', startMotionTest);
