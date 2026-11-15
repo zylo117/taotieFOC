@@ -1016,9 +1016,22 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
     }
     else
     {
-        // DIR 也纳入重装判据：换向命令（位置往返/往复模式换 leg）在停稳后发生，
-        // 重装一次定时器把新方向带上；运行中方向不变则零开销。
         const int8_t dir_now = (c.motion_direction_ > 0) ? 1 : -1;
+        // 【J2 换向先停沿 2026-11-16】DIR 从 560537d 起是真的 GPIO，运行中翻电平会撞上
+        // 驱动器"DIR 必须在 STEP 沿之前稳定"的建立时间要求；而 DIR 一变，下面的重装判据
+        // 必然成立 → 换向 = 当场翻 DIR + 当场重装定时器。角度模式那个"命令被噪声拖过 0
+        // → 换向 → 白送一个微步 → 又拖回来"的自激抖动就是这么来的（560537d 之前 DIR 根本
+        // 不会动，所以这个问题不存在）。
+        // 现在本拍只做一件事：把脉冲停住（stepper_stop_motion_timer 顺手把 STEP 钉低），
+        // 本拍不发脉冲、两本账也一起跳过；下一拍（≥50µs，远大于建立时间）再带着新 DIR
+        // 重装。换向因此变成"停一拍再走"，而不是"边发边翻"。
+        if (velocity_pwm_dir_ != 0 && dir_now != velocity_pwm_dir_)
+        {
+            stepper_common::stepper_stop_motion_timer();
+            velocity_pwm_running_ = false;
+            velocity_pwm_dir_ = 0;  // 0 = 未装载方向，下一拍强制重装
+            return true;
+        }
         if (!velocity_pwm_running_ || tier != velocity_pwm_tier_ || narrow != velocity_pwm_narrow_ ||
             ccr_ticks != velocity_pwm_ccr_ || dir_now != velocity_pwm_dir_)
         {
@@ -1034,15 +1047,15 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
             velocity_pwm_narrow_ = narrow;
             velocity_pwm_ccr_ = ccr_ticks;
             velocity_pwm_dir_ = dir_now;
-            // 【F2 记账修正：纯账本，不碰任何控制律】重装定时器会出 1 个被驱动器计数的
-            // 上升沿（PWM 模式 A + STEP 低有效：CNT=0 拉低、计到 CCR 抬升），而原来的记账
-            // 只按 emitted_pps×dt 估算，看不见它。一趟 0→250RPM 会重装 3 次（首拍 1 次 +
-            // 穿越 350/700pps 迟滞带 2 次）= 3 微步 = 0.169°，与实测开环落点系统性正偏
-            // +0.245° 同量级。磁场比账本跑得远 → 转子跟着落到位 = "开环多走一点角度"；
-            // 反过来也会让收尾出现尾差。这里如实入账，方向取当前 DIR（与下面 signed 同口径）。
-            c.step_pulses_emitted_ += 1U;
-            c.motion_steps_emitted_ += 1U;
-            c.motion_steps_emitted_signed += (dir_now > 0) ? 1 : -1;
+            // 【F2 的 +1 入账已撤 2026-11-16】F2 是给"重装吐出一个被驱动器计数的上升沿"
+            // 补的账（实测 0→250RPM 重装 3 次 = +3 微步 = 开环落点 +0.245°，入账后剩
+            // +0.082°）。J1 之后重装全程 STEP 都被普通输出钉在低电平、交接瞬间没有上跳，
+            // 那个沿不该再存在，继续入账就成了虚账。
+            // 判据留在这里：开环落点若重新出现 ≈每次重装 1 微步的正向系统偏，说明沿还在，
+            // 把这三行原样加回来 ——
+            //   c.step_pulses_emitted_ += 1U;
+            //   c.motion_steps_emitted_ += 1U;
+            //   c.motion_steps_emitted_signed += (dir_now > 0) ? 1 : -1;
         }
         tmr_period_value_set(TMR2, pr_ticks);
         c.step_period_us_ = static_cast<uint16_t>(

@@ -8,6 +8,56 @@ namespace stepper_common
         bool motion_timer_running = false;
         uint32_t motion_timer_frequency = 0U;
         uint32_t motion_timer_pulse_width = 0U;
+        // STEP 引脚归谁：true = 普通输出钉低（停车态），false = 定时器复用（发脉冲态）。
+        bool step_pin_driven_low = false;
+
+        // 【J1 STEP 空闲电平 2026-11-16】STEP(PB10) 平时是 TMR2_CH3 的 MUX 引脚。
+        // TMR2 是高级定时器，MOE 关断后输出级断开、BDTR/OSSI 我们从来没配过 = 引脚
+        // 变高阻；而 MUX 模式下 `port->clr` 写 ODR 根本不生效（本项目 DIR 引脚同一个
+        // 坑，见 stepper_init_step_gpio 注释）。于是每次停车/重装之后，TMC2209 的 STEP
+        // 输入是**悬空**的：任何串扰都能被计成一步 —— 实测现象就是"减速到 0，过一会儿
+        // 抖一下 + 叮一声"。修法只有把引脚真正切成普通输出钉住电平。
+        //
+        // 切换前后电平必须一致（都是低），否则这个模式切换本身就是白送的一个沿：
+        //   钉低 = 先写 ODR（MUX 下只是备好），再切 OUTPUT —— 切过去就驱低，不产生上跳。
+        //   交还 = 必须在 MOE 已开、CNT=0 的状态下切 —— 此时 PWM 模式 A + STEP 低有效
+        //          输出的是 CNT(0) < CCR ⇒ 参考高 ⇒ 引脚低，和钉住的低电平相同，无沿。
+        void stepper_step_pin_idle_low(void)
+        {
+            if (step_pin_driven_low)
+            {
+                // 已经钉住了（一次停车常被 halt + stopMotion 调两次），只需保证电平。
+                stepper_write_gpio_low(STEP_OUTPUT_PORT, STEP_OUT_PIN);
+                return;
+            }
+            gpio_init_type gpio_init_struct;
+            gpio_default_para_init(&gpio_init_struct);
+            gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
+            gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
+            gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
+            gpio_init_struct.gpio_pins = STEP_OUT_PIN;
+            stepper_write_gpio_low(STEP_OUTPUT_PORT, STEP_OUT_PIN);
+            gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
+            gpio_init(STEP_OUTPUT_PORT, &gpio_init_struct);
+            step_pin_driven_low = true;
+        }
+
+        void stepper_step_pin_take_over_by_timer(void)
+        {
+            if (!step_pin_driven_low)
+            {
+                return;  // 本来就在定时器手里
+            }
+            gpio_init_type gpio_init_struct;
+            gpio_default_para_init(&gpio_init_struct);
+            gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
+            gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
+            gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
+            gpio_init_struct.gpio_pins = STEP_OUT_PIN;
+            gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
+            gpio_init(STEP_OUTPUT_PORT, &gpio_init_struct);
+            step_pin_driven_low = false;
+        }
     }
 
     void stepper_write_gpio_high(gpio_type* port, uint16_t pin) { port->scr = pin; }
@@ -41,6 +91,9 @@ namespace stepper_common
         tmr_counter_enable(TMR2, FALSE);
         tmr_output_enable(TMR2, FALSE);
         tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, FALSE);
+        // 【J1】重装期间引脚先由普通输出钉低（MUX + MOE 关断 = 高阻，见上面注释）。
+        // 从这里到函数末尾交还给定时器之前，STEP 全程被驱在低电平上，不再有悬空窗口。
+        stepper_step_pin_idle_low();
 
         tmr_output_config_type output_config;
         tmr_output_default_para_init(&output_config);
@@ -81,7 +134,16 @@ namespace stepper_common
         tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, TRUE);
 
         tmr_counter_value_set(TMR2, 0U);
+        // 【J1 交接顺序 2026-11-16】先开 MOE：此刻引脚仍由普通输出驱低，开 MOE 不
+        // 改变引脚电平；再把引脚交还 TMR2_CH3 —— CNT=0 < CCR ⇒ PWM 模式 A 参考为高
+        // ⇒ 低有效输出仍是低，和钉住的低电平相同，交接瞬间没有上跳 = 不白送沿；
+        // 最后才放 CEN，第一个上升沿要等 CNT 走到 CCR，那是正经的第一步。
+        // 旧顺序（CEN 直接开、引脚整段重装时间挂在高阻上）就是 F2 实测到的
+        // 「每重装一次定时器多计一步」：0→250RPM 重装 3 次 = 3 微步 = 0.169° 正偏。
         tmr_output_enable(TMR2, TRUE);
+#ifndef USE_SOFT_PULSE
+        stepper_step_pin_take_over_by_timer();
+#endif
         tmr_counter_enable(TMR2, TRUE);
     }
 
@@ -226,7 +288,10 @@ namespace stepper_common
         dma_channel_enable(DMA1_CHANNEL2, FALSE);
         dma_flag_clear(DMA1_FDT2_FLAG);
         tmr_counter_value_set(TMR2, 0U);
-        stepper_write_gpio_low(STEP_OUTPUT_PORT, STEP_OUT_PIN);
+        // 【J1】原来这一行是 stepper_write_gpio_low(...)：STEP 处于 MUX 模式时写 ODR
+        // 完全不生效，而 MOE 已关 = 输出级断开，引脚实际留在高阻，驱动器 STEP 悬空吃
+        // 干扰。改成切成普通输出真正钉低（最多产生一个下降沿，驱动器只认上升沿）。
+        stepper_step_pin_idle_low();
     }
 
     void stepper_init_step_gpio(void)
