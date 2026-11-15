@@ -521,6 +521,9 @@ private:
     bool angle_in_position_ = false;
     uint8_t angle_in_pos_ticks_ = 0U;
     float angle_in_pos_target_deg_ = 0.0f;
+    // 在位判定专用的误差低通（τ≈2ms）。只喂给"到位判定"，不进 PID——PID 仍看原始
+    // 误差，环路带宽和动态特性一个字都不改，避免把已经验证过的不抖结果改坏。
+    float angle_err_filt_deg_ = 0.0f;
     // 蠕行补尾取证：进入补尾分支的次数与最近一次的差额微步（见 0x183/0x184）。
     volatile uint16_t creep_events_ = 0U;
     volatile uint32_t creep_last_deficit_ = 0U;

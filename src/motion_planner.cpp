@@ -170,12 +170,20 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
         // 只有 pps>=1.0、tier3 还有 14.9pps 强制地板——两者都远小于噪声纹波，于是命令
         // 被噪声反复拖过零：DIR 翻转 → 重装定时器 → 每次白送 1 个微步，形成抖动
         // （斜率限制算得主频 0.7~1.6kHz，轴被踢 ±1~3 微步）。
-        // 死区阈值必须显著大于噪声等效指令才可能真静止：进入 0.45°（≈2.6 倍噪声等效，
-        // 也大于项目自测的动态滞后角 0.5~0.9° 的下限，不会把还在跑的转速误判为到位），
-        // 退出 0.70° 做迟滞，防止在阈值上抖动。在位时清两个环的积分，避免带着积分冲出。
+        // 阈值分工（2026-11-15 第二版）：**"允许多大误差"和"用什么压住噪声"必须是
+        // 两件事**。第一版把进入阈值设成 0.45°，结果从外面被拉回来时误差一缩到 0.45°
+        // 就停止发命令，留下最大 0.45° 的静态偏差（用户实测指出）。现在：
+        //   · 进入用**低通后的误差** ≤ 0.06°（≈1 微步 @32细分），且要连续 40 拍（2ms，
+        //     约 2 倍 τ）——噪声 0.17°pp 经 τ≈2ms 低通后压到远低于 1 微步，凑不进窗口；
+        //     真实误差则会稳定收敛进窗口，所以落点是 0°，不是 0.45°。
+        //   · 退出用**原始误差** > 0.45°（噪声峰峰的 2.6 倍）做迟滞，不会在阈值上跳。
+        // PID 仍然只看原始误差：环路带宽与动态特性一个字都没改，避免把已经实测确认
+        // "不抖了"的结果改坏。在位时清两个环的积分，避免储能把轴甩回死区外。
         // 目标角一旦改变立即解除，所以小增量目标不会被"在位"卡住不动。
-        constexpr float kAnglePosEnterDeg = 0.45f;
-        constexpr float kAnglePosExitDeg = 0.70f;
+        constexpr float kAnglePosEnterDeg = 0.06f;   // ≈1 微步 @32细分（360/6400=0.05625°）
+        constexpr float kAnglePosExitDeg = 0.45f;    // 迟滞退出：噪声 0.17°pp 的 2.6 倍
+        constexpr float kAngleErrLpfAlpha = 0.025f;  // τ≈2ms @20kHz
+        c.angle_err_filt_deg_ += kAngleErrLpfAlpha * (desired_error_deg - c.angle_err_filt_deg_);
         if (c.angle_in_position_)
         {
             if ((c.target_angle_deg_ != c.angle_in_pos_target_deg_) ||
@@ -183,11 +191,14 @@ void MotionPlanner::updateAngleMode(uint64_t delta_ramp_ns)
             {
                 c.angle_in_position_ = false;
                 c.angle_in_pos_ticks_ = 0U;
+                // 滤波值必须重置成当前误差：否则它停在接近 0 的旧值上，下一拍就会
+                // 立刻重新锁定，伺服等于被永久关掉。
+                c.angle_err_filt_deg_ = desired_error_deg;
             }
         }
-        else if (fast_abs(desired_error_deg) <= kAnglePosEnterDeg)
+        else if (fast_abs(c.angle_err_filt_deg_) <= kAnglePosEnterDeg)
         {
-            if (++c.angle_in_pos_ticks_ >= 8U)
+            if (++c.angle_in_pos_ticks_ >= 40U)   // 低通 τ 的约 2 倍，滤掉瞬态穿越
             {
                 c.angle_in_position_ = true;
                 c.angle_in_pos_ticks_ = 0U;
