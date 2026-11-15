@@ -81,6 +81,17 @@
         }
 
         async function writeRegister(reg, value) {
+            // 【上位机安全锁】转速类寄存器统一钳到 ≤3000：
+            //   0x11B MAX_RPM      最高转速（启动/半圈单步/扫频/PID 整定恢复都写它）
+            //   0x11A START_RPM    起始转速（滞后角标定的起点，原来能填到 12000）
+            //   0x12F ANGLE_MAX_RPM角度模式闭环最大速度（原来 max=12000，绕过了 0x11B）
+            // 所有写路径都从这一个出口出帧，所以只在这里收口就兜住全部入口。
+            // 背景：4000+rpm 高速失步后满载通电已烧掉 4 颗 TMC2209，而 StealthChop 在
+            // 高速下本就无法维持电流环（规格书 6.5：高速应用应改用 SpreadCycle）。
+            // 固件侧另有物理量程钳位（0x182 = 7031rpm），本锁是上位机侧的策略上限。
+            if ((reg === 0x11b || reg === 0x11a || reg === 0x12f) && (value >>> 0) > 3000) {
+                value = 3000;
+            }
             if (!state.connected || !state.writer) {
                 log('[WARN] 尚未连接串口，无法写入寄存器');
                 return;

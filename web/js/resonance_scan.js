@@ -329,7 +329,7 @@
         const lo = Math.round(Number($('resonanceLoRpmInput').value) || 300);
         const hi = Math.round(Number($('resonanceHiRpmInput').value) || 600);
         $('resonanceScanLoRpm').value = String(Math.max(20, lo - 50));
-        $('resonanceScanHiRpm').value = String(Math.min(6000, Math.max(hi, lo + 100) + 50));
+        $('resonanceScanHiRpm').value = String(Math.min(3000, Math.max(hi, lo + 100) + 50));
         $('resonanceScanLog').textContent = '';
         setStatus('等待开始');
         setProgress('0 / 0');
@@ -353,7 +353,7 @@
             bandHi: Number($('resonanceHiRpmInput').value) | 0
         };
         cfg.lo = Math.max(20, cfg.lo);
-        cfg.hi = Math.min(6000, Math.max(cfg.lo + cfg.step, cfg.hi));
+        cfg.hi = Math.min(3000, Math.max(cfg.lo + cfg.step, cfg.hi));
         if (!window.confirm('共振检测会让电机在全速度域自行运转，带内会真实抖动，'
             + '并可能触发堵转/失步（失步段会按热点处理）。\n\n请确认：电机空载、固定在位、周围无人无物。继续？')) {
             rsLog('用户取消，未启动');

@@ -923,7 +923,7 @@
                 <div class="grid-2">
                     <div class="field">
                         <label for="angleMaxRpmInput">闭环最大速度（RPM）</label>
-                        <input id="angleMaxRpmInput" min="1" max="12000" step="1" type="number" value="1200"/>
+                        <input id="angleMaxRpmInput" min="1" max="3000" step="1" type="number" value="1200"/>
                     </div>
                     <div class="field">
                         <label for="angleAccelRpmSInput">闭环加速度（RPM/s）</label>
@@ -1529,7 +1529,7 @@
         </div>
         <div class="lag-angle-settings">
             <label>起始转速 (RPM)<input id="lagAngleStartRpm" type="number" min="0" max="12000" step="1" value="0"></label>
-            <label>结束转速 (RPM)<input id="lagAngleStopRpm" type="number" min="0" max="12000" step="1" value="3000"></label>
+            <label>结束转速 (RPM)<input id="lagAngleStopRpm" type="number" min="0" max="3000" step="1" value="3000"></label>
             <label>速度步进 (RPM)<input id="lagAngleStepRpm" type="number" min="1" max="12000" step="1" value="50"></label>
             <label>每点间隔 (秒)<input id="lagAngleIntervalSec" type="number" min="2" max="120" step="0.5" value="2"></label>
             <label>中心采样窗 (秒)<input id="lagAngleSampleWindowSec" type="number" min="0.2" max="30" step="0.1" value="1"></label>
@@ -1612,7 +1612,7 @@
         </div>
         <div class="lag-angle-settings">
             <label>扫描起点 (RPM)<input id="resonanceScanLoRpm" type="number" min="20" max="6000" step="10" value="250"></label>
-            <label>扫描终点 (RPM)<input id="resonanceScanHiRpm" type="number" min="40" max="6000" step="10" value="650"></label>
+            <label>扫描终点 (RPM)<input id="resonanceScanHiRpm" type="number" min="40" max="3000" step="10" value="650"></label>
             <label>步长 (RPM)<input id="resonanceScanStepRpm" type="number" min="5" max="200" step="5" value="25"></label>
             <label>每点窗口 (s)<input id="resonanceScanWindowS" type="number" min="0.5" max="5" step="0.1" value="1.2"></label>
             <label>加速度 (RPM/s)<input id="resonanceScanAccelRpmS" type="number" min="100" max="12000" step="100" value="1500"></label>
@@ -1634,20 +1634,20 @@
         </div>
     </dialog>
 
-    <script src="web/js/constants.js?v=20261113d"></script>
-    <script src="web/js/utils.js?v=20261113d"></script>
-    <script src="web/js/state.js?v=20261113d"></script>
-    <script src="web/js/protocol.js?v=20261113d"></script>
-    <script src="web/js/rx.js?v=20261113d"></script>
-    <script src="web/js/ui.js?v=20261113d"></script>
-    <script src="web/js/waveform.js?v=20261113d"></script>
-    <script src="web/js/lagangle.js?v=20261113d"></script>
-    <script src="web/js/pidtune.js?v=20261113d"></script>
-    <script src="web/js/enccal.js?v=20261113d"></script>
-    <script src="web/js/shock.js?v=20261113d"></script>
-    <script src="web/js/actions.js?v=20261113d"></script>
-    <script src="web/js/resonance_scan.js?v=20261113d"></script>
-    <script src="web/js/main.js?v=20261113d"></script>
+    <script src="web/js/constants.js?v=20261115a"></script>
+    <script src="web/js/utils.js?v=20261115a"></script>
+    <script src="web/js/state.js?v=20261115a"></script>
+    <script src="web/js/protocol.js?v=20261115a"></script>
+    <script src="web/js/rx.js?v=20261115a"></script>
+    <script src="web/js/ui.js?v=20261115a"></script>
+    <script src="web/js/waveform.js?v=20261115a"></script>
+    <script src="web/js/lagangle.js?v=20261115a"></script>
+    <script src="web/js/pidtune.js?v=20261115a"></script>
+    <script src="web/js/enccal.js?v=20261115a"></script>
+    <script src="web/js/shock.js?v=20261115a"></script>
+    <script src="web/js/actions.js?v=20261115a"></script>
+    <script src="web/js/resonance_scan.js?v=20261115a"></script>
+    <script src="web/js/main.js?v=20261115a"></script>
 
 </body>
 </html>

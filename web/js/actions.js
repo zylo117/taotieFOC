@@ -3,11 +3,11 @@
 
         async function armPositionFollowMode() {
             if (!state.connected) return;
-            const startRpm = clamp(Math.round(Number(document.getElementById('startRpmSelect').value || 120)), 1, 12000);
-            const maxRpm = clamp(Math.round(Number(document.getElementById('maxRpmSelect').value || 1200)), 1, 12000);
-            const accelRpm = clamp(Math.round(Number(document.getElementById('accelRpmSelect').value || 6000)), 1, 12000);
-            const angleMaxRpm = clamp(Math.round(Number(document.getElementById('angleMaxRpmInput').value || 1200)), 1, 12000);
-            const angleAccelRpm = clamp(Math.round(Number(document.getElementById('angleAccelRpmSInput').value || 6000)), 1, 12000);
+            const startRpm = clamp(Math.round(Number(document.getElementById('startRpmSelect').value || 120)), 1, 3000);
+            const maxRpm = clamp(Math.round(Number(document.getElementById('maxRpmSelect').value || 1200)), 1, 3000);
+            const accelRpm = clamp(Math.round(Number(document.getElementById('accelRpmSelect').value || 6000)), 1, 3000);
+            const angleMaxRpm = clamp(Math.round(Number(document.getElementById('angleMaxRpmInput').value || 1200)), 1, 3000);
+            const angleAccelRpm = clamp(Math.round(Number(document.getElementById('angleAccelRpmSInput').value || 6000)), 1, 3000);
             await writeRegister(0x11A, startRpm);
             await writeRegister(0x11B, maxRpm);
             await writeRegister(0x11C, accelRpm);
@@ -444,11 +444,11 @@
             // 缓存标记在连上新串口时清掉（见 connectSerial）。
             if (state.angleDefaultsApplied) return;
             state.angleDefaultsApplied = true;
-            const startRpm = clamp(Math.round(Number(document.getElementById('startRpmSelect').value || 120)), 1, 12000);
-            const maxRpm = clamp(Math.round(Number(document.getElementById('maxRpmSelect').value || 1200)), 1, 12000);
-            const accelRpm = clamp(Math.round(Number(document.getElementById('accelRpmSelect').value || 6000)), 1, 12000);
-            const angleMaxRpm = clamp(Math.round(Number(document.getElementById('angleMaxRpmInput').value || 1200)), 1, 12000);
-            const angleAccelRpm = clamp(Math.round(Number(document.getElementById('angleAccelRpmSInput').value || 6000)), 1, 12000);
+            const startRpm = clamp(Math.round(Number(document.getElementById('startRpmSelect').value || 120)), 1, 3000);
+            const maxRpm = clamp(Math.round(Number(document.getElementById('maxRpmSelect').value || 1200)), 1, 3000);
+            const accelRpm = clamp(Math.round(Number(document.getElementById('accelRpmSelect').value || 6000)), 1, 3000);
+            const angleMaxRpm = clamp(Math.round(Number(document.getElementById('angleMaxRpmInput').value || 1200)), 1, 3000);
+            const angleAccelRpm = clamp(Math.round(Number(document.getElementById('angleAccelRpmSInput').value || 6000)), 1, 3000);
             await writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 1);
             await writeRegister(0x11A, startRpm);
             await writeRegister(0x11B, maxRpm);

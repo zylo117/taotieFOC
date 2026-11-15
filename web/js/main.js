@@ -213,10 +213,10 @@
             for (let v = 25; v <= 1000; v += 75) {
                 maxValues.push(v);
             }
-            for (let v = 1000; v <= 10000; v += 1000) {
+            for (let v = 1000; v <= 3000; v += 1000) {
                 maxValues.push(v);
             }
-            const maxUnique = [...new Set(maxValues.filter((v) => v >= 25 && v <= 10000))];
+            const maxUnique = [...new Set(maxValues.filter((v) => v >= 25 && v <= 3000))];
             maxSelect.innerHTML = maxUnique.map((v) => `<option value="${v}">${v}</option>`).join('');
             maxSelect.value = '1000';
 
