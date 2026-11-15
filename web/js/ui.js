@@ -112,7 +112,19 @@
         async function syncConfigFromDevice() {
             if (!state.connected || !state.writer) return;
             if (state.configSyncInFlight) return;   // 上一轮还没收完（最坏 6×超时），不叠第二遍
-            if (serialBusBusy()) return;
+            if (serialBusBusy()) {
+                // 只计数、不刷屏：用来区分"任务在跑但一直被判忙"和"任务根本没被调用"。
+                state.configSyncBusySkips = (state.configSyncBusySkips || 0) + 1;
+                if (state.configSyncBusySkips === 5 || state.configSyncBusySkips === 50) {
+                    log(`[SYNC] 本轮放弃：串口被判忙（累计 ${state.configSyncBusySkips} 次）` +
+                        `—— 一直如此说明忙判定过宽，别人把帧占满了`);
+                }
+                return;
+            }
+            state.configSyncRounds = (state.configSyncRounds || 0) + 1;
+            if (state.configSyncRounds <= 2) {
+                log(`[SYNC] 配置回读第 ${state.configSyncRounds} 轮开始（任务确实在跑）`);
+            }
             state.configSyncInFlight = true;
             const changes = [];
             try {
@@ -126,6 +138,14 @@
                     try {
                         raw = await readRegisterValue(item.reg, 800, 0);
                     } catch (error) {
+                        // 静默 continue 曾经让这个任务"永远什么都没发生"却看不出来
+                        // （用户实测：改 99 不弹回，控制台一片安静）。前 3 次必须出声，
+                        // 好区分三种病因：回包类型不匹配 / 超时 / 忙判定恒真根本没跑到这。
+                        state.configSyncFailCount = (state.configSyncFailCount || 0) + 1;
+                        if (state.configSyncFailCount <= 3) {
+                            log(`[SYNC] 读 0x${item.reg.toString(16).padStart(4, '0')}（${item.id}）` +
+                                `失败：${error && error.message ? error.message : error}`);
+                        }
                         continue;   // 读不到就维持现状：低频任务下一轮再来，不打断任何流程
                     }
                     if (!Number.isFinite(raw)) continue;
