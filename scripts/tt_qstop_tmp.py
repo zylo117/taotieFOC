@@ -67,6 +67,7 @@ print(f'\n结论：反向位移合计 {rev_deg:.3f}°   异常窗：{spikes if s
 print(f'缓停后 0x121={h.read(0x121)} mdeg  0x183={h.read(0x183)}/0x184={h.read(0x184)}  '
       f'0x178={h.read(0x178)}')
 h.write(0x11F, 0)
+h.write(0x107, 1)                      # 必须恢复：本行缺失曾让上位机以为「闭环 PID 不生效」
 h.write(0x125, 1)
 h.write(0x16D, 1)
 h.close()
