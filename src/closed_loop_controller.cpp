@@ -639,6 +639,9 @@ void ClosedLoopController::setTargetAngleDeg(float angle_deg)
     motion_steps_emitted_signed = 0U;
     motion_step_accumulator_ = 0.0f;
     compensated_motion_step_accumulator_ = 0.0f;
+    motion_profile_step_accumulator_ = 0.0f;
+    motion_profile_pending_signed = 0;
+    motion_profile_delivered_signed = 0;
     compensated_rps_ = 0.0f;
     // 【统一输出引擎】角度模式不过 startMotion，这里自己挂连续 PWM；
     // PID 算出的 current_step_speed_/compensated_rps_ 语义与窗口路径完全一致，
@@ -998,6 +1001,8 @@ void ClosedLoopController::startMotion()
     motion_dma_pending_signed = 0;
     motion_dma_pending_steps_ = 0U;
     motion_steps_delivered_signed = 0;
+    motion_profile_pending_signed = 0;
+    motion_profile_delivered_signed = 0;
 
     // 【参数兜底】下面会用 motion_max_rpm_ / motion_accel_rpm_s_ 重算 step 速度，
     // 这两个为 0 时会算出 0 -> 电机完全不动。上位机正常每次都发，
@@ -1102,6 +1107,9 @@ void ClosedLoopController::startMotion()
     motion_steps_emitted_signed = 0U;
     motion_step_accumulator_ = 0.0f;
     compensated_motion_step_accumulator_ = 0.0f;
+    motion_profile_step_accumulator_ = 0.0f;
+    motion_profile_pending_signed = 0;
+    motion_profile_delivered_signed = 0;
     compensated_rps_ = 0.0f;
     motion_step_high_ = false;
     motion_zero_speed_recovery_logged_ = false;
@@ -1212,6 +1220,7 @@ void ClosedLoopController::startMotion()
         // 复位步累积器，用于固定频率定时器里的脉冲生成（经典DDA微分器思路）
         motion_step_accumulator_ = 0.0f;
         compensated_motion_step_accumulator_ = 0.0f;
+        motion_profile_step_accumulator_ = 0.0f;
         compensated_rps_ = 0.0f;
         encoder_filtered_angle_ = 0.0f;
         // ===================================================================
@@ -1292,6 +1301,12 @@ float ClosedLoopController::refreshEncoderFeedback(uint64_t now_ns)
         motion_steps_delivered_signed += motion_dma_pending_signed;
         motion_dma_pending_signed = 0;
     }
+    // 计划行程与实发行程同一拍并入，两本账的时间基准保持一致（都滞后一拍）。
+    if (motion_profile_pending_signed != 0)
+    {
+        motion_profile_delivered_signed += motion_profile_pending_signed;
+        motion_profile_pending_signed = 0;
+    }
 
     float encoder_delta_deg = 0.0f;
     if (encoder_ == nullptr)
@@ -1319,8 +1334,16 @@ float ClosedLoopController::refreshEncoderFeedback(uint64_t now_ns)
         motion_encoder_travel_raw_ += encoder_delta_raw;
         // 下一步才计算上一步的理论步数（因为用了定时器后，脉冲是异步发出的， 直接算就等于理论步数领先实际了，所以放到下一ramp才计算理论跑了多少
         const float step_angle_deg = 360.0f / static_cast<float>(getMicroStepsPerRound(driver_));
-        // 用"已确认发完"的步数，而不是"已交给 DMA"的步数，命令位置才和真实脉冲同步
-        motion_commanded_travel_deg_ = static_cast<float>(motion_steps_delivered_signed) * step_angle_deg;
+        // 【位置环参考 = 计划行程，不是实发脉冲】2026-11-16。
+        // 旧写法用 motion_steps_delivered_signed（= 硬件真的发了多少，里面已含补偿），
+        // 等于让补偿去修改"用来衡量补偿的误差"：补偿加一点，参考也走一点，误差永远
+        // 是那一点 → 位置环看着在跑，实际闭环恒等失效。改回窗口路径的语义：
+        // 参考只跟着规划走，转子落后于规划多少就补多少。
+        // 副作用（是修正，不是回归）：0x121 从此是"编码器-规划"的真跟随误差，
+        // 丢步、过冲、重装自由沿都会如实显示出来；motion_steps_delivered_signed
+        // 仍在原位维护，继续用于实发对账与诊断。
+        motion_commanded_travel_deg_ =
+            static_cast<float>(motion_profile_delivered_signed) * step_angle_deg;
 
         // 【已知精度限制（长时运行才暴露）】motion_encoder_travel_raw_ 是 int64（可跑 147 年不溢出），
         // 但这里转成 float 算角度：float 只有 24 位尾数，超过约 1.6e7 LSB（合 244 圈）后
@@ -2154,6 +2177,10 @@ void ClosedLoopController::stopMotion()
     motion_steps_emitted_signed = 0U;
     motion_steps_delivered_signed = 0;
     motion_dma_pending_signed = 0;
+    motion_dma_pending_steps_ = 0U;
+    motion_profile_pending_signed = 0;
+    motion_profile_delivered_signed = 0;
+    motion_profile_step_accumulator_ = 0.0f;
     motion_settle_start_ns_ = 0ULL;
     motion_settle_stable_ramps_ = 0U;
     motion_commanded_travel_deg_ = 0;
@@ -2339,11 +2366,14 @@ void ClosedLoopController::enableExternalPulseFollow(bool enable)
     motion_steps_emitted_signed = 0;
     motion_steps_delivered_signed = 0;
     motion_dma_pending_signed = 0;
+    motion_profile_pending_signed = 0;
+    motion_profile_delivered_signed = 0;
     motion_commanded_travel_deg_ = 0.0f;
     motion_encoder_travel_raw_ = 0;
     motion_follow_error_deg_ = 0.0f;
     motion_step_accumulator_ = 0.0f;
     compensated_motion_step_accumulator_ = 0.0f;
+    motion_profile_step_accumulator_ = 0.0f;
     compensated_rps_ = 0.0f;
     current_step_speed_ = 0.0f;
     motion_speed_rpm_ = 0.0f;

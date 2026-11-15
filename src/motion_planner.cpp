@@ -806,6 +806,10 @@ bool MotionPlanner::emitSteps(uint64_t delta_ramp_ns, uint64_t now_ns)
         // 本窗这批脉冲刚交给 DMA，要等下一拍确认真的发完，
         // 才并进 motion_steps_delivered_signed，用作跟随误差的命令位置。
         c.motion_dma_pending_signed = c.motion_direction_ * static_cast<int32_t>(num_original_command_steps);
+        // 计划行程账本：窗口路径的记账值本来就是纯规划步数（补偿多发的那些在
+        // num_steps 里，不进这本账），与实发账本分开——位置环要的正是这个。
+        c.motion_profile_pending_signed =
+            c.motion_direction_ * static_cast<int32_t>(num_original_command_steps);
     }
     c.motion_step_accumulator_ -= static_cast<float>(num_original_command_steps);
     c.compensated_motion_step_accumulator_ -= static_cast<float>(num_steps);
@@ -1071,6 +1075,21 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
     c.motion_steps_emitted_signed +=
         static_cast<int32_t>(c.motion_direction_) * static_cast<int32_t>(n);
     c.motion_dma_pending_signed = c.motion_direction_ * static_cast<int32_t>(n);
+
+    // ---------- 计划行程账本（位置环参考，绝不含补偿） ----------
+    // 上面那本按 emitted_pps 记"硬件真的发了多少"，用于运动计数与实发对账；
+    // 这本只按 current_step_speed_（纯规划 pps，方向走 DIR）记"计划走到哪"。
+    // 两本必须分开：合成一本时补偿会改写自己的误差，位置环等于没闭环（见 header）。
+    // 重装定时器那个被驱动器计数的自由沿【故意不进这本账】——它不是计划的一部分，
+    // 就该被位置环看见并修掉；带内微抖同理，只调制输出不修改计划。
+    c.motion_profile_step_accumulator_ += c.current_step_speed_ * dt;
+    uint32_t plan_n = 0U;
+    if (c.motion_profile_step_accumulator_ >= 1.0f)
+    {
+        plan_n = static_cast<uint32_t>(c.motion_profile_step_accumulator_);
+        c.motion_profile_step_accumulator_ -= static_cast<float>(plan_n);
+    }
+    c.motion_profile_pending_signed = c.motion_direction_ * static_cast<int32_t>(plan_n);
     return true;
 }
 

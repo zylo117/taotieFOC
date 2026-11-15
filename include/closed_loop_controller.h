@@ -583,6 +583,19 @@ private:
     volatile float calib_comp_rps_peak_ = 0.0f;
     // 刚交给 TMR2/DMA、还没到下一拍确认的步数（下一个 rampUpdate 才并入 delivered）
     volatile int64_t motion_dma_pending_signed = 0;
+    // 【计划行程账本 = 位置环唯一参考，2026-11-16 修「闭环补偿不生效」】
+    // 只累加规划速度 current_step_speed_：不含 compensated_rps_，不含定时器重装
+    // 吐出的那个自由上升沿，也不被 pr_min/档位钳位改写。位置环参照"计划该走到哪"，
+    // 而不是"我自己上一拍发了多少脉冲"。
+    // 为什么必须有它：统一连续 PWM 引擎（3181616）之后，实发账本按
+    //   emitted_pps = clock/(PR+1)，而 ARR 是用 (规划 + 补偿) 算出来的
+    // ——补偿一改，自己的误差参考跟着一起改，误差恒被自己抹平，位置环在结构上
+    // 不可能补偿任何位置误差（实测：0x165 输出放大 7.3 倍，0x121 只动 0.04°）。
+    // f9621ca 之前规划运动走窗口路径，账本记的是 num_original_command_steps
+    // =纯规划步数（补偿多发的不进账），所以那时闭环是活的。
+    volatile float motion_profile_step_accumulator_ = 0.0f;
+    volatile int64_t motion_profile_pending_signed = 0;    // 本拍计入计划，下一拍并入
+    volatile int64_t motion_profile_delivered_signed = 0;  // 已并入的计划步数=命令位置
     volatile uint32_t motion_dma_pending_steps_;
     volatile uint32_t motion_leg_pulse_count_;
     // 【必须是 float，不能是 double】Cortex-M4 没有 FP64 硬件，double 的加减/floor 全是
