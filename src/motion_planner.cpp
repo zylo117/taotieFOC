@@ -1030,6 +1030,15 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
             velocity_pwm_narrow_ = narrow;
             velocity_pwm_ccr_ = ccr_ticks;
             velocity_pwm_dir_ = dir_now;
+            // 【F2 记账修正：纯账本，不碰任何控制律】重装定时器会出 1 个被驱动器计数的
+            // 上升沿（PWM 模式 A + STEP 低有效：CNT=0 拉低、计到 CCR 抬升），而原来的记账
+            // 只按 emitted_pps×dt 估算，看不见它。一趟 0→250RPM 会重装 3 次（首拍 1 次 +
+            // 穿越 350/700pps 迟滞带 2 次）= 3 微步 = 0.169°，与实测开环落点系统性正偏
+            // +0.245° 同量级。磁场比账本跑得远 → 转子跟着落到位 = "开环多走一点角度"；
+            // 反过来也会让收尾出现尾差。这里如实入账，方向取当前 DIR（与下面 signed 同口径）。
+            c.step_pulses_emitted_ += 1U;
+            c.motion_steps_emitted_ += 1U;
+            c.motion_steps_emitted_signed += (dir_now > 0) ? 1 : -1;
         }
         tmr_period_value_set(TMR2, pr_ticks);
         c.step_period_us_ = static_cast<uint16_t>(

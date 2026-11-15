@@ -6,7 +6,8 @@
 
 #define STEP_PERIOD_US_DEFAULT  5000U
 #define FULL_STEPS_PER_ROUND    200U  // 1.8度步进
-#define DEFAULT_MICROSTEPS      64U
+#define DEFAULT_MICROSTEPS      32U   // ← 板上驱动器的**实际**细分（现为 TMC2208 @32µ）。
+                                      //   换回 TMC2209 @64µ 时只改这一行，见 :304 的载入规则。
 #define DEFAULT_STEP_PULSE_NS   2000ULL
 // 脉宽的硬上下限已改为 ClosedLoopController::kMinStepPulseNs / kMaxStepPulseNs，
 // 因为 ParameterRouter 做 clamp 时也要用同一组值（避开两份宏各自漂移）。
@@ -303,7 +304,13 @@ void ClosedLoopController::init(StepperDriver* driver, AngleEncoder* encoder)
             // 而脉冲数、滞后角表、网页行程全按 64 口径 —— 行程正好差一倍。
             if (params.microsteps >= 1U && params.microsteps <= 256U)
             {
-                boot_microsteps = params.microsteps;
+                // 细分是**硬件属性**（由驱动芯片和 M0/M1 电平决定），不是运行时偏好。Flash 里
+        // 存的值一旦和当前板子不符，**所有转速都会按倍数错**——实测就是这一条：板子换成了
+        // 32 细分的 TMC2208，Flash 还存着 64，于是"命令 250RPM、轴真转 500RPM"，一整批
+        // 关于落点误差和"闭环自激"的测量结论全部作废（0x182 是试纸：7031=spr12800=64µ，
+        // 14062=spr6400=32µ）。而且 0x100 的运行时写入不持久化，重启/重刷就回 64。
+        // 所以这里以 DEFAULT_MICROSTEPS 为准；换驱动器时只改那一个常量。
+        boot_microsteps = DEFAULT_MICROSTEPS;
             }
             if (params.en_mode <= 1U)
             {

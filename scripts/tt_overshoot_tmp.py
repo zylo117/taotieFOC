@@ -9,6 +9,7 @@ from tt_host import TTHost
 PULSES = int(sys.argv[1]) if len(sys.argv) > 1 else 128000
 RPM = int(sys.argv[2]) if len(sys.argv) > 2 else 250
 ACCEL = int(sys.argv[3]) if len(sys.argv) > 3 else 1000
+COMP = int(sys.argv[4]) if len(sys.argv) > 4 else 0     # 0=开环 1=闭环补偿
 
 
 def s32(v):
@@ -43,7 +44,7 @@ while time.time() - tg < 1.2:
 print(f'使能抖动（使能后 1.2s 内编码器累计）：{jerk / 1000.0:+.3f}°')
 # 关键基线：20 整圈（128000/6400）跑完静置后，绝对角应回到这里，误差才是真误差。
 a_base = h.read(0x116)
-h.write(0x107, 0)              # 开环
+h.write(0x107, COMP)
 spr = h.read(0x130) or 0       # 只试探：读不到就留 0，下面用命令圈数对比即可
 print(f'读到的 microsteps/spr 相关：0x130={spr}')
 h.write(0x11A, min(120, RPM))
