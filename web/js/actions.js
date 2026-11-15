@@ -299,6 +299,10 @@
         // 测速控制和外部脉冲跟随共用同一个 STEP 输出通道（TMR2/DMA），固件里本来就是互斥的：
         // 外部跟随使能时 rampUpdate 直接走 updateExternalPulseChannel 并 return。
         // 所以这里不让它们同时出现：切 tab 就同时切固件的 0x149。
+        // 用户想要的闭环补偿状态，在切去「外部脉冲运动」时暂存，切回来时还原。
+        // null = 没有待还原的意图。见下面 switchWorkTab 里的说明。
+        let closedLoopIntent = null;
+
         function switchWorkTab(tab, skipWrite) {
             const isMotion = tab === 'motion';
             document.getElementById('cardMotion').style.display = isMotion ? '' : 'none';
@@ -325,12 +329,32 @@
             }
             if (isMotion) {
                 stopWaveCapture();
+                // 【修「闭环补偿没生效」2026-11-16】切去外部跟随时勾选框被按灭、
+                // 切回来却从不还原，而「启动」每次都按勾选框下发 0x107（见 main.js
+                // 运动入口），于是用户勾了闭环、切过一次 tab 之后每次启动都在写
+                // 0x107=0——补偿是被 UI 自己关掉的，不是固件不补。这里把切走之前的
+                // 意图还原回去（勾选框 + 寄存器一起，保持和固件真值一致）。
+                const clInput = document.getElementById('closedLoopEnableInput');
+                if (clInput && closedLoopIntent !== null && document.activeElement !== clInput) {
+                    clInput.checked = closedLoopIntent;
+                    if (state.connected && !skipWrite && closedLoopIntent) {
+                        writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 1)
+                            .catch((error) => log('[ERROR] 还原闭环补偿失败：' + error.message));
+                    }
+                    closedLoopIntent = null;
+                }
             } else {
                 stopWaveCapture();  // 先清空历史，延迟启动在使能完成后的 then 里
                 const closedLoopInput = document.getElementById('closedLoopEnableInput');
-                if (closedLoopInput) closedLoopInput.checked = false;
-                // skipWrite：显示同步（boot 回读），不回写补偿开关 —— 固件跟随通道
-                // 本来就不走 PID，多写一枪只是徒增串口流量。
+                // skipWrite = 纯显示同步（boot 回读 / 固件遥测）：既不改勾选框也不回写。
+                // 原来这里无条件 checked=false，连 skipWrite 也照按，等于把固件真值
+                // （固件上电默认外部跟随，此时 0x107 可能=1）抹成 0 —— 就是上面那个
+                // bug 的前半段。跟随通道本来不走 PID，所以真·用户切换时仍然关掉，
+                // 但先把意图存下来。
+                if (closedLoopInput && !skipWrite && document.activeElement !== closedLoopInput) {
+                    closedLoopIntent = closedLoopInput.checked;
+                    closedLoopInput.checked = false;
+                }
                 if (state.connected && !skipWrite) {
                     writeRegister(CUSTOM_REGS.CLOSED_LOOP_ENABLE, 0)
                         .catch((error) => log('[ERROR] 关闭闭环补偿失败：' + error.message));
