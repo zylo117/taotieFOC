@@ -46,6 +46,9 @@ public:
     // startMotion 置位，stopMotion 经 velocityPwmHalt 清零。
     bool velocity_pwm_active_ = false;
     bool velocity_pwm_running_ = false;
+    // 【账本改数脉冲 2026-11-17】上一拍读到的 DMA1_CH2 剩余传输计数，做差得到
+    // 本拍硬件真实发出的沿数（0xFFFF 循环，差值超过 1000 视为刚装载/未武装，不记账）。
+    uint32_t pulse_dma_left_ = 0U;
     // 【角度模式起步门兜底 2026-11-17】tier3 时不起转的连续拍数，超过 1000 拍（50ms）
     // 无条件放行，防止任何边缘情况下角度模式永远不起转。
     uint16_t angle_start_gate_ticks_ = 0U;
