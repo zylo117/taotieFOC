@@ -545,6 +545,15 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         printf("[PARAM] lag deadband = %lu mdeg\r\n", static_cast<unsigned long>(clamp_value));
         return true;
     }
+
+    if (reg == TMC2209_EXT_PARAM_ENGINE_TUNING)
+    {
+        // 运行时 A/B 开关（诊断用，不落 Flash）：bit0 关无缝换档，bit2 补尾退回旧锯齿。
+        owner_.engine_tuning_ = static_cast<uint16_t>(value & 0x0005U);
+        printf("[PARAM] engine tuning = 0x%04X\r\n",
+               static_cast<unsigned>(owner_.engine_tuning_));
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_ENABLE_MODE)
     {
         owner_.setEnableMode(value);
@@ -1149,9 +1158,15 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
         *value = owner_.engine_reinit_events_;
         return true;
     }
-    if (reg == TMC2209_EXT_PARAM_ENGINE_RATE_FLOOR_TICKS)
+
+    if (reg == TMC2209_EXT_PARAM_ENGINE_TIER_SWITCH_EVENTS)
     {
-        *value = owner_.engine_rate_floor_ticks_;
+        *value = owner_.engine_tier_switch_events_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ENGINE_TUNING)
+    {
+        *value = owner_.engine_tuning_;
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_RESONANCE_TAP_FREQ_HZ)

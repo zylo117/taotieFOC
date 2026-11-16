@@ -531,7 +531,9 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
         // 不变式（防旧死锁复发，见 25220/25600 的记录）：地板 ≥24pps，高于 tier3
         // 蠕行地板 14.9pps，必然在有限拍内把 motion_steps_emitted_ 推到
         // motion_pulse_count_，不会让上位机等 0x11F 超时。
-        if (remaining_steps > 0U && !c.motion_quick_stop_ &&
+
+        const bool legacy_creep = (c.engine_tuning_ & 0x0004U) != 0U;
+        if (!legacy_creep && remaining_steps > 0U && !c.motion_quick_stop_ &&
             c.steps_to_decel_ != 0xFFFFFFFFU)
             // 判据再用 steps_to_decel_==0xFFFFFFFF 把两种情形一起挡掉：①急刹（:350 置
             // 0xFFFFFFFF，直到下次 startMotion 才恢复）——实测缓停收口之后还会补爬
@@ -582,6 +584,36 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
                 c.current_step_speed_ = 0.0f;
                 c.motion_quick_stop_ = false;
                 c.motion_pulse_count_ = c.motion_steps_emitted_;
+            }
+
+            else if (legacy_creep && remaining_steps > 0U &&
+                     c.steps_to_decel_ != 0xFFFFFFFFU)
+            {
+                // 【0x187 bit2 = 1：退回 J3d 之前的锯齿补尾，只为对照实验】
+                // 归零这一拍 bump +32pps，下一拍又被减速斜率吃掉 → 0↔32pps 锯齿，
+                // 实测 11 微步磨 561ms、步间隔 2~60ms 乱跳。留着这条旧路是为了能在板子上
+                // 直接比较两种补尾的手感，不是为了用它。
+                float cap = static_cast<float>(remaining_steps) * 40.0f;
+                if (cap > c.motion_max_step_s_)
+                {
+                    cap = c.motion_max_step_s_;
+                }
+                if (cap < 24.0f)
+                {
+                    cap = 24.0f;
+                }
+                c.current_step_speed_ = (c.current_step_speed_ + 32.0f < cap)
+                                            ? (c.current_step_speed_ + 32.0f)
+                                            : cap;
+                if (!c.creep_active_)
+                {
+                    c.creep_active_ = true;
+                    if (c.creep_events_ < 0xFFFFU)
+                    {
+                        c.creep_events_++;
+                    }
+                    c.creep_last_deficit_ = remaining_steps;
+                }
             }
             else
             {
@@ -856,44 +888,17 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
     const uint32_t spr = c.getStepsPerRound();
     // 目标脉冲率 = 规划速度 + 闭环速度补偿（与 emitSteps 同语义，脉冲频率非负，
     // 方向只由 DIR/CH4 表达）。
-    float comp_pps = c.compensated_rps_ * static_cast<float>(spr);
-    // 【J3b 减速段补偿淡出 2026-11-16】减速末尾 current_step_speed_ 只剩几百 pps，而实测
-    // 0x165 在这个窗口能到 ±0.235rps = ±1500pps —— 补偿比命令速度还大。合成 pps 于是在 0
-    // 上下反复穿越：pr_ticks==0 → 当场 stepper_stop_motion_timer（CNT 归零 + MOE 关 +
-    // STEP 钉低），下一拍 pps 又 >0 → 全套重装。末端一个脉冲周期本来就是 2~4ms，一次
-    // 「停—启」就是一整个周期的空洞，连发几轮就是"缓停最后抖一下 + 叮一声"。
-    // 而且补偿把输出压到规划速度以下时，实发账本追不上计划，尾巴就欠出十几微步
-    // （实测 10 圈那次 0x184 = 11），把补尾也点着了 —— 同一个根因的两张脸。
-    // 减速段（含补尾）里位置环已经来不及起作用：它的输出既不进计划账本，运动又马上结束，
-    // 纯粹是把脉冲流打碎的扰动。这里按规划速率线性淡出（≥2000pps≈18.8RPM 全额，到 0 归零），
-    // 连续变化不产生台阶。加速/巡航段完全不受影响；角度模式的脉冲率本来就来自 PID 本身，
-    // 淡出它会直接废掉角度模式，所以角度模式排除在外。
-    if (!c.closed_loop_angle_mode_enabled_ &&
-        c.motion_ramp_stage_ == ClosedLoopController::RAMP_STAGE_DECEL)
-    {
-        constexpr float kCompFullPps = 2000.0f;
-        const float w = (c.current_step_speed_ >= kCompFullPps)
-                            ? 1.0f
-                            : ((c.current_step_speed_ > 0.0f)
-                                   ? c.current_step_speed_ / kCompFullPps
-                                   : 0.0f);
-        comp_pps *= w;
-    }
-    float pps = c.current_step_speed_ + comp_pps;
+    // 【J3b 整条撤销 2026-11-16】这里曾加过「减速段补偿按规划速率淡出 + 50% 地板」，
+    // 理由是「补偿在末端比命令速度大，会把合成 pps 压到 0，导致引擎停/起重装抖动」。
+    // 前提是错的：closed_loop_controller.cpp:2083 早就有
+    //     if (profile_rps + corr_rps < 0.0f) corr_rps = -profile_rps;
+    // 补偿在源头就被钳成「不许把合成速度拉负」，实测取证寄存器 0x186（触底拍数）
+    // 也一直是 0 —— 那个分支从来没进过。而淡出把减速段（短运动的绝大部分时间）的
+    // 补偿力度直接削掉，用户实测「闭环又不能补偿了」。恢复原样，补偿一个字不改。
+    float pps = c.current_step_speed_ + c.compensated_rps_ * static_cast<float>(spr);
     if (pps < 0.0f)
     {
-        // 【地板】规划器还在往前走，就不许合成脉冲率被补偿压到 0 —— 压到 0 就是上面那套
-        // 停/启抖动。兜到规划速度的一半：脉冲流保持连续，欠下的那点半数交给补尾（J3c
-        // 已把补尾做成不可感的慢磨）。规划速度自己归零时 pps=0 才是正经终点。
-        if (c.current_step_speed_ > 0.0f)
-        {
-            pps = c.current_step_speed_ * 0.5f;
-            c.engine_rate_floor_ticks_++;
-        }
-        else
-        {
-            pps = 0.0f;
-        }
+        pps = 0.0f;
     }
 
     // ---------- 带内速度微抖（见 TMC2209_EXT_PARAM_BAND_DITHER_* 注释） ----------
@@ -1076,22 +1081,25 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
             velocity_pwm_dir_ = 0;  // 0 = 未装载方向，下一拍强制重装
             return true;
         }
-        if (!velocity_pwm_running_)
+        const bool need_load = (tier != velocity_pwm_tier_ || narrow != velocity_pwm_narrow_ ||
+                                ccr_ticks != velocity_pwm_ccr_);
+        // 【运行时 A/B 开关 0x187 bit0】置 1 = 关闭无缝换档，换档退回「完整重装定时器」。
+        // 两种换档方式对角度模式跟手度、开环落点的影响可以直接在板子上对比，不用重刷。
+        const bool seamless = ((c.engine_tuning_ & 0x0001U) == 0U);
+        const uint32_t ccr_load = (ccr_ticks > pr_ticks) ? pr_ticks : ccr_ticks;
+        static constexpr uint16_t kTierPsc[4] = {0U, 7U, 15U, 255U};
+        if (!velocity_pwm_running_ || (need_load && !seamless))
         {
+            // 从停到走：STEP 还由普通输出钉在低电平，必须走完整重装才能交给定时器
+            // （J1 的交接顺序保证这一步不上跳、不白送形状异常的沿）。
             // halt 会把 velocity_pwm_dir_ 清 0，所以「dir==0 且引擎停着」= 一段全新运动的
-            // 第一次装载，本段运动的取证计数从这里重新起算（0x185/0x186）。
+            // 第一次装载，本段运动的取证计数从这里重新起算（0x185 重装 / 0x186 换档）。
             if (velocity_pwm_dir_ == 0)
             {
                 c.engine_reinit_events_ = 0U;
-                c.engine_rate_floor_ticks_ = 0U;
+                c.engine_tier_switch_events_ = 0U;
             }
-            // 从停到走：STEP 还由普通输出钉在低电平，必须走完整重装才能交给定时器
-            // （J1 的交接顺序保证这一步不上跳、不白送沿）。
-            const uint32_t ccr_load = (ccr_ticks > pr_ticks) ? pr_ticks : ccr_ticks;
-            static constexpr uint16_t kTierPsc[4] = {0U, 7U, 15U, 255U};
-            stepper_common::stepper_init_motion_timer(kTierPsc[tier],
-                                                      ccr_load,
-                                                      dir_now > 0);
+            stepper_common::stepper_init_motion_timer(kTierPsc[tier], ccr_load, dir_now > 0);
             c.engine_reinit_events_++;
             velocity_pwm_running_ = true;
             velocity_pwm_tier_ = tier;
@@ -1099,34 +1107,29 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
             velocity_pwm_narrow_ = narrow;
             velocity_pwm_ccr_ = ccr_ticks;
             velocity_pwm_dir_ = dir_now;
-            // 【F2 的 +1 入账已撤 2026-11-16】F2 是给"重装吐出一个被驱动器计数的上升沿"
-            // 补的账（实测 0→250RPM 重装 3 次 = +3 微步 = 开环落点 +0.245°，入账后剩
-            // +0.082°）。J1 之后重装全程 STEP 都被普通输出钉在低电平、交接瞬间没有上跳，
-            // 那个沿不该再存在，继续入账就成了虚账。而且 J3a 之后减速段根本不再重装
-            // （换档只写缓冲寄存器），"每重装一次白走一步"这条路整条被封掉。
-            // 判据留在这里：开环落点若重新出现 ≈每次重装 1 微步的正向系统偏（且
-            // 0x185 > 1），说明沿还在，把这三行原样加回来 ——
+            // 【F2 的 +1 入账：暂不加，等实测判定】
+            // 重装把 CNT 归零，第一个上升沿在 CCR≈1µs 后就到。若这是**打断正在运行的
+            // 引擎**（中途换档 / J2 换向），等于把"还差大半个周期才来的那个沿"提前发到
+            // 眼前 = 比按时间计的账本多一个脉冲，与 F2 实测「每重装一次 +1 微步」吻合；
+            // 若这是**起步那一次**，前面根本没有 pending 沿，入账就是虚账（会少走一步）。
+            // 现在默认路径一次运动只有起步这一发重装（0x185=1），所以先不入账，
+            // 用开环小行程落点实测判定：落点若仍系统性偏 +1 微步/次，就只在
+            // velocity_pwm_running_ 为真的那一支补记 ——
             //   c.step_pulses_emitted_ += 1U;
             //   c.motion_steps_emitted_ += 1U;
             //   c.motion_steps_emitted_signed += (dir_now > 0) ? 1 : -1;
         }
-        else if (tier != velocity_pwm_tier_ || narrow != velocity_pwm_narrow_ ||
-                 ccr_ticks != velocity_pwm_ccr_)
+        else if (need_load)
         {
-            // 【J3a 换档不重装 2026-11-16】这是"缓停最后抖一下"的主犯：250RPM 减速到 0
-            // 要连着跨 4200 / 480 / 250 pps 三个档，按旧写法就是在最后 40ms 里重装三次
-            // 定时器，每次 CNT 归零 + 最长一个脉冲周期的空洞（tier2→tier3 那次约 4ms），
-            // 三次挤在一起手感到来就是抖一下，驱动器那边还伴随励磁突变的"叮"。
-            // DIV / CCR 和 PR 一样是预装载寄存器，写在周期中间的写入会在下一个更新事件
-            // 与 PR 一起生效；新旧档在同一 pps 下算出的周期时长相同，所以脉冲间隔在换档处
-            // 不出现台阶。0x185 记重装次数，修好后一次运动应该只有起步那 1 次。
-            const uint32_t ccr_load = (ccr_ticks > pr_ticks) ? pr_ticks : ccr_ticks;
-            static constexpr uint16_t kTierPsc[4] = {0U, 7U, 15U, 255U};
+            // 【J3a 无缝换档】只写 DIV 与 CCR 的写缓冲，和 PR 一起在下一个更新事件生效：
+            // 不关 MOE、不把 STEP 钉低、CNT 不归零，因此既没有空洞也没有被提前的沿。
+            // 0x186 数这个分支每段运动走了多少次（250RPM 一趟三角电梯 = 3 次下 + 3 次上）。
             stepper_common::stepper_apply_motion_rate(kTierPsc[tier], ccr_load);
             velocity_pwm_period_carry_ = 0.0f;   // tick 基准变了，小数残差作废
             velocity_pwm_tier_ = tier;
             velocity_pwm_narrow_ = narrow;
             velocity_pwm_ccr_ = ccr_ticks;
+            c.engine_tier_switch_events_++;
         }
         tmr_period_value_set(TMR2, pr_ticks);
         c.step_period_us_ = static_cast<uint16_t>(
