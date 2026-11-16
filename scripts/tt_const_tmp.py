@@ -24,6 +24,7 @@ def unwrap(d):
 
 
 h = TTHost('COM9')
+CLOSED = 1 if 'cl' in sys.argv else 0          # 'cl' = 闭环 0x107=1（网页默认走这条路）
 MAXRPM = int(sys.argv[1]) if len(sys.argv) > 1 else 60
 ACC = int(sys.argv[2]) if len(sys.argv) > 2 else 300
 nums = [int(x) for x in sys.argv[3:] if x.isdigit()] or [640, 1280, 5120]
@@ -32,13 +33,14 @@ if h.read(0x16D) != 0:
     h.write(0x16D, 0)
     time.sleep(0.2)
 saved = h.read(0x107)
-h.write(0x107, 0)
+h.write(0x107, CLOSED)
 h.write(0x11A, 6)
 h.write(0x11B, MAXRPM)
 h.write(0x11C, ACC)
 h.write(0x124, 1)
 time.sleep(0.8)
-print(f'纯开环 0x107=0  start=6RPM max={MAXRPM}RPM acc={ACC}RPM/s  0x162={h.read(0x162)}')
+print(f'{"闭环 0x107=1" if CLOSED else "纯开环 0x107=0"}  start=6RPM max={MAXRPM}RPM '
+      f'acc={ACC}RPM/s  0x162={h.read(0x162)}')
 try:
     for steps in nums:
         for rep in (1, 2):
@@ -70,7 +72,8 @@ try:
                 raise RuntimeError('未进入运动')
             time.sleep(0.4)
             bias = acc / 56.25 - steps
-            fe = (h.read(0x121) or 0) / 1000.0
+            raw_fe = h.read(0x121)
+            fe = ((raw_fe - 0x100000000 if raw_fe and raw_fe & 0x80000000 else raw_fe) or 0) / 1000.0
             print(f'{steps:5d} 步 第{rep}趟 耗时 {t_stop:6.3f}s  '
                   f'实走 {acc / 56.25:9.1f} 微步  偏 {bias:+6.2f} 微步'
                   f'({bias * STEP_UM:+.4f}°)  FE={fe:+.3f}°  '
