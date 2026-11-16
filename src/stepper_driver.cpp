@@ -24,38 +24,35 @@ namespace stepper_common
         //          输出的是 CNT(0) < CCR ⇒ 参考高 ⇒ 引脚低，和钉住的低电平相同，无沿。
         void stepper_step_pin_idle_low(void)
         {
-            if (step_pin_driven_low)
+            // 【取消 STEP 引脚 GPIO↔MUX 来回重配 2026-11-17】
+            // 实测：每次装载引擎都白送约 1 微步（0.056°）。12800 步最可信那组
+            // 0x185=1 次装载 → +1.10 微步；0x187=1 逼出 2 次装载 → +2.89 微步。
+            // 用户侧"先归零转 5 圈误差接近 0，再转 5 圈就 +0.1~0.3°"完全吻合按装载计账。
+            // 嫌疑就是每次停车把 STEP 从定时器手里（MUX）切成普通 GPIO 输出、下次装载
+            // 再切回去：gpio_init 改 CNF/MODE 的那几微秒里引脚不由定时器驱动，而恢复 MUX
+            // 的一瞬间输出电平取决于当时的 CNT/CCR —— 那一刻只要 CNT>=CCR 引脚就是高，
+            // 驱动器只认上升沿，于是每次装载多计一步。
+            // 改法：STEP **永久留在 MUX**，停车时让定时器自己把输出钉低。
+            // PWM 模式 A 下 CNT < CCR 期间输出有效电平（本工程 ACTIVE_LOW → 实际为低），
+            // 所以只要 CCR > PR 且 CNT 摁在 0，输出就恒为低。写 CCR 要更新事件才生效
+            // （c3oben 已开），顺手发一个 ovfswtr：它同时把 CCR 影子就地生效并清零 CNT。
+            // 进这里的两条路径都已先关 CEN、关溢出 DMA 请求，TMR2 也没开更新中断。
+            uint32_t park = TMR2->pr + 1U;
+            if (park > 65535U)
             {
-                // 已经钉住了（一次停车常被 halt + stopMotion 调两次），只需保证电平。
-                stepper_write_gpio_low(STEP_OUTPUT_PORT, STEP_OUT_PIN);
-                return;
+                park = 65535U; // PR 已顶格：CNT 固定在 0 就是低，不需要更大 CCR
             }
-            gpio_init_type gpio_init_struct;
-            gpio_default_para_init(&gpio_init_struct);
-            gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-            gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-            gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
-            gpio_init_struct.gpio_pins = STEP_OUT_PIN;
-            stepper_write_gpio_low(STEP_OUTPUT_PORT, STEP_OUT_PIN);
-            gpio_init_struct.gpio_mode = GPIO_MODE_OUTPUT;
-            gpio_init(STEP_OUTPUT_PORT, &gpio_init_struct);
+            tmr_counter_value_set(TMR2, 0U);
+            tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, park);
+            TMR2->swevt_bit.ovfswtr = TRUE;
             step_pin_driven_low = true;
         }
 
         void stepper_step_pin_take_over_by_timer(void)
         {
-            if (!step_pin_driven_low)
-            {
-                return;  // 本来就在定时器手里
-            }
-            gpio_init_type gpio_init_struct;
-            gpio_default_para_init(&gpio_init_struct);
-            gpio_init_struct.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-            gpio_init_struct.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-            gpio_init_struct.gpio_pull = GPIO_PULL_NONE;
-            gpio_init_struct.gpio_pins = STEP_OUT_PIN;
-            gpio_init_struct.gpio_mode = GPIO_MODE_MUX;
-            gpio_init(STEP_OUTPUT_PORT, &gpio_init_struct);
+            // 【同上 2026-11-17】STEP 从开电起就在 MUX 手里，装载引擎时不再做 GPIO 重配，
+            // 也就没有"交接瞬间不定驱动"的空窗。这里只清标志；真正的低电平由
+            // stepper_init_motion_timer 写好的 PR/CCR 保证（装载后 CNT=0 < CCR → 输出低）。
             step_pin_driven_low = false;
         }
     }
@@ -360,7 +357,7 @@ namespace stepper_common
         stepper_init_motion_timer(k_psc, k_step_pulse_ticks, true);
         stepper_write_gpio(EN_OUTPUT_PORT, EN_OUT_PIN, true);
         stepper_write_gpio(DIR_OUTPUT_PORT, DIR_OUT_PIN, false);
-        stepper_write_gpio(STEP_OUTPUT_PORT, STEP_OUT_PIN, false);
+        stepper_step_pin_idle_low(); // MUX 下写 ODR 不生效，改用定时器钉低
     }
 
     // 【仅保持 PDN_UART 空闲高电平，不做任何 UART 通讯】
