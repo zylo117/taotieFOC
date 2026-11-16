@@ -519,27 +519,42 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
     else if (c.motion_ramp_stage_ == ClosedLoopController::RAMP_STAGE_DECEL)
     {
         c.current_step_speed_ -= c.motion_accel_step_s2_ * dt_ramp_s;
-        if (c.current_step_speed_ <= 0.0f)
+        // 【J3d 补尾匀速 2026-11-16】只要还有脉冲没发完，减速的速度就不许跌破补尾地板。
+        // 旧写法把补尾放在「速度已经归零」那一拍里：bump 一次 +32pps，下一拍又被减速
+        // 斜率减回去，于是整条尾巴是 0↔32pps 的锯齿——实测 11 微步磨了 561ms，步间隔
+        // 在 2~60ms 之间跳，末端听起来是"哒…哒…哒"的断续，不是渐停。
+        // 现在尾巴走匀速：11 步约 37ms 磨完，步间隔恒定，且斜坡只是"停在地板上"
+        // 而不是被抬起来，没有阶跃；最后收口那一刻速率已 < 80pps（0.45°/s），
+        // velocityPwmHalt() 的硬切不可感。
+        // 急刹（0x163）必须排除在外：它的语义就是"丢掉剩余步数立刻停"，给它加地板
+        // 等于不让它停，还会把 motion_pulse_count_ 的收口逻辑拖没。
+        // 不变式（防旧死锁复发，见 25220/25600 的记录）：地板 ≥24pps，高于 tier3
+        // 蠕行地板 14.9pps，必然在有限拍内把 motion_steps_emitted_ 推到
+        // motion_pulse_count_，不会让上位机等 0x11F 超时。
+        if (remaining_steps > 0U && !c.motion_quick_stop_)
         {
-            if (c.motion_quick_stop_)
+            // 地板随剩余步数收敛：每步只给 40pps（剩 8 步以上封顶 300pps，
+            // 最后两步自然降到 80/40pps），下限 24pps 保证一定走得完。
+            float creep_cap = static_cast<float>(remaining_steps) * 40.0f;
+            if (creep_cap > 300.0f)
             {
-                // 急刹完成：把"目标脉冲数"改成已发数，下一拍就走"全部发完 -> SETTLE"。
-                // 注意必须走 else-if：否则紧接的爬行分支会立刻把速度又抬起来。
-                c.current_step_speed_ = 0.0f;
-                c.motion_quick_stop_ = false;
-                c.motion_pulse_count_ = c.motion_steps_emitted_;
+                creep_cap = 300.0f;
             }
-            // 【死锁保护】速度已经减到 0，但还有脉冲没发完（剩余步数 > 0）。
-            // 以前这里直接置 0 就不管了：状态机永远停在 DECEL，motion_running_ 一直是真，
-            // 上位机等 0x11F 变 0 只能等到超时；电机也确实少走了那一截
-            // （实测 2 圈运动停在 25220/25600，差 1.5%）。
-            // 现在的处理：用一个小爬行速度把尾巴补完，让“全部发完 -> SETTLE”正常接管。
-            else if (remaining_steps > 0U)
+            if (creep_cap > c.motion_max_step_s_)
             {
-                // 取证（0x183/0x184）：只在首次进入时记一次，避免每拍重复计数。
-                // 走到这里说明规划减速段"想发"的步数比引擎"发得出"的步数多——
-                // 绝大多数情况是命令速度超过了 0x182 的脉冲量程（现在已被钳位，
-                // 正常情况不该再触发；触发了就说明还有别的原因在少发步）。
+                creep_cap = c.motion_max_step_s_;
+            }
+            if (creep_cap < 24.0f)
+            {
+                creep_cap = 24.0f;
+            }
+            if (c.current_step_speed_ < creep_cap)
+            {
+                // 取证（0x183/0x184）：只在首次踩上地板时记一次。
+                // 踩上地板 = 规划减速段"想发"的步数比引擎"发得出"的多，差额记进
+                // 0x184。正常应在 10~20 微步量级（账本按上一拍 ARR 入账，斜坡期
+                // 硬件与账本有一拍之差的偏置），它现在只是记账口径问题，
+                // 已经不再是抖动源。
                 if (!c.creep_active_)
                 {
                     c.creep_active_ = true;
@@ -549,44 +564,21 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
                     }
                     c.creep_last_deficit_ = remaining_steps;
                 }
-                // 补尾速率（F1→J3c，治"收尾/缓停抖一下"）：原来是 max(400, 0.5×起始转速)，
-                // 默认起始 60RPM 时 = 3200pps = **180°/s**，而且是**从 0 一拍直接赋值**。
-                // 那是全固件唯一一处脉冲速率瞬时阶跃（其余全部受斜率限制）：约 5ms 一个
-                // 锯齿，每周期净走 8 微步，手感到来就是"抖一下"。
-                // F1 改成"小速率 + 按斜率爬升"之后还剩最后一刀：固定爬到 300pps 磨完，
-                // 最后一步记完账的那一拍 updateTrapezoid 直接 velocityPwmHalt()，等于
-                // **从 1.7°/s 瞬间切 0**——转子带着动量被 detent 拽回来，就是"抖一下+叮"。
-                // J3c 再收一步：补尾上限随剩余步数收敛（每步只给 40pps，最低 24pps），
-                // 于是最后几步本来就是慢步，停车那一刻速率已经 < 60pps（0.34°/s），硬切
-                // 落在不可感的量级。
-                // 不变式（防旧死锁复发，见上面 25220/25600 的记录）：补尾必须存在，且
-                // 必须在**有限拍**内把 motion_steps_emitted_ 推到 motion_pulse_count_；
-                // 24pps 仍高于 tier3 蠕行地板 14.9pps，不会出现"停发但不改 pulse_count"
-                // 让上位机等 0x11F 超时。
-                float creep_cap = static_cast<float>(remaining_steps) * 40.0f;
-                if (creep_cap > 300.0f)
-                {
-                    creep_cap = 300.0f;
-                }
-                if (creep_cap > c.motion_max_step_s_)
-                {
-                    creep_cap = c.motion_max_step_s_;
-                }
-                if (creep_cap < 24.0f)
-                {
-                    creep_cap = 24.0f;
-                }
-                // 每拍最多 +32pps，等价默认 0x11C=6000RPM/s 的斜率（640000pps/s ÷ 20kHz），
-                // 所以补尾起步不再比正常加速更猛。
-                float creep_next = c.current_step_speed_ + 32.0f;
-                if (creep_next > creep_cap)
-                {
-                    creep_next = creep_cap;
-                }
-                c.current_step_speed_ = creep_next;
+                c.current_step_speed_ = creep_cap;
+            }
+        }
+        if (c.current_step_speed_ <= 0.0f)
+        {
+            if (c.motion_quick_stop_)
+            {
+                // 急刹完成：把"目标脉冲数"改成已发数，下一拍就走"全部发完 -> SETTLE"。
+                c.current_step_speed_ = 0.0f;
+                c.motion_quick_stop_ = false;
+                c.motion_pulse_count_ = c.motion_steps_emitted_;
             }
             else
             {
+                // 正常终点：剩余步数已经为 0（还有步数的情形被上面的地板兜住了）。
                 c.current_step_speed_ = 0.0f;
             }
         }

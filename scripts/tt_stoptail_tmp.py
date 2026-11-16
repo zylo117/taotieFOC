@@ -192,15 +192,6 @@ try:
         print(f'停机后 0x165：最大 {max(comp_tail, key=abs)/1000.0:+.4f} rps '
               + ('← 补偿还在动，跳变是位置环驱动的'
                  if max(abs(x) for x in comp_tail) > 20 else '← 补偿为 0，跳变不是补偿驱动的'))
-    comp_run = [c for t, a, c, fe, rpm, run in trace if t < t_stop and c is not None]
-    comp_tail = [c for t, a, c, fe, rpm, run in trace if t > t_stop and c is not None]
-    if comp_run:
-        print(f'运动段 0x165：均值 {sum(comp_run)/len(comp_run)/1000.0:+.4f} '
-              f'最大 {max(comp_run, key=abs)/1000.0:+.4f} rps')
-    if comp_tail:
-        print(f'停机后 0x165：最大 {max(comp_tail, key=abs)/1000.0:+.4f} rps '
-              + ('← 补偿还在动，跳变是位置环驱动的'
-                 if max(abs(x) for x in comp_tail) > 20 else '← 补偿为 0，跳变不是补偿驱动的'))
 finally:
     h.write(R_MOTION, 0)
     for r, v in saved.items():
