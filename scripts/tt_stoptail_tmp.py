@@ -92,9 +92,11 @@ try:
     trace = []
     t_stop_flag = None
     t_pulses_zero = None
-    while time.time() < t_end + 1.5:
+    t_soft = None
+    while time.time() < t_end + 2.5:
         if SOFT and t_stop_flag is None and time.time() >= t_end:
             h.write(R_SOFT_STOP, 1, need_ack=False)
+            t_soft = time.time()
         a = h.read(R_ENCODER_ANGLE_MDEG)
         c = h.read(R_COMP)
         now = time.time()
@@ -124,6 +126,9 @@ try:
     t_stop = t_done if t_done else t_big
     print(f'\n0x11F 归零时刻 {"抓到" if t_done else "没抓到"}（相对最后一次 >0.2° 跳变 '
           f'{((t_stop - t_big) * 1000):+.0f}ms）')
+    if t_soft is not None:
+        print(f'0x163 缓停写入于零点 {(t_soft - t_stop) * 1000:+.0f}ms'
+              f'（写入后 {(trace[-1][0] - t_soft):.2f}s 数据）')
 
     rate = len(diffs) / max(1e-6, trace[-1][0] - trace[0][0])
     # 累计解绕出转子的真实总行程（采样 269Hz，250RPM 下每帧约 1.5°，解绕安全）
@@ -147,7 +152,7 @@ try:
         cum = peak = 0
         t_peak = lo
         for t, d in diffs:
-            if lo <= t <= hi:
+            if lo < t <= hi:          # 开区间：lo 那一帧自己的 Δ 不算"停后"
                 cum += d
                 if abs(cum) > abs(peak):
                     peak = cum

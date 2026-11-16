@@ -531,7 +531,14 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
         // 不变式（防旧死锁复发，见 25220/25600 的记录）：地板 ≥24pps，高于 tier3
         // 蠕行地板 14.9pps，必然在有限拍内把 motion_steps_emitted_ 推到
         // motion_pulse_count_，不会让上位机等 0x11F 超时。
-        if (remaining_steps > 0U && !c.motion_quick_stop_)
+        if (remaining_steps > 0U && !c.motion_quick_stop_ &&
+            c.steps_to_decel_ != 0xFFFFFFFFU)
+            // 判据再用 steps_to_decel_==0xFFFFFFFF 把两种情形一起挡掉：①急刹（:350 置
+            // 0xFFFFFFFF，直到下次 startMotion 才恢复）——实测缓停收口之后还会补爬
+            // 11 微步，就是急刹标志已清、地板又接手了；说停就停才是缓停的语义。
+            // ②无限循环的速度模式（motion_pulse_count_=0，remaining_steps = 0-已发 会
+            // 下溢成巨大值，不挡住就会被地板一直拽着爬）。这个量只在 startMotion /
+            // 换向 / 急刹 三处赋值，不会被逐拍重算，所以拿它当判别可靠。
         {
             // 地板随剩余步数收敛：每步只给 40pps（剩 8 步以上封顶 300pps，
             // 最后两步自然降到 80/40pps），下限 24pps 保证一定走得完。
