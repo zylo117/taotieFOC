@@ -302,6 +302,14 @@ enum Tmc2209CustomExtensionRegister
     // 不打印（转动时禁止串口输出），靠这两个寄存器事后取证。
     TMC2209_EXT_PARAM_CREEP_EVENTS = 0x183U,
     TMC2209_EXT_PARAM_CREEP_LAST_DEFICIT_STEPS = 0x184U,
+    // 【J3 缓停抖动取证（只读）】连续输出引擎在本段运动里的两个关键计数：
+    // 0x185 = 完整重装 TMR2 的次数。修好之后一次运动应恒为 1（只有起步那一次）：
+    //       减速段跨档改成只写 DIV/CCR 预装载，在周期边界自然生效，不再重装。
+    //       每多一次重装 = CNT 归零 + 最长一个脉冲周期的空洞，三次连发就是"抖一下"。
+    // 0x186 = 合成脉冲率被地板（规划速度 50%）托住的拍数。非 0 说明补偿的力度已经
+    //       大到能把脉冲率压到 0，也就是它在减速末端反复掐断/重启脉冲流。
+    TMC2209_EXT_PARAM_ENGINE_REINIT_EVENTS = 0x185U,
+    TMC2209_EXT_PARAM_ENGINE_RATE_FLOOR_TICKS = 0x186U,
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -365,8 +373,8 @@ private:
     bool readOfficialRegister(uint8_t reg, uint32_t* value) const;
 
     ClosedLoopDriverProtocolConfig config_;
-    // 扩展参数表长度：覆盖 0x100 ~ 0x167，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x184U - 0x100U + 1U;
+    // 扩展参数表长度：覆盖 0x100 ~ 0x186，新增寄存器时同步这个常量
+    static constexpr uint16_t kCustomParameterCount = 0x186U - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

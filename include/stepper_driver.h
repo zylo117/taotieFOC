@@ -50,6 +50,11 @@ namespace stepper_common
     void stepper_set_step_state(bool state);
     void stepper_send_step_pulse(uint64_t width_ns);
     void stepper_init_motion_timer(uint32_t k_psc, uint32_t k_step_pulse_ticks, bool direction);
+    // 【J3a 无缝换档 2026-11-16】运行中换分频 / 换脉宽：只写 DIV 与 CCR 的预装载缓冲，
+    // 二者与 PR 在同一个更新事件（= 本周期结束）一起生效。不碰 CEN / MOE、不重装、
+    // 不把 STEP 切成普通输出钉低 —— 整条脉冲流在周期边界自然换 tick 基准，周期时长
+    // 不变，因此既不丢沿也不多沿。重装只留给「从停到走」和「换向」两种真需要的情形。
+    void stepper_apply_motion_rate(uint32_t k_psc, uint32_t k_step_pulse_ticks);
     void stepper_start_motion_timer(uint32_t step_hz, uint32_t pulse_width_us);
     void stepper_update_motion_timer(uint32_t step_hz, uint32_t pulse_width_us);
     void stepper_stop_motion_timer(void);

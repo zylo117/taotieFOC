@@ -543,6 +543,12 @@ private:
     volatile uint16_t creep_events_ = 0U;
     volatile uint32_t creep_last_deficit_ = 0U;
     bool creep_active_ = false;
+    // 【J3 换档取证 0x185】本段运动里连续引擎「完整重装定时器」的次数。修好之后应当恒为
+    // 1（只有起步那一次）：换档 / 换脉宽只写 DIV+CCR 缓冲，不再重装。>1 就是末端抖动回来了。
+    volatile uint16_t engine_reinit_events_ = 0U;
+    // 【J3 换档取证 0x186】减速末端补偿把合成脉冲率压到地板（规划速度 50%）的拍数。
+    // 非 0 说明补偿的力度已经大到能把脉冲流打断，正是"缓停抖一下"的驱动源。
+    volatile uint32_t engine_rate_floor_ticks_ = 0U;
     // 滞后角表用的更慢的速度（滞后角本身是慢变量，不需要 20kHz 更新）
     volatile float lag_angle_speed_rpm_ = 0.0f;
     // 滞后角的一阶平滑 + 变化率限幅后的“实际生效值”（度，已带方向）

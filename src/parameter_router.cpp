@@ -1144,6 +1144,16 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
         *value = owner_.creep_last_deficit_;
         return true;
     }
+    if (reg == TMC2209_EXT_PARAM_ENGINE_REINIT_EVENTS)
+    {
+        *value = owner_.engine_reinit_events_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ENGINE_RATE_FLOOR_TICKS)
+    {
+        *value = owner_.engine_rate_floor_ticks_;
+        return true;
+    }
     if (reg == TMC2209_EXT_PARAM_RESONANCE_TAP_FREQ_HZ)
     {
         *value = owner_.tap_freq_hz_;

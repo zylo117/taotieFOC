@@ -109,6 +109,11 @@ namespace stepper_common
         output_config.oc_polarity = TMR_OUTPUT_ACTIVE_LOW;
         output_config.oc_output_state = TRUE;
         tmr_output_channel_config(TMR2, TMR_SELECT_CHANNEL_3, &output_config);
+        // 【J3a】CCR 必须预装载。换档时 CCR 数值会跳（tier0 的 250tick → tier3 的 1tick），
+        // 若立即生效：此刻输出已拉高，而新 CCR 大于 CNT 会把输出又拉回低，随后 CNT 再次
+        // 越过 CCR = 白送一个被驱动器计数的上升沿。开了预装载后整个周期内 CCR 不变，
+        // 换档值在周期边界和 DIV / PR 一起生效，结构上杜绝这种中途改电平。
+        tmr_output_channel_buffer_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
         // 高电平宽度按真正被要求的脉宽保持，随后拉低，避免过窄导致被忽略。
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, k_step_pulse_ticks);
         tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
@@ -145,6 +150,16 @@ namespace stepper_common
         stepper_step_pin_take_over_by_timer();
 #endif
         tmr_counter_enable(TMR2, TRUE);
+    }
+
+    void stepper_apply_motion_rate(uint32_t k_psc, uint32_t k_step_pulse_ticks)
+    {
+        // 与 tmr_base_init 写的是同一个 DIV 寄存器：它是预装载的，写入只改影子，
+        // 正在跑的计数器按旧分频走到周期尽头，更新事件把 DIV / PR / CCR 三份影子一起
+        // 装进工作寄存器。新旧两档在同一 pps 下算出的周期时长相同（相差 <1 tick），
+        // 所以脉冲间隔在换档处不出现台阶，也不需要关 MOE / 钉低 / CNT 归零。
+        TMR2->div = k_psc;
+        tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, k_step_pulse_ticks);
     }
 
     // void stepper_start_motion_timer(uint32_t step_hz, uint32_t pulse_width_us)
