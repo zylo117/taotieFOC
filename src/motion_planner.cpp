@@ -1081,6 +1081,31 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
             velocity_pwm_dir_ = 0;  // 0 = 未装载方向，下一拍强制重装
             return true;
         }
+        // 【角度模式"慢一拍"根因与处理 2026-11-17】0x188~0x18C 插桩实测：角度模式从 0
+        // 起步，第一拍 pps 只有几十 → 落 tier3（0.976MHz）→ PR=65535 = **67ms 一个周期**；
+        // 而 ARR / DIV 都是预装载的，**新算出来的 PR 必须等当前这个 67ms 周期走完**才生效。
+        // 于是引擎被自己的第一个超长周期锁住：out 从 0.04rps 一路爬到 0.8rps、running=1、
+        // active=1、状态位全绿，轴却只挪了 0.1~0.3°，直到第一个周期边界才"啪"地跟上，
+        // 实测首动延迟 85~91ms（前几趟），跑凉了只要 9~15ms。用户说的"要慢一拍才可以
+        // 运动"是字面意思：慢的就是定时器这一拍（67ms）。
+        // 规划运动没这问题：它第一拍就是 start_rpm（几百~几千 pps），周期只有几百 µs。
+        // 处理：角度模式下、引擎还没转起来时，只要还在 tier3 就不放 CEN，等斜坡把速率
+        // 抬出这一档再起转（按 0x130 的加减速率也就几毫秒）。角度模式没有步数账本，
+        // 晚几毫秒起转不丢任何步；规划运动完全不受本门影响。
+        // 兜底：连续被挡超过 1000 拍（50ms）就无条件放行，任何情况下都不许"永久不动"。
+        if (!velocity_pwm_running_ && c.closed_loop_angle_mode_enabled_ && tier == 3U)
+        {
+            if (angle_start_gate_ticks_ < 1000U)
+            {
+                angle_start_gate_ticks_++;
+                return true;
+            }
+        }
+        else
+        {
+            angle_start_gate_ticks_ = 0U;
+        }
+
         const bool need_load = (tier != velocity_pwm_tier_ || narrow != velocity_pwm_narrow_ ||
                                 ccr_ticks != velocity_pwm_ccr_);
         // 【运行时 A/B 开关 0x187 bit0】置 1 = 关闭无缝换档，换档退回「完整重装定时器」。

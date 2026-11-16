@@ -59,24 +59,26 @@ try:
         t0 = time.time()
         rec = []
         prev = a0
+        moved = 0
         first_move = None
         while time.time() - t0 < 0.45:
             a = h.read(R_ANG)
             if a is None:
                 continue
-            d = unwrap(a - prev)
+            moved += unwrap(a - prev)
             prev = a
-            if first_move is None and abs(d) >= 2000:   # ≥ 2 微步算真动了
+            if first_move is None and abs(moved) >= 2000:   # ≥ 2 微步算真动了
                 first_move = time.time() - t0
-            rec.append((time.time() - t0, d / 1000.0,
-                        s32(h.latest.get(R_PROF)), s32(h.latest.get(R_OUT)),
-                        h.latest.get(R_PPS), h.latest.get(R_BITS)))
+            # 固件不推送这几个诊断寄存器，必须显式读（4 次往返 ≈ 12ms/帧，
+            # 死区有 84ms，够采 7 帧，足够判 A/B）
+            rec.append((time.time() - t0, moved / 1000.0,
+                        s32(h.read(R_OUT)), h.read(R_PPS), h.read(R_BITS)))
         print(f'\n=== 第 {rep + 1} 趟  目标 {tgt / 1000:.3f}°  首动 '
               f'{(first_move * 1000 if first_move else -1):.0f}ms  帧数 {len(rec)}')
-        for t, d, prof, out, pps, bits in rec[:26]:
-            print(f'  {(t - 0) * 1000:6.1f}ms Δ{d:+7.3f}°  prof{("" if prof is None else prof / 1000):>8}'
-                  f'  out{("" if out is None else out / 1000):>8}  pps{pps if pps is not None else "-":>6}'
-                  f'  bits={bin(bits) if bits is not None else "-"}')
+        for t, mv, out, pps, bits in rec[:26]:
+            o = '' if out is None else f'{out / 1000:.3f}'
+            print(f'  {t * 1000:6.1f}ms 累计{mv:+8.3f}°  out={o:>7} rps  pps={pps:>6}  '
+                  f'bits={format(bits, "07b") if bits is not None else "-"}')
         time.sleep(0.4)
         h.write(0x163, 1)
         time.sleep(0.5)

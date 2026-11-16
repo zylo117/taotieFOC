@@ -46,6 +46,9 @@ public:
     // startMotion 置位，stopMotion 经 velocityPwmHalt 清零。
     bool velocity_pwm_active_ = false;
     bool velocity_pwm_running_ = false;
+    // 【角度模式起步门兜底 2026-11-17】tier3 时不起转的连续拍数，超过 1000 拍（50ms）
+    // 无条件放行，防止任何边缘情况下角度模式永远不起转。
+    uint16_t angle_start_gate_ticks_ = 0U;
     // 分频档：0=PSC0（4ns tick，3815pps~500kpps），1=PSC7（32ns tick，477~496kpps）。
     // 64 细分下 16 位 PR + PSC0 的最低可表示速率是 3815pps≈17.9RPM——低于它的
     // 指令原来直接不发脉冲（死区，低速起步会被误判堵转）。加粗分频档后低速
