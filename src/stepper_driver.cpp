@@ -37,6 +37,17 @@ namespace stepper_common
             // 所以只要 CCR > PR 且 CNT 摁在 0，输出就恒为低。写 CCR 要更新事件才生效
             // （c3oben 已开），顺手发一个 ovfswtr：它同时把 CCR 影子就地生效并清零 CNT。
             // 进这里的两条路径都已先关 CEN、关溢出 DMA 请求，TMR2 也没开更新中断。
+            // 【改动 A 2026-11-17】上面那套"CCR>PR 且 CNT=0 就恒低"只有 in 输出级
+            // 接通时才成立：本工程从未配置 OSSI/OIS（全项目 grep 'ossi|brk_init|brk_bit'
+            // 无匹配），MOE 一断，输出级直接与引脚断开，上面写的 CCR/CNT 全都不驱动引脚，
+            // STEP 变成高阻 —— 而 DIR(PB11) 恰好在同一个窗口里被真 GPIO 翻电平，PB10/PB11
+            // 相邻，耦合出一个 Vih 沿被 TMC 白计一步：跟运动方向、与行程无关、严格正比于
+            // 装载次数 0x185（实测 1 次装载 +1.10 微步、2 次 +2.89；把 GPIO 钉低删掉后
+            // 涨到 +2.68，正因为它把最后一个"真在驱动引脚"的东西也删了）。
+            // 所以钉低之前先把通道和输出级打开，停车态固定为 CEN=0 / MOE=1 / CCR>PR /
+            // CNT=0 —— 引脚由定时器主动驱低，任何时刻都不许出现高阻窗。
+            tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
+            tmr_output_enable(TMR2, TRUE);
             uint32_t park = TMR2->pr + 1U;
             if (park > 65535U)
             {
@@ -86,7 +97,7 @@ namespace stepper_common
     void stepper_init_motion_timer(uint32_t k_psc, uint32_t k_step_pulse_ticks, bool direction)
     {
         tmr_counter_enable(TMR2, FALSE);
-        tmr_output_enable(TMR2, FALSE);
+        // MOE 不再关断：一断就把输出级与引脚断开，STEP 变高阻（见 idle_low 注释）
         tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, FALSE);
         // 【J1】重装期间引脚先由普通输出钉低（MUX + MOE 关断 = 高阻，见上面注释）。
         // 从这里到函数末尾交还给定时器之前，STEP 全程被驱在低电平上，不再有悬空窗口。
@@ -309,7 +320,7 @@ namespace stepper_common
     void stepper_stop_motion_timer(void)
     {
         tmr_counter_enable(TMR2, FALSE);
-        tmr_output_enable(TMR2, FALSE);
+        // MOE 不再关断：一断就把输出级与引脚断开，STEP 变高阻（见 idle_low 注释）
         tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, FALSE);
         dma_channel_enable(DMA1_CHANNEL2, FALSE);
         dma_flag_clear(DMA1_FDT2_FLAG);
