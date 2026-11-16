@@ -116,6 +116,20 @@ namespace stepper_common
         tmr_output_channel_buffer_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
         // 高电平宽度按真正被要求的脉宽保持，随后拉低，避免过窄导致被忽略。
         tmr_channel_value_set(TMR2, TMR_SELECT_CHANNEL_3, k_step_pulse_ticks);
+        // 【CCR 影子必须就地生效 2026-11-16】上面 tmr_base_init 里那次 ovfswtr 更新事件发生
+        // 在本行之前，而 CH3 的 CCR 是预装载的（上面 J3a）：于是此刻**工作寄存器里还是上
+        // 一次运动留下的旧 CCR**（正常收尾时是 tier3 的 1~24 tick）。CEN 一放，CNT=1 就已经
+        // 越过旧 CCR → 输出立刻拉高 = 在 t≈0 白送一个会被驱动器计数的上升沿，而本该充当
+        // "正经第一步"的新 CCR 位置在整个第一周期里再也不会出现。这就是"每装载一次引擎
+        // 就多走 1 微步"的机制：F2 当年量到的"0→250RPM 重装 3 次 = 3 微步 = 0.169° 正偏"
+        // 是它，用户现在报的"永远多走 0.1~0.3°"也是它（起步装载 1 次，遇上换向 / 补尾再
+        // 装载就是 2~4 微步，且与行程无关——正好是"永远"）。J1 把 STEP 钉低、把
+        // MOE→引脚交接→CEN 的顺序排对都挡不住：交接后引脚确实是低，可计数器一跑就越过
+        // 旧 CCR 把它顶上去。
+        // 补一次更新事件把影子装进工作寄存器即可：PR / DIV 写的是同一个值，重写无副作用；
+        // CNT 随后还要被显式清零（下面 tmr_counter_value_set）；DMA 溢出请求此刻也还没使能
+        // （再下面才 tmr_dma_request_enable）。所以这次事件除了把 CCR 装进去没有别的后果。
+        TMR2->swevt_bit.ovfswtr = TRUE;
         tmr_channel_enable(TMR2, TMR_SELECT_CHANNEL_3, TRUE);
 
         // 【DIR 修复 2026-11-12】原 CH4 PWM 恒平 trick 不可靠：CCR4 是 16 位，
