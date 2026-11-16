@@ -1187,13 +1187,35 @@ void ClosedLoopController::startMotion()
         }
         else
         {
-            // 三角曲线：没有匀速段，重新计算能达到的峰值速度v_peak
-            // v_peak² = a * total_req_steps + v0²
-            // 重新分配加速/减速步数，加速到v_peak立刻减速
+            // 三角曲线：没有匀速段。【2026-11-16 修正减速点算错】
+            // 同一条斜率 a，加速 d1 步、减速 d2 = total − d1 步，要求末速正好为 0：
+            //     v_peak² = v0² + 2a·d1     ……加速段
+            //     v_peak² = 2a·d2           ……减速段（减到 0）
+            // 联立 → d1 = total/2 − v0²/(4a)，v_peak² = a·total + v0²/2
+            // 旧写法用的是 v_peak² = a·total + v0²，代回去正好得 d1 = d2 = total/2，
+            // 可是从那个 v_peak 真减到 0 需要 v_peak²/(2a) = total/2 + v0²/(2a) 步，
+            // 比留给减速的 total/2 多出整整 v0²/(2a) 步刹车距离 —— 于是**每一段短行程
+            // 都在步数用光的那一刻还剩着 v0 的速度**，末速恰好等于起步速度而不是 0，
+            // 接着 velocityPwmHalt() 当场断脉冲：转子带着动量冲出去，多走几个微步，
+            // 还伴随励磁突变的那一声"叮"。
+            // 实测（start=120RPM / max=250RPM / 600RPM/s，纯开环 0x107=0）：
+            //   3200 步 全程 ~13000pps、耗时 0.24s、0x186 换档 0 次
+            //           （真减到 0 必须跨 4200/480/250 三个档）→ 末速 720°/s 硬停，
+            //           多走 +6.9 微步；32000 步（够长跑完整梯形）只多走 +2.8 微步。
+            // 修完之后 3200 步这一趟的验收判据：耗时 0.24s → 约 0.33s、0x186 ≥ 3、
+            // 多走回落到 32000 那一档的本底量级。
             cruise_total_steps_ = 0;
-            float v_peak_sq = a * total_req_steps + v0 * v0;
+            // 起步速度高到"这一程根本刹不住"时（v0²/2a ≥ total），把起步速度降到
+            // 本程能停住的上限：否则 d1 会变成负数，等于又回到硬停。
+            float v0_tri = v0;
+            if (v0_tri * v0_tri > 2.0f * a * static_cast<float>(total_req_steps))
+            {
+                v0_tri = sqrtf(2.0f * a * static_cast<float>(total_req_steps));
+                motion_start_step_s_ = v0_tri;   // 本段运动按降低后的起步速度起跑
+            }
+            float v_peak_sq = a * static_cast<float>(total_req_steps) + 0.5f * v0_tri * v0_tri;
             float v_peak = sqrtf(v_peak_sq);
-            accel_total_steps_ = static_cast<uint32_t>((v_peak * v_peak - v0 * v0) / (2 * a));
+            accel_total_steps_ = static_cast<uint32_t>((v_peak_sq - v0_tri * v0_tri) / (2.0f * a));
             if (accel_total_steps_ < 1U) accel_total_steps_ = 1U; // 至少1步加速
             decel_total_steps_ = total_req_steps - accel_total_steps_;
             if (decel_total_steps_ < 1U) decel_total_steps_ = 1U; // 至少1步减速
