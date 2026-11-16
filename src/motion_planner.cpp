@@ -1173,21 +1173,15 @@ bool MotionPlanner::velocityPwmTick(uint64_t delta_ramp_ns)
         c.step_catchup_events_++;
     }
     c.motion_speed_rpm_ = c.current_step_speed_ * 60.0f / static_cast<float>(spr);
-    // 【账本坚决改成数脉冲 2026-11-17】原来这里是 emitted_pps * dt 的时间积分：
-    // 时间会抖动、dt 还要被 150µs 截断、任务被抢占就更离谱，而且**硬件到底发了几个沿
-    // 从来没被对过账**——3181616 把内部运动全切到连续 PWM 之后，步数就从"数脉冲"退化成
-    // 了"算时间"，用户回滚测试给出的分界（c756ffa 误差全 <0.1°，3181616 起 0.1~0.3°）
-    // 正好是这一次架构切换。现在直接读 DMA1_CH2 的剩余传输计数：TMR2 每溢出（= 每发出
-    // 一个被驱动器计数的上升沿）它减 1，两次读数的差就是本拍真实发出的沿数。
-    // 这么改还有一层自愈：账本发满 N 个沿才判结束，装载时那个被驱动器白计的沿会把配额
-    // 用掉一个，行程再也多不出来——这正是旧窗口路径一直干净的根本原因。
-    const uint32_t pulse_left = DMA1_CHANNEL2->dtcnt;
-    uint32_t n = pulse_dma_left_ - pulse_left;   // 递减计数：差值即本拍发出的沿数
-    if (n > 1000U)
+    const float emitted_pps =
+        (pr_ticks != 0U) ? (static_cast<float>(clock_hz) / static_cast<float>(pr_ticks + 1U)) : 0.0f;
+    c.motion_step_accumulator_ += emitted_pps * dt;
+    uint32_t n = 0U;
+    if (c.motion_step_accumulator_ >= 1.0f)
     {
-        n = 0U;   // 刚装载（剩余=0xFFFF）或计数器还没武装：本拍不记账
+        n = static_cast<uint32_t>(c.motion_step_accumulator_);
+        c.motion_step_accumulator_ -= static_cast<float>(n);
     }
-    pulse_dma_left_ = pulse_left;
     c.step_pulses_emitted_ += n;
     c.motion_steps_emitted_ += n;
     c.motion_steps_emitted_signed +=

@@ -150,31 +150,6 @@ namespace stepper_common
             DIR_OUTPUT_PORT->scr = (uint32_t)DIR_OUT_PIN;  // HIGH = 反向
         }
 
-                // 【账本改数脉冲 2026-11-17】把 DMA1_CH2 武装成"纯溢出计数器"：TMR2 每溢出一次
-        // （= 每发出一个 PWM 周期 = 每发一个被驱动器计数的上升沿）就把传输计数减 1。
-        // 循环模式 + buffer_size=0xFFFF，所以它永远不停，上位机/planner 读剩余值做差就是
-        // 硬件真实发沿数。这一步同时堵掉一个隐患：原来引擎在这里打开了溢出 DMA 请求，
-        // 却从没给通道配过传输；而旧窗口路径的通道外设地址是 &TMR2->pr
-        // （step_output_channel.cpp:36），一旦之前跑过外部跟随，引擎每次溢出都会往 PR 里
-        // 搬一个 seq 残留值。现在目的地址改成本地丢弃单元，绝不再碰 PR。
-        static uint32_t pulse_counter_sink = 0U;
-        static uint32_t pulse_counter_src = 0U;
-        dma_init_type pulse_counter_conf;
-        dma_default_para_init(&pulse_counter_conf);
-        pulse_counter_conf.direction = DMA_DIR_MEMORY_TO_PERIPHERAL;
-        pulse_counter_conf.buffer_size = 0xFFFFU;
-        pulse_counter_conf.peripheral_inc_enable = FALSE;
-        pulse_counter_conf.memory_inc_enable = FALSE;
-        pulse_counter_conf.peripheral_data_width = DMA_PERIPHERAL_DATA_WIDTH_WORD;
-        pulse_counter_conf.memory_data_width = DMA_MEMORY_DATA_WIDTH_WORD;
-        pulse_counter_conf.loop_mode_enable = TRUE;
-        pulse_counter_conf.priority = DMA_PRIORITY_LOW;
-        pulse_counter_conf.peripheral_base_addr = reinterpret_cast<uint32_t>(&pulse_counter_sink);
-        pulse_counter_conf.memory_base_addr = reinterpret_cast<uint32_t>(&pulse_counter_src);
-        dma_flexible_config(DMA1, FLEX_CHANNEL2, DMA_FLEXIBLE_TMR2_OVERFLOW);
-        dma_init(DMA1_CHANNEL2, &pulse_counter_conf);
-        dma_flag_clear(DMA1_FDT2_FLAG);
-        dma_channel_enable(DMA1_CHANNEL2, TRUE);
         tmr_dma_request_enable(TMR2, TMR_OVERFLOW_DMA_REQUEST, TRUE);
 
         tmr_counter_value_set(TMR2, 0U);
