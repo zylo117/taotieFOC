@@ -312,6 +312,17 @@ enum Tmc2209CustomExtensionRegister
     //   bit0 = 1 禁用无缝换档（换档退回完整重装定时器）
     //   bit2 = 1 补尾退回旧锯齿（速度归零那一拍 bump +32pps）
     TMC2209_EXT_PARAM_ENGINE_TUNING = 0x187U,
+    // 【角度模式"慢一拍"插桩 2026-11-16】那 75~83ms 里，环到底在命令什么？
+    // 静态读代码已经排除了 angle_cmd_rps_ 残留（setTargetAngleDeg 里归零）、在位死区
+    // （目标一变立即解除）、J2 换向（只损失 1 拍 50µs）。剩下的可能只有两类：
+    //   A 环自己命令 0（轮廓/死区/门限把首拍掐了）→ prof/out/pps 三个量会趴在 0；
+    //   B 环有命令而引擎没发（装载/档位/方向门吞掉）→ out/pps 非 0 而编码器不动。
+    // 这五个只读寄存器把 [VLOOP] 快照和关键状态位摊开给上位机 300Hz 采样，一次就分得清。
+    TMC2209_EXT_PARAM_VLOOP_PROF_MILLIRPS = 0x188U,  // R：角度模式轮廓速度 ×1000（带符号）
+    TMC2209_EXT_PARAM_VLOOP_OUT_MILLIRPS = 0x189U,   // R：最终命令 rps ×1000（带符号）
+    TMC2209_EXT_PARAM_VLOOP_PPS = 0x18AU,            // R：current_step_speed_（微步/s，幅值）
+    TMC2209_EXT_PARAM_VLOOP_ERR_MIDEG = 0x18BU,      // R：跟踪误差（轮廓-实际）×1000 度
+    TMC2209_EXT_PARAM_ENGINE_STATE_BITS = 0x18CU,    // R：引擎/角度模式状态位快照，见下
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -377,7 +388,7 @@ private:
     ClosedLoopDriverProtocolConfig config_;
 
     // 扩展参数表长度：覆盖 0x100 ~ 0x187，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x187U - 0x100U + 1U;
+    static constexpr uint16_t kCustomParameterCount = 0x18CU - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

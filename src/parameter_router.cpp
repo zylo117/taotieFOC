@@ -1153,6 +1153,47 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
         *value = owner_.creep_last_deficit_;
         return true;
     }
+    // 【角度模式"慢一拍"插桩 2026-11-16】见协议头 0x188~0x18C 的注释：把 [VLOOP] 快照
+    // 与引擎/角度模式关键状态位摊开给上位机采样，用来分辨"环命令 0"还是"引擎吞命令"。
+    if (reg == TMC2209_EXT_PARAM_VLOOP_PROF_MILLIRPS)
+    {
+        const int32_t v = static_cast<int32_t>(owner_.vloop_.prof_vel_rps * 1000.0f);
+        *value = static_cast<uint32_t>(v);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_VLOOP_OUT_MILLIRPS)
+    {
+        const int32_t v = static_cast<int32_t>(owner_.vloop_.out_rps * 1000.0f);
+        *value = static_cast<uint32_t>(v);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_VLOOP_PPS)
+    {
+        *value = static_cast<uint32_t>(owner_.vloop_.step_speed_s);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_VLOOP_ERR_MIDEG)
+    {
+        const int32_t v = static_cast<int32_t>(owner_.vloop_.err_deg * 1000.0f);
+        *value = static_cast<uint32_t>(v);
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_ENGINE_STATE_BITS)
+    {
+        // bit0 在位死区锁 | bit1 velocity_pwm_active_ | bit2 velocity_pwm_running_
+        // bit3 角度模式使能 | bit4 轮廓有效 | bit5 用户主动失能锁 | bit6 方向未装载(dir_==0)
+        uint32_t bits = 0U;
+        if (owner_.angle_in_position_) bits |= 0x0001U;
+        if (owner_.motion_planner_.velocity_pwm_active_) bits |= 0x0002U;
+        if (owner_.motion_planner_.velocity_pwm_running_) bits |= 0x0004U;
+        if (owner_.closed_loop_angle_mode_enabled_) bits |= 0x0008U;
+        if (owner_.angle_profile_valid_) bits |= 0x0010U;
+        if (owner_.user_disabled_) bits |= 0x0020U;
+        if (owner_.motion_planner_.velocity_pwm_dir_ == 0) bits |= 0x0040U;
+        *value = bits;
+        return true;
+    }
+
     if (reg == TMC2209_EXT_PARAM_ENGINE_REINIT_EVENTS)
     {
         *value = owner_.engine_reinit_events_;

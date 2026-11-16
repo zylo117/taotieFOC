@@ -187,6 +187,11 @@ finally:
         if saved[reg] is not None:
             h.write(reg, saved[reg])
     h.write(R_ENGINE_TUNING, 0)
+    # 【用户明确要求】每趟量完必须断掉保持电流，别让电机长时间带电发热。
+    # 0x125 同时会置"用户主动失能锁"：之后 0x11F=1 / 0x128 会被拒，要动就得在
+    # 上位机重新按使能(0x124)——这是固件的既有安全设计，不是 bug。
+    h.write(0x125, 1, need_ack=False)
+    time.sleep(0.1)
     print(f'还原 0x107={saved[R_CLOSED]} 0x167={saved[R_DEADBAND]} '
           f'0x16D={saved[R_SOURCE]} 0x12F={saved[R_ANGLE_MAX_RPM]} '
-          f'0x130={saved[R_ANGLE_ACCEL]} 0x187=0')
+          f'0x130={saved[R_ANGLE_ACCEL]} 0x187=0  已失能 0x162={h.read(0x162)}')
