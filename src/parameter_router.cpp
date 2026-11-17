@@ -549,7 +549,21 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
     if (reg == TMC2209_EXT_PARAM_ENGINE_TUNING)
     {
         // 运行时 A/B 开关（诊断用，不落 Flash）：bit0 关无缝换档，bit2 补尾退回旧锯齿。
-        owner_.engine_tuning_ = static_cast<uint16_t>(value & 0x0007U);
+        if (reg == TMC2209_EXT_PARAM_ANGLE_SERVO_HOLD_MS)
+    {
+        uint32_t hold = value;
+        if (hold < 1U)
+        {
+            hold = 1U;
+        }
+        if (hold > 5000U)
+        {
+            hold = 5000U;
+        }
+        owner_.angle_servo_hold_ms_ = hold;
+        return true;
+    }
+    owner_.engine_tuning_ = static_cast<uint16_t>(value & 0x000FU);
         printf("[PARAM] engine tuning = 0x%04X\r\n",
                static_cast<unsigned>(owner_.engine_tuning_));
         return true;
@@ -1178,6 +1192,35 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
         *value = static_cast<uint32_t>(v);
         return true;
     }
+    if (reg == TMC2209_EXT_PARAM_ANGLE_SERVO_HOLD_MS)
+    {
+        *value = owner_.angle_servo_hold_ms_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_HANDOVER_STATE)
+    {
+        uint16_t bits = 0U;
+        if (owner_.post_move_servo_)
+        {
+            bits |= 0x0001U;
+        }
+        float err = owner_.target_angle_deg_ - owner_.motion_position_deg_;
+        while (err > 180.0F)
+        {
+            err -= 360.0F;
+        }
+        while (err < -180.0F)
+        {
+            err += 360.0F;
+        }
+        if (err > -0.12F && err < 0.12F)
+        {
+            bits |= 0x0002U;
+        }
+        *value = bits;
+        return true;
+    }
+
     if (reg == TMC2209_EXT_PARAM_FE_REF_STEPS)
     {
         // FE 参考账（计划账，带符号微步）。修 B 的自证：停车后应等于本次命令步数 0x11D；

@@ -1152,6 +1152,8 @@ void ClosedLoopController::startMotion()
         // 每一圈有micro_steps_per_round个细分微步
 
         k_step_pulse_ticks = std::ceil(static_cast<float>(step_pulse_width_ns_) / static_cast<float>(stepper_common::target_tick_time));
+        // 【方案 B】记下本次运动起点的绝对机械角，SETTLE 收口时用它 + 命令行程算交棒目标角。
+        motion_start_abs_deg_ = (encoder_ != nullptr) ? encoder_->readFilteredAngle() : motion_position_deg_;
 
         // 单位换算 RPM → step/s；RPM/s加速度 → step/s²
         // f_step(step/s) = RPM * micro_steps_per_round / 60，每秒多少微步
@@ -1864,6 +1866,34 @@ void ClosedLoopController::updateSettleStage(uint64_t now_ns, float encoder_delt
         motion_ramp_stage_ = RAMP_STAGE_DONE;
         current_step_speed_ = 0.0f;
         stopMotion();
+        // 【方案 B 交棒】位置环对规划运动只能改速度、不能补距离，停后又不再看编码器，
+        // 于是路上积累的滞后角原样留在轴上（实测少走 35~46 微步）。这里在真停之后把
+        // "命令终点绝对角"交给角度模式伺服，用它的在位死区把残差补掉。
+        //   · 必须先 stopMotion() 再 setTargetAngleDeg()：后者会把 velocity_pwm_active_/
+        //     stage/积分/编码器基准/使能 全部重新置好，反过来写就被 stopMotion 清空。
+        //   · 目标角必须 wrap 到 [0,360)：setTargetAngleDeg 内部是【钳位】不是取模。
+        //   · 白名单只放位置模式；速度/往复/回零/校准/外部跟随一律不交棒。
+        //   · 角度模式走"平方根减速律"，2° 修正峰值仅约 63RPM/21ms，不会猛冲；且角度模式
+        //     整段豁免堵转守卫，小修正不会被误判成堵转。
+        if ((engine_tuning_ & 0x0008U) != 0U &&
+            closed_loop_compensation_enabled_ &&
+            !user_disabled_ &&
+            (motion_mode_ == MOTION_MODE_POSITION_FORWARD ||
+             motion_mode_ == MOTION_MODE_POSITION_REVERSE) &&
+            calibration_stage_ == CALIBRATION_IDLE &&
+            motion_source_ != MOTION_SOURCE_EXTERNAL &&
+            encoder_ != nullptr)
+        {
+            float target = motion_start_abs_deg_ + settle_report_.cmd_deg;
+            target = std::fmod(target, 360.0F);
+            if (target < 0.0F)
+            {
+                target += 360.0F;
+            }
+            post_move_servo_ = true;
+            angle_in_pos_since_ns_ = 0ULL;
+            setTargetAngleDeg(target);
+        }
         syncProtocolTelemetry();
         return;
     }
@@ -1986,6 +2016,39 @@ void ClosedLoopController::rampUpdate(uint64_t now_ns)
         // 位置环 -> 速度环 -> 限速 -> 加减速限制 -> current_step_speed_，
         // 具体实现和注释见 src/motion_planner.cpp。
         motion_planner_.updateAngleMode(delta_ramp_ns);
+        // 【方案 B 收口】交棒而来的伺服只在"在位后 angle_servo_hold_ms_ 毫秒"内保持，
+        // 到点退出角度模式并把 0x11F 拉回 0（上位机就是等这个位判结束，不退会挂死）。
+        // 只 stopMotion()，不调 0x125：断不断电流仍由上位机决定，避免电机长期通电发热。
+        if (post_move_servo_)
+        {
+            float err = target_angle_deg_ - motion_position_deg_;
+            while (err > 180.0F)
+            {
+                err -= 360.0F;
+            }
+            while (err < -180.0F)
+            {
+                err += 360.0F;
+            }
+            if (std::fabs(err) < 0.12F)
+            {
+                if (angle_in_pos_since_ns_ == 0ULL)
+                {
+                    angle_in_pos_since_ns_ = now_ns;
+                }
+                else if (now_ns - angle_in_pos_since_ns_ >=
+                         static_cast<uint64_t>(angle_servo_hold_ms_) * 1000000ULL)
+                {
+                    post_move_servo_ = false;
+                    angle_in_pos_since_ns_ = 0ULL;
+                    stopMotion();
+                }
+            }
+            else
+            {
+                angle_in_pos_since_ns_ = 0ULL;
+            }
+        }
     }
     else if (motion_planner_.updateTrapezoid(delta_ramp_ns, now_ns))
     {

@@ -565,7 +565,16 @@ private:
     // ≈ 4125RPM@32µs（startMotion 里已按 windowCapacity 重钳），且每 50µs 跨窗重武装会掺
     // 相位毛刺（3181616 当年记录的陡斜坡失锁风险）。因此高速工况仍可写 0x187=0 切回连续
     // 引擎；等连续引擎那个白送的沿用累积仪器钉死之后，再评估是否把默认换回去。
-    volatile uint16_t engine_tuning_ = 0x0002U;
+    volatile uint16_t engine_tuning_ = 0x000AU;
+
+    // 【方案 B：定步数运动结束后交棒角度模式伺服 2026-11-17】
+    // 规划运动的位置环只能调制速度、不能补距离（总行程被账本封顶），停后又整段 return，
+    // 实测闭环停后少走 35~46 微步（约 −2.1°）且 0x121 冻结不动。这里在 SETTLE 收口后把
+    // 目标角交给已有的角度模式（在位死区进 0.06°/退 0.45°），复用那套伺服补掉残差。
+    volatile float motion_start_abs_deg_ = 0.0f;   // 本次运动起点的绝对机械角
+    volatile uint32_t angle_servo_hold_ms_ = 250U; // 在位后保持多久退交棒（0=永不退，不建议）
+    volatile uint64_t angle_in_pos_since_ns_ = 0ULL;
+    volatile bool post_move_servo_ = false;        // 本次交棒是由规划运动发起的
     // 滞后角表用的更慢的速度（滞后角本身是慢变量，不需要 20kHz 更新）
     volatile float lag_angle_speed_rpm_ = 0.0f;
     // 滞后角的一阶平滑 + 变化率限幅后的“实际生效值”（度，已带方向）
