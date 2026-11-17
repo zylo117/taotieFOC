@@ -1178,6 +1178,15 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
         *value = static_cast<uint32_t>(v);
         return true;
     }
+    if (reg == TMC2209_EXT_PARAM_FE_REF_STEPS)
+    {
+        // FE 参考账（计划账，带符号微步）。修 B 的自证：停车后应等于本次命令步数 0x11D；
+        // 修之前它比命令少一个补偿积分（实测约 19 微步），这正是 FE 看起来"只有落点误差
+        // 一半"的真正原因——不是刻度除了 2。
+        *value = static_cast<uint32_t>(owner_.motion_profile_delivered_signed);
+        return true;
+    }
+
     if (reg == TMC2209_EXT_PARAM_ENGINE_STATE_BITS)
     {
         // bit0 在位死区锁 | bit1 velocity_pwm_active_ | bit2 velocity_pwm_running_

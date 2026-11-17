@@ -381,6 +381,19 @@ bool MotionPlanner::updateTrapezoid(uint64_t delta_ramp_ns, uint64_t now_ns)
         // 沉降阶段不再有人碰定时器（这条路径 updateTrapezoid 直接 return true）。
         velocityPwmHalt();
         c.motion_ramp_stage_ = ClosedLoopController::RAMP_STAGE_SETTLE;
+        // 【修 B 2026-11-17】0x121 FE 的参考项取自"计划账" motion_profile_delivered_signed
+        // （= ∫规划速度 dt，见 closed_loop_controller.cpp:1403-1404），而运动结束的判据是
+        // "实发账"跑满 motion_pulse_count_（上面 :354）。闭环下补偿只进实发账与物理脉冲、
+        // 故意不进计划账（closed_loop_controller.h:598-610，b8901f3 的设计），于是两本账在
+        // 停车瞬间恒差一个补偿积分：实测落点少走 −2.1°，FE 却报 −1.043°，差的 1.057°
+        // 约 19 微步正是 ∫compensated_rps dt 的折算量。
+        // 此刻实发账已等于命令行程，把参考账对齐过去，SETTLE 期间与停后的 0x121 就等于
+        // 真落点误差（settle_report_.cmd_deg 同步自证）。位置环在 SETTLE 段本就不跑
+        // （rampUpdate :1947-1951 先 return），所以这个对齐不污染控制律；下一趟 startMotion
+        // 两本账都会清零。副作用：0x121 在停车那一拍会跳一个等于补偿积分（约 1°）的台阶
+        // ——那是把原来被账目分叉吃掉的误差显形，不是新增误差。
+        c.motion_profile_delivered_signed = c.motion_steps_emitted_signed;
+        c.motion_profile_step_accumulator_ = 0.0f;
         c.current_step_speed_ = 0.0f;  // 运动结束强制清零，防止下次运动残留速度
         c.motion_speed_rpm_ = 0.0f;
         c.motion_step_accumulator_ = 0.0f;
