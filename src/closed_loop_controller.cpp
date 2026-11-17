@@ -1158,6 +1158,20 @@ void ClosedLoopController::startMotion()
         const float rpm2step = static_cast<float>(micro_steps_per_round) / 60.0f;
         motion_start_step_s_ = motion_start_rpm_ * rpm2step;
         motion_max_step_s_ = clampToPulseCeiling(motion_max_rpm_ * rpm2step);
+        if ((engine_tuning_ & 0x0002U) != 0U)
+        {
+            // 窗口引擎顶不到连续引擎的 1.5Mpps：每 50µs 窗最多
+            // StepOutputChannel::windowCapacity(50µs) 步（guard 45ns、铺窗 90%、
+            // 最小步距 500tick ⇒ 22 步/窗 = 440kpps ≈ 4125RPM@32µs）。不重钳的话规划
+            // 曲线在窗口引擎上物理发不出来，账本领先脉冲，缺口全堆到减速末段蠕行 +
+            // 沉降超时，表现成"少走 + 慢停"。撞墙特征：0x177=22 且 0x183 起跳。
+            const float window_ceiling =
+                static_cast<float>(StepOutputChannel::windowCapacity(50000ULL)) * 20000.0f;
+            if (motion_max_step_s_ > window_ceiling)
+            {
+                motion_max_step_s_ = window_ceiling;
+            }
+        }
         motion_accel_step_s2_ = motion_accel_rpm_s_ * rpm2step;
 
         // 加速段：从start速度加速到max速度，需要多少步
@@ -1258,9 +1272,31 @@ void ClosedLoopController::startMotion()
         // 全速域（15pps..1Mpps，四档分频）验证干净后统一之。
         // 窗口路径只保留给外部脉冲跟随（1:1 保真优先，跟随激活时 startMotion
         // 不运行，active 已由 stopMotion 清 false）。
-        motion_planner_.velocity_pwm_active_ = true;
-        motion_planner_.velocity_pwm_running_ = false;
-        motion_planner_.velocity_pwm_dir_ = 0;
+        // 【0x187 bit1 运行时开关 2026-11-17】bit1=1 → 本段内部规划运动走**旧窗口 DMA
+        // 引擎**（emitSteps → StepOutputChannel::emit）。理由：窗口路径 seq_count =
+        // num_steps+2，每格恰好一个上升沿、首尾 guard 短于 CCR 不出沿，**硬件沿数与账本
+        // 由构造一一对应**；而且运动结束时 velocityPwmHalt() 因 running=false 成为空操作，
+        // 不会砍掉在飞的周期——连续引擎的 halt 关 CEN 若落在 CNT<CCR，那一拍的沿根本
+        // 不存在，停止时刻取决于账本穿越相位，这就是落点散布的来源。
+        // 同口径实测：c756ffa（窗口）整圈 6400 微步平均 +0.55、散布 ±0.7 微步；
+        // HEAD（连续）半圈 3200 微步平均 +0.60、散布 −4.4~+6.3 微步 —— 均值同级、散布差
+        // 8 倍，用户"听声音都干脆很多"就是这个。
+        // 代价照抄 3181616，不遮掩：每 50µs 跨窗重武装会在脉冲流里掺相位毛刺（1200RPM
+        // 下每窗一次 7.8→12.5µs、瞬时 +60%），陡斜坡下可能泵进振荡能量失锁（当年同轮廓
+        // FE −20° vs −2°）。所以做成运行时开关、默认 0 保持现状，同一版固件直接 A/B。
+        if ((engine_tuning_ & 0x0002U) != 0U)
+        {
+            motion_planner_.resetEngineCaches();
+            engine_reinit_events_ = 0U;         // 0x185 只在连续引擎里清零，否则会读到上段陈旧值
+            engine_tier_switch_events_ = 0U;    // 0x186 同上，窗口模式恒 0
+            band_dither_active_ = 0U;           // 0x181 带内微抖是连续引擎专属，窗口模式静默失效
+        }
+        else
+        {
+            motion_planner_.velocity_pwm_active_ = true;
+            motion_planner_.velocity_pwm_running_ = false;
+            motion_planner_.velocity_pwm_dir_ = 0;
+        }
         // 预同步沉降：速度模式启动后先静置（不发脉冲），让使能拉入振荡熄灭，
         // 再进梯形斜坡——消除冷启动一次性拉入丢步（~43°，A/B 实测，见 0x179）。
         presync_remaining_ns_ =

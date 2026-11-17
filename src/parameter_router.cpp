@@ -549,7 +549,7 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
     if (reg == TMC2209_EXT_PARAM_ENGINE_TUNING)
     {
         // 运行时 A/B 开关（诊断用，不落 Flash）：bit0 关无缝换档，bit2 补尾退回旧锯齿。
-        owner_.engine_tuning_ = static_cast<uint16_t>(value & 0x0005U);
+        owner_.engine_tuning_ = static_cast<uint16_t>(value & 0x0007U);
         printf("[PARAM] engine tuning = 0x%04X\r\n",
                static_cast<unsigned>(owner_.engine_tuning_));
         return true;

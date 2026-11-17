@@ -49,6 +49,21 @@ public:
     // 【角度模式起步门兜底 2026-11-17】tier3 时不起转的连续拍数，超过 1000 拍（50ms）
     // 无条件放行，防止任何边缘情况下角度模式永远不起转。
     uint16_t angle_start_gate_ticks_ = 0U;
+
+    // 【0x187 bit1 运行时开关 2026-11-17】内部规划运动改走窗口 DMA 引擎时，把连续
+    // 引擎的状态缓存全部作废：档位/窄脉冲/CCR 影子/周期小数进位都是"上一次连续引擎
+    // 装载过什么"的记忆，留着会让下一次切回连续引擎时误判成已装载。
+    void resetEngineCaches()
+    {
+        velocity_pwm_active_ = false;
+        velocity_pwm_running_ = false;
+        velocity_pwm_dir_ = 0;
+        velocity_pwm_tier_ = 0;
+        velocity_pwm_narrow_ = false;
+        velocity_pwm_ccr_ = 0U;
+        velocity_pwm_period_carry_ = 0.0f;
+        angle_start_gate_ticks_ = 0U;
+    }
     // 分频档：0=PSC0（4ns tick，3815pps~500kpps），1=PSC7（32ns tick，477~496kpps）。
     // 64 细分下 16 位 PR + PSC0 的最低可表示速率是 3815pps≈17.9RPM——低于它的
     // 指令原来直接不发脉冲（死区，低速起步会被误判堵转）。加粗分频档后低速
