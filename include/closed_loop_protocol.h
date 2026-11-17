@@ -328,6 +328,19 @@ enum Tmc2209CustomExtensionRegister
     TMC2209_EXT_PARAM_ANGLE_SERVO_HOLD_MS = 0x191U,   // R/W：交棒伺服在位后保持毫秒，钳 1..5000
     TMC2209_EXT_PARAM_HANDOVER_STATE = 0x192U,        // R：bit0 交棒伺服中 bit1 在位
                                                       //   bit2 因外部源被拒 bit3 因校准被拒
+
+    // ===== 自定义 Bootloader（docs/bootloader.md）=====
+    // 跳过 0x193~0x199：这段留给交棒/伺服相关的后续扩展，别再往上添东西撞上 BL。
+    TMC2209_EXT_PARAM_DFU_REBOOT = 0x19AU,    // W：写 1 = 先 stopMotion + 失能驱动，
+                                              //   150ms 后（ACK 发完）握手 + 复位进 BL 的 DFU。
+                                              //   这是"不用手按 BOOT0"的唯一入口，写它必须是有意的。
+    TMC2209_EXT_PARAM_BL_INFO = 0x19BU,       // R：高 16 位 = BL 诊断码（'DF'/'JM' + 原因），
+                                              //   低 16 位 = BL 记录的连续启动尝试次数
+
+    // ===== 固件身份（extra_version.py 每次编译生成，用于确认"刷进去的是哪一版"）=====
+    TMC2209_EXT_PARAM_FW_GIT = 0x19CU,        // R：git 短哈希按十六进制转成的数，按 %07x 还原
+    TMC2209_EXT_PARAM_FW_BUILD = 0x19DU,      // R：编译时刻 Unix 秒
+    TMC2209_EXT_PARAM_FW_FLAGS = 0x19EU       // R：bit0 = 编译时工作区是脏的
 };
 
 // ClosedLoopDriverProtocol 是闭环控制器的协议抽象接口。
@@ -392,8 +405,8 @@ private:
 
     ClosedLoopDriverProtocolConfig config_;
 
-    // 扩展参数表长度：覆盖 0x100 ~ 0x187，新增寄存器时同步这个常量
-    static constexpr uint16_t kCustomParameterCount = 0x192U - 0x100U + 1U;
+    // 扩展参数表长度：覆盖 0x100 ~ 0x19E（BL 0x19A/0x19B，固件身份 0x19C~0x19E）
+    static constexpr uint16_t kCustomParameterCount = 0x19EU - 0x100U + 1U;
     uint32_t custom_parameters_[kCustomParameterCount];
     StepperDriver* driver_;
 };

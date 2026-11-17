@@ -3,6 +3,8 @@
 #include "closed_loop_controller.h"
 #include "param_store.h"
 #include "usb_cdc_protocol.h"   // 单例计数（0x169~0x16C 只读）
+#include "bl_handshake.h"       // 0x19A 进 DFU / 0x19B BL 诊断
+#include "fw_version.h"         // 0x19C~0x19E 固件身份
 
 #include <cstdio>
 
@@ -546,11 +548,26 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
         return true;
     }
 
-    if (reg == TMC2209_EXT_PARAM_ENGINE_TUNING)
+    if (reg == TMC2209_EXT_PARAM_DFU_REBOOT)
     {
-        // 运行时 A/B 开关（诊断用，不落 Flash）：bit0 关无缝换档，bit2 补尾退回旧锯齿。
-        if (reg == TMC2209_EXT_PARAM_ANGLE_SERVO_HOLD_MS)
+        // 写 1 = "安全停车 → 失能驱动 → 150ms 后复位进自定义 BL 的 DFU"。
+        // 这是刷机自动化唯一的入口，所以先把电机安全处理干净再武装复位：
+        // 复位瞬间电机如果还在切相/带电，BL 是完全不管电机的，转子会停在未知位置。
+        // 复位不在这里执行，是为了让 0x82 ACK 先回到上位机（见 src/bl_handshake.c）。
+        if (value != 0U)
+        {
+            printf("[BOOT] DFU reboot requested: stop + disable, reset in 150ms\r\n");
+            owner_.stopMotion();
+            owner_.requestDriverEnable(false);
+            bl_arm_dfu_reboot(150U);
+        }
+        return true;
+    }
+
+    if (reg == TMC2209_EXT_PARAM_ANGLE_SERVO_HOLD_MS)
     {
+        // 交棒伺服在位后的保持毫秒。注意：这个块必须和 ENGINE_TUNING 平级——里程碑 B
+        // 合并时它被误插进 ENGINE_TUNING 的花括号里，条件永不成立，写 0x191 变成空操作。
         uint32_t hold = value;
         if (hold < 1U)
         {
@@ -561,9 +578,14 @@ bool ParameterRouter::write(uint16_t reg, uint32_t value)
             hold = 5000U;
         }
         owner_.angle_servo_hold_ms_ = hold;
+        printf("[PARAM] angle servo hold = %lu ms\r\n", static_cast<unsigned long>(hold));
         return true;
     }
-    owner_.engine_tuning_ = static_cast<uint16_t>(value & 0x000FU);
+    if (reg == TMC2209_EXT_PARAM_ENGINE_TUNING)
+    {
+        // 运行时 A/B 开关（诊断用，不落 Flash）：bit0 关无缝换档，bit1 窗口 DMA 引擎，
+        // bit2 补尾退回旧锯齿，bit3 停后交棒角度模式。
+        owner_.engine_tuning_ = static_cast<uint16_t>(value & 0x000FU);
         printf("[PARAM] engine tuning = 0x%04X\r\n",
                static_cast<unsigned>(owner_.engine_tuning_));
         return true;
@@ -1195,6 +1217,27 @@ bool ParameterRouter::read(uint16_t reg, uint32_t* value)
     if (reg == TMC2209_EXT_PARAM_ANGLE_SERVO_HOLD_MS)
     {
         *value = owner_.angle_servo_hold_ms_;
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_FW_GIT || reg == TMC2209_EXT_PARAM_FW_BUILD ||
+        reg == TMC2209_EXT_PARAM_FW_FLAGS)
+    {
+        // 固件身份：上位机在刷完之后读这三个，就能确定"板上跑的确实是刚刷的那一版"。
+        // 光靠刷机工具报成功不够 —— 它只证明 flash 内容对了，不证明代码真的跑起来了。
+        *value = (reg == TMC2209_EXT_PARAM_FW_GIT) ? fw_git_num()
+                 : (reg == TMC2209_EXT_PARAM_FW_BUILD) ? fw_build_epoch()
+                                                       : fw_version_flags();
+        return true;
+    }
+    if (reg == TMC2209_EXT_PARAM_BL_INFO)
+    {
+        // BL 诊断：高 16 位是 BL 写的状态码（'DF' 停在 DFU / 'JM' 跳转 / 'JF' 跳转失败，
+        // 低 8 位是原因：01=应用请求 02=连续启动失败 03=CRC 不符 01=没尾签），
+        // 低 16 位是 BL 记录的连续启动尝试次数。上位机据此回答"板子为什么在 DFU 里"。
+        uint32_t st = 0U;
+        uint32_t attempt = 0U;
+        bl_hsk_read(&st, &attempt);
+        *value = ((st & 0xFFFF0000U)) | (attempt & 0xFFFFU);
         return true;
     }
     if (reg == TMC2209_EXT_PARAM_HANDOVER_STATE)

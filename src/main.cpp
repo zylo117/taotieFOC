@@ -31,6 +31,10 @@ static ClosedLoopController g_controller;
 static Tmc2209Driver g_driver;
 static Tmc2209ProtocolAdapter g_protocol;
 static Kth7823Encoder g_encoder;
+#include "bl_handshake.h"
+#include "bl_layout.h"
+#include "fw_version.h"
+
 static UsbCdcProtocolBridge g_usb_bridge;
 static PhaseCurrentMonitor g_phase_current;
 static usbd_core_type g_usb_core;
@@ -309,6 +313,18 @@ extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char* pcTaskNa
 
 int main(void)
 {
+    // 【自定义 BL：向量表必须搬到应用区】SystemInit 按 VECT_TAB_OFFSET=0 把它写成
+    // 0x08000000，那是 bootloader 的位置。应用的中断（TMR4 20kHz 控制环、USB、TMR1
+    // 脉冲）要是还去 0x08000000 找 handler，取到的就是 BL 的函数指针，跳进去就是
+    // 跑飞或者死循环 —— 而且不一定当场炸，可能跑到第一次 TMR4 中断才炸。
+    // 所以这一行必须开在任何 nvic_irq_enable 之前。BL 跳转前也设了一次（bl_flash.c），
+    // 两边都设是因为：用 ST-Link 绕过 BL 直接刷应用时，只有这里生效。
+    SCB->VTOR = APP_REGION_BASE;
+    __DSB();
+
+    // 告诉 BL"这次启起来了"，清掉连续启动失败计数（见 src/bl_handshake.c）
+    bl_hsk_confirm_boot();
+
     // 开启Cortex‑M4 FPU
     SCB->CPACR |= ((3UL << 10*2)|(3UL << 11*2));
     __asm volatile ("DSB");
@@ -319,6 +335,9 @@ int main(void)
 
     at32_board_init();
     uart_print_init(115200);
+    // 开机自报身份：一眼看清"板上跑的是哪一版"。BL 里没有 UART，所以看到这行
+    // 本身就证明是 BL 把我们跳进来的（而不是上电直接进了应用）。
+    printf("[FW] %s\r\n", fw_version_string);
     usb_device_init();
 
     g_protocol.attachDriver(&g_driver);
@@ -821,6 +840,9 @@ void usb_task_function(void* pvParameters)
     while (1)
     {
         g_usb_bridge.poll();
+        // 0x19A 请求进 DFU：ACK 已经由上面的 poll() 发给上位机了，现在复位才不会把
+        // 应答咽掉。放在这里而不是寄存器处理函数里，就是为了"先应答、后复位"。
+        bl_poll_dfu_reboot();
 
         // 【USART1/CH340 也当协议通道】把中断入队的字节吐给同一个解析器。
         // 这样脚本只用一根 CH340 线就能写配置 + 发脉冲 + 收日志，

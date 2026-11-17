@@ -77,3 +77,12 @@ autotune_*.json
 autotune_*.log
 compare.log
 docs/_tmc2209_text.txt
+
+# 自定义 BL / 刷机工具产生的东西，不进仓库
+include/fw_build.h
+backup/
+*.pyc
+__pycache__/
+
+.pio/
+
